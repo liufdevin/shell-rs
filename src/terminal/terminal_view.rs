@@ -10,12 +10,12 @@ use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::term::color::COUNT;
 use alacritty_terminal::vte::ansi::{Color, CursorShape, NamedColor, Rgb};
 use gpui_kit::component::{
-    ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _,
+    ActiveTheme as _, Disableable as _, Icon, IconName, Selectable as _, Sizable as _,
     button::{Button, ButtonVariants as _},
     h_flex,
     input::{Input, InputEvent, InputState},
     menu::PopupMenu,
-    scroll::Scrollbar,
+    scroll::{ScrollableElement as _, Scrollbar},
     tooltip::Tooltip,
     v_flex,
 };
@@ -24,22 +24,24 @@ use gpui_kit::*;
 use unicode_width::UnicodeWidthChar as _;
 
 use crate::app::{
-    CatalogIcon, ClearTerminal, CopyTerminal, DismissTerminalFind, FindInTerminal,
-    FindNextInTerminal, FindPreviousInTerminal, PasteTerminal, SelectAllTerminal,
-    ToggleComposePane,
+    CatalogIcon, ClearTerminal, CopyTerminal, CopyTerminalFindResults, DismissTerminalFind,
+    FindInTerminal, FindNextInTerminal, FindPreviousInTerminal, PasteTerminal, SelectAllTerminal,
+    ToggleComposePane, ToggleTerminalFindOption, ZoomTerminalIn, ZoomTerminalOut,
 };
 use crate::connection::{ConnectionPromptReply, Latency};
 use crate::i18n::{UiLocale, t};
 
 use super::box_drawing::{self, CellMetrics};
 use super::font;
+use super::log_filter::LogResults;
 use super::mouse::{self, MouseReport, ReportButton, ReportKind};
 use super::scrollbar::ScrollbackHandle;
-use super::search::SearchMark;
+use super::search::{SearchMark, SearchOptions, SearchPosition, TerminalFindOption};
 use super::{
-    RightClick, SearchDirection, SharedTerminalTransportFactory, TerminalColors, TerminalEngine,
-    TerminalEvent, TerminalFont, TerminalInput, TerminalInputEvent, TerminalInteraction,
-    TerminalLifecycle, TerminalSize, TerminalSnapshot, TerminalStatus, TerminalTheme, ZmodemReply,
+    MiddleClick, RightClick, SearchDirection, SharedTerminalTransportFactory, TerminalColors,
+    TerminalEngine, TerminalEvent, TerminalFont, TerminalInput, TerminalInputEvent,
+    TerminalInteraction, TerminalLifecycle, TerminalSize, TerminalSnapshot, TerminalStatus,
+    TerminalTheme, ZmodemReply,
 };
 
 pub const TERMINAL_KEY_CONTEXT: &str = "Terminal";
@@ -135,6 +137,16 @@ struct FindBar {
     input: Entity<InputState>,
     /// The search waiting for typing to pause, if any.
     pending: Option<Task<()>>,
+    options: SearchOptions,
+    matching_lines: bool,
+    paused: bool,
+    results: Rc<LogResults>,
+    selected: Option<usize>,
+    scroll: UniformListScrollHandle,
+    focus: FocusHandle,
+    filter_task: Option<Task<()>>,
+    revision: u64,
+    source_revision: u64,
     _subscription: Subscription,
 }
 
@@ -153,6 +165,7 @@ enum ScrollTarget {
     AlternateScreen,
     /// The program asked for the mouse: the wheel is reported to it.
     Report,
+    FontZoom,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -278,6 +291,7 @@ pub struct TerminalView {
     element_id: ElementId,
     label: TerminalLabel,
     focus_handle: FocusHandle,
+    focus_window: WindowId,
     marked_text: String,
     marked_selection: Range<usize>,
     viewport: Option<TerminalViewport>,
@@ -327,7 +341,10 @@ impl TerminalView {
         let engine = cx.new(|cx| TerminalEngine::new(factory, cx));
         let focus_handle = cx.focus_handle();
         let subscriptions = vec![
-            cx.observe(&engine, |_, _, cx| cx.notify()),
+            cx.observe(&engine, |this, _, cx| {
+                this.refresh_log_filter(cx);
+                cx.notify();
+            }),
             cx.observe_global::<TerminalInteraction>(|this, cx| {
                 this.cursor_visible = true;
                 cx.notify();
@@ -336,13 +353,19 @@ impl TerminalView {
             cx.subscribe(&engine, |_, _, event: &TerminalEvent, cx| {
                 cx.emit(event.clone())
             }),
-            cx.on_focus(&focus_handle, window, |this, _, cx| {
+            cx.on_focus(&focus_handle, window, |this, window, cx| {
+                if this.focus_window != window.window_handle().window_id() {
+                    return;
+                }
                 this.focused = true;
                 this.cursor_visible = true;
                 this.engine.read(cx).set_focused(true);
                 cx.notify();
             }),
-            cx.on_blur(&focus_handle, window, |this, _, cx| {
+            cx.on_blur(&focus_handle, window, |this, window, cx| {
+                if this.focus_window != window.window_handle().window_id() {
+                    return;
+                }
                 this.focused = false;
                 this.cursor_visible = false;
                 this.selecting = false;
@@ -389,6 +412,7 @@ impl TerminalView {
             element_id: element_id.into(),
             label: Rc::new(label),
             focus_handle,
+            focus_window: window.window_handle().window_id(),
             marked_text: String::new(),
             marked_selection: 0..0,
             viewport: None,
@@ -424,6 +448,41 @@ impl TerminalView {
 
     pub fn focus_handle(&self) -> FocusHandle {
         self.focus_handle.clone()
+    }
+
+    pub(crate) fn observe_detached_focus(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Vec<Subscription> {
+        self.attach_window(window, cx);
+        vec![
+            cx.on_focus(&self.focus_handle, window, |this, window, cx| {
+                if this.focus_window != window.window_handle().window_id() {
+                    return;
+                }
+                this.focused = true;
+                this.cursor_visible = true;
+                this.engine.read(cx).set_focused(true);
+                cx.notify();
+            }),
+            cx.on_blur(&self.focus_handle, window, |this, window, cx| {
+                if this.focus_window != window.window_handle().window_id() {
+                    return;
+                }
+                this.focused = false;
+                this.selecting = false;
+                this.engine.read(cx).set_focused(false);
+                cx.notify();
+            }),
+        ]
+    }
+
+    pub(crate) fn attach_window(&mut self, window: &Window, cx: &mut Context<Self>) {
+        self.focus_window = window.window_handle().window_id();
+        self.focused = self.focus_handle.is_focused(window);
+        self.cursor_visible = true;
+        cx.notify();
     }
 
     /// What Enter and Space do once the connection has ended: reconnect,
@@ -671,6 +730,16 @@ impl TerminalView {
                 self.find = Some(FindBar {
                     input: input.clone(),
                     pending: None,
+                    options: SearchOptions::default(),
+                    matching_lines: false,
+                    paused: false,
+                    results: Rc::default(),
+                    selected: None,
+                    scroll: UniformListScrollHandle::default(),
+                    focus: cx.focus_handle(),
+                    filter_task: None,
+                    revision: 0,
+                    source_revision: self.engine.read(cx).output_revision(),
                     _subscription: subscription,
                 });
                 input
@@ -697,6 +766,23 @@ impl TerminalView {
             self.run_find(cx);
             return;
         }
+        if find.matching_lines {
+            let count = find.results.lines.len();
+            if count == 0 {
+                return;
+            }
+            let selected = match (find.selected, direction) {
+                (Some(selected), SearchDirection::Down) => (selected + 1) % count,
+                (Some(selected), SearchDirection::Up) => (selected + count - 1) % count,
+                (None, SearchDirection::Down) => 0,
+                (None, SearchDirection::Up) => count - 1,
+            };
+            find.selected = Some(selected);
+            find.scroll
+                .scroll_to_item(selected, ScrollStrategy::Nearest);
+            cx.notify();
+            return;
+        }
         self.engine
             .update(cx, |engine, cx| engine.step_search(direction, cx));
     }
@@ -716,6 +802,10 @@ impl TerminalView {
         let Some(find) = &mut self.find else {
             return;
         };
+        find.revision = find.revision.wrapping_add(1);
+        find.filter_task = None;
+        find.results = Rc::default();
+        find.selected = None;
         find.pending = Some(cx.spawn(async move |this, cx| {
             cx.background_executor().timer(FIND_DEBOUNCE).await;
             _ = this.update(cx, |this, cx| this.run_find(cx));
@@ -728,8 +818,121 @@ impl TerminalView {
         };
         find.pending = None;
         let query = find.input.read(cx).value();
-        self.engine
-            .update(cx, |engine, cx| engine.set_search_query(&query, cx));
+        let options = find.options;
+        self.engine.update(cx, |engine, cx| {
+            engine.search_with_options(&query, options, cx)
+        });
+        self.start_log_filter(cx);
+        cx.notify();
+    }
+
+    pub fn toggle_find_option(
+        &mut self,
+        option: TerminalFindOption,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(find) = &mut self.find else {
+            return;
+        };
+        match option {
+            TerminalFindOption::Regex => find.options.regex = !find.options.regex,
+            TerminalFindOption::CaseSensitive => {
+                find.options.case_sensitive = !find.options.case_sensitive
+            }
+            TerminalFindOption::MatchingLines => find.matching_lines = !find.matching_lines,
+            TerminalFindOption::Pause => find.paused = !find.paused,
+        }
+        find.revision = find.revision.wrapping_add(1);
+        find.filter_task = None;
+        find.pending = None;
+        find.input.update(cx, |input, cx| input.focus(window, cx));
+        if option == TerminalFindOption::Pause && find.paused {
+            cx.notify();
+            return;
+        }
+        self.run_find(cx);
+    }
+
+    pub fn copy_find_results(&self, cx: &mut App) {
+        if let Some(find) = self
+            .find
+            .as_ref()
+            .filter(|find| find.matching_lines && !find.results.lines.is_empty())
+        {
+            cx.write_to_clipboard(ClipboardItem::new_string(find.results.text()));
+        }
+    }
+
+    fn refresh_log_filter(&mut self, cx: &mut Context<Self>) {
+        let wanted = self.find.as_ref().is_some_and(|find| {
+            find.matching_lines
+                && !find.paused
+                && find.pending.is_none()
+                && find.filter_task.is_none()
+                && find.source_revision != self.engine.read(cx).output_revision()
+        });
+        if wanted {
+            self.start_log_filter(cx);
+        }
+    }
+
+    fn start_log_filter(&mut self, cx: &mut Context<Self>) {
+        let Some(find) = &mut self.find else {
+            return;
+        };
+        find.source_revision = self.engine.read(cx).output_revision();
+        if !find.matching_lines || find.filter_task.is_some() {
+            return;
+        }
+        let query = find.input.read(cx).value().to_string();
+        if query.is_empty() || self.engine.read(cx).search_error().is_some() {
+            find.results = Rc::default();
+            find.selected = None;
+            return;
+        }
+        let source = self.engine.read(cx).log_source();
+        let options = find.options;
+        let revision = find.revision;
+        find.filter_task = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(150))
+                .await;
+            let result = cx
+                .background_spawn(async move { source.filter(&query, options) })
+                .await;
+            _ = this.update(cx, |this, cx| {
+                let Some(find) = &mut this.find else {
+                    return;
+                };
+                if find.revision != revision {
+                    return;
+                }
+                let selected_text = find.selected.and_then(|selected| {
+                    find.results
+                        .lines
+                        .get(selected)
+                        .map(|line| (selected, line.text.clone()))
+                });
+                find.selected = selected_text
+                    .and_then(|(selected, text)| {
+                        if result
+                            .lines
+                            .get(selected)
+                            .is_some_and(|line| line.text == text)
+                        {
+                            Some(selected)
+                        } else {
+                            result.lines.iter().position(|line| line.text == text)
+                        }
+                    })
+                    .or_else(|| (!result.lines.is_empty()).then_some(0));
+                find.results = Rc::new(result);
+                find.filter_task = None;
+                cx.notify();
+                this.refresh_log_filter(cx);
+            });
+        }));
     }
 
     fn on_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
@@ -813,6 +1016,29 @@ impl TerminalView {
             self.engine
                 .update(cx, |engine, cx| engine.scroll(lines, cx));
         }
+    }
+
+    fn zoom_with_wheel(
+        &mut self,
+        event: &ScrollWheelEvent,
+        line_height: Pixels,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if !event.modifiers.control || event.modifiers.alt || event.modifiers.platform {
+            return false;
+        }
+        let steps =
+            self.scroll_accumulator
+                .consume(event.delta, line_height, ScrollTarget::FontZoom);
+        if steps > 0 {
+            self.focus_handle
+                .dispatch_action(&ZoomTerminalIn, window, cx);
+        } else if steps < 0 {
+            self.focus_handle
+                .dispatch_action(&ZoomTerminalOut, window, cx);
+        }
+        true
     }
 
     fn start_selection(
@@ -1026,8 +1252,28 @@ impl TerminalView {
                 self.focus(window, cx);
                 self.paste_clipboard(cx);
             }
+            RightClick::Enter => {
+                self.focus(window, cx);
+                self.send_input(TerminalInput::Key(Keystroke::parse("enter").unwrap()), cx);
+            }
             RightClick::Menu => self.open_context_menu(event, window, cx),
         }
+    }
+
+    fn middle_click(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let action = TerminalInteraction::current(cx).middle_click;
+        if action == MiddleClick::Application {
+            return false;
+        }
+        self.focus(window, cx);
+        match action {
+            MiddleClick::Paste => self.paste_clipboard(cx),
+            MiddleClick::Enter => {
+                self.send_input(TerminalInput::Key(Keystroke::parse("enter").unwrap()), cx);
+            }
+            MiddleClick::Application | MiddleClick::Nothing => {}
+        }
+        true
     }
 
     fn open_context_menu(
@@ -1329,7 +1575,18 @@ impl Render for TerminalView {
                     .child(Scrollbar::vertical(&scrollback).id("terminal-scrollbar")),
             )
             .when_some(self.find.as_ref(), |container, find| {
-                container.child(self.render_find_bar(find, cx))
+                if find.matching_lines {
+                    container.child(self.render_filtered_logs(find, cx))
+                } else {
+                    container.child(
+                        div()
+                            .absolute()
+                            .top_2()
+                            .left_2()
+                            .right_2()
+                            .child(self.render_find_bar(find, cx)),
+                    )
+                }
             })
     }
 }
@@ -1355,34 +1612,34 @@ fn link_tooltip(uri: SharedString, window: &mut Window, cx: &mut App) -> AnyView
 impl TerminalView {
     fn render_find_bar(&self, find: &FindBar, cx: &App) -> impl IntoElement {
         let has_query = !find.input.read(cx).value().is_empty();
-        let position = self
+        let error = self
             .engine
             .read(cx)
-            .search_position()
-            .filter(|_| has_query && find.pending.is_none());
+            .search_error()
+            .filter(|_| find.pending.is_none());
+        let loading =
+            find.matching_lines && find.filter_task.is_some() && find.results.lines.is_empty();
+        let position = if find.matching_lines {
+            (has_query && find.pending.is_none() && error.is_none() && !loading)
+                .then(|| SearchPosition::new(find.selected, find.results.lines.len()))
+        } else {
+            self.engine
+                .read(cx)
+                .search_position()
+                .filter(|_| has_query && find.pending.is_none())
+        };
         let navigate = position.is_some_and(|position| position.total() > 0);
-        h_flex()
-            .key_context(TERMINAL_FIND_KEY_CONTEXT)
-            // Keep the terminal underneath from taking clicks on the bar,
-            // which would move focus and start a selection there.
-            .occlude()
-            .absolute()
-            .top_2()
-            .right_4()
-            .w_80()
+        let controls = h_flex()
+            .w_full()
             .gap_1()
-            .p_1()
-            .bg(cx.theme().popover)
-            .border_1()
-            .border_color(cx.theme().border)
-            .rounded(cx.theme().radius)
-            .shadow_md()
             .child(
-                Input::new(&find.input)
-                    .id("terminal-find")
-                    .small()
-                    .appearance(false)
-                    .prefix(Icon::new(IconName::Search).small()),
+                div().flex_1().min_w_0().child(
+                    Input::new(&find.input)
+                        .id("terminal-find")
+                        .small()
+                        .appearance(false)
+                        .prefix(Icon::new(IconName::Search).small()),
+                ),
             )
             .when_some(position, |bar, position| {
                 let label = position.label();
@@ -1395,6 +1652,16 @@ impl TerminalView {
                         .text_xs()
                         .text_color(cx.theme().muted_foreground)
                         .child(label),
+                )
+            })
+            .when(loading, |bar| {
+                bar.child(
+                    div()
+                        .id("terminal-find-loading")
+                        .test_support()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(t!("terminal.find.loading")),
                 )
             })
             .child(
@@ -1428,6 +1695,204 @@ impl TerminalView {
                     .on_click(|_, window, cx| {
                         window.dispatch_action(Box::new(DismissTerminalFind), cx)
                     }),
+            );
+        v_flex()
+            .key_context(TERMINAL_FIND_KEY_CONTEXT)
+            // Keep the terminal underneath from taking clicks on the bar,
+            // which would move focus and start a selection there.
+            .occlude()
+            .w_full()
+            .flex_shrink_0()
+            .gap_1()
+            .p_1()
+            .bg(cx.theme().popover)
+            .border_1()
+            .border_color(cx.theme().border)
+            .rounded(cx.theme().radius)
+            .shadow_md()
+            .child(controls)
+            .child(
+                h_flex()
+                    .flex_wrap()
+                    .gap_1()
+                    .children(
+                        [
+                            (
+                                "terminal-find-regex",
+                                TerminalFindOption::Regex,
+                                t!("terminal.find.regex"),
+                                find.options.regex,
+                            ),
+                            (
+                                "terminal-find-case",
+                                TerminalFindOption::CaseSensitive,
+                                t!("terminal.find.case_sensitive"),
+                                find.options.case_sensitive,
+                            ),
+                            (
+                                "terminal-find-lines",
+                                TerminalFindOption::MatchingLines,
+                                t!("terminal.find.matching_lines"),
+                                find.matching_lines,
+                            ),
+                        ]
+                        .into_iter()
+                        .map(|(id, option, label, selected)| {
+                            Button::new(id)
+                                .ghost()
+                                .xsmall()
+                                .label(label)
+                                .selected(selected)
+                                .on_click(move |_, window, cx| {
+                                    window.dispatch_action(
+                                        Box::new(ToggleTerminalFindOption(option)),
+                                        cx,
+                                    )
+                                })
+                        }),
+                    )
+                    .when(find.matching_lines, |bar| {
+                        bar.child(
+                            Button::new("terminal-find-pause")
+                                .ghost()
+                                .xsmall()
+                                .selected(find.paused)
+                                .label(if find.paused {
+                                    t!("terminal.find.resume")
+                                } else {
+                                    t!("terminal.find.pause")
+                                })
+                                .on_click(|_, window, cx| {
+                                    window.dispatch_action(
+                                        Box::new(ToggleTerminalFindOption(
+                                            TerminalFindOption::Pause,
+                                        )),
+                                        cx,
+                                    )
+                                }),
+                        )
+                        .child(
+                            Button::new("terminal-find-copy-results")
+                                .ghost()
+                                .xsmall()
+                                .label(t!("terminal.find.copy_results"))
+                                .disabled(find.results.lines.is_empty())
+                                .on_click(|_, window, cx| {
+                                    window.dispatch_action(Box::new(CopyTerminalFindResults), cx)
+                                }),
+                        )
+                    }),
+            )
+            .when_some(error, |bar, error| {
+                let message = t!("terminal.find.invalid_regex");
+                bar.child(
+                    div()
+                        .id("terminal-find-error")
+                        .test_support()
+                        .aria_label(message.clone())
+                        .text_xs()
+                        .text_color(cx.theme().danger)
+                        .child(message)
+                        .tooltip(move |window, cx| Tooltip::new(error.clone()).build(window, cx)),
+                )
+            })
+    }
+
+    fn render_filtered_logs(&self, find: &FindBar, cx: &Context<Self>) -> impl IntoElement {
+        let results = find.results.clone();
+        let count = results.lines.len();
+        let selected = find.selected;
+        let measure = results
+            .lines
+            .iter()
+            .enumerate()
+            .max_by_key(|(_, line)| line.text.len())
+            .map(|(index, _)| index);
+        let focus = find.focus.clone();
+        let theme = cx.theme();
+        v_flex()
+            .id("terminal-filtered-logs")
+            .test_support()
+            .key_context(TERMINAL_FIND_KEY_CONTEXT)
+            .track_focus(&find.focus)
+            .occlude()
+            .absolute()
+            .inset_0()
+            .p_2()
+            .gap_2()
+            .bg(theme.background)
+            .text_color(theme.foreground)
+            .child(self.render_find_bar(find, cx))
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(theme.muted_foreground)
+                    .child(t!("terminal.find.read_only")),
+            )
+            .when(find.results.truncated, |panel| {
+                panel.child(
+                    div()
+                        .id("terminal-filter-limit")
+                        .test_support()
+                        .text_xs()
+                        .text_color(theme.warning)
+                        .child(t!("terminal.find.result_limit")),
+                )
+            })
+            .child(
+                div()
+                    .id("terminal-filter-results")
+                    .test_support()
+                    .flex_1()
+                    .min_h_0()
+                    .min_w_0()
+                    .on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, window, cx| {
+                        let line_height = TerminalFont::current(cx).row_height(window);
+                        if this.zoom_with_wheel(event, line_height, window, cx) {
+                            cx.stop_propagation();
+                        }
+                    }))
+                    .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                        window.focus(&focus, cx)
+                    })
+                    .child(
+                        uniform_list("terminal-filter-lines", count, move |range, _, cx| {
+                            range
+                                .map(|index| {
+                                    let line = &results.lines[index];
+                                    let focused = selected == Some(index);
+                                    let style = HighlightStyle {
+                                        background_color: Some(cx.theme().warning.opacity(0.35)),
+                                        font_weight: Some(FontWeight::BOLD),
+                                        ..HighlightStyle::default()
+                                    };
+                                    div()
+                                        .id(SharedString::from(format!(
+                                            "terminal-filter-row:{}",
+                                            line.line
+                                        )))
+                                        .test_support()
+                                        .aria_label(line.text.clone())
+                                        .px_2()
+                                        .py_1()
+                                        .text_size(TerminalFont::current(cx).size)
+                                        .whitespace_nowrap()
+                                        .font_family(TerminalFont::current(cx).family(cx))
+                                        .when(focused, |row| row.bg(cx.theme().list_active))
+                                        .child(StyledText::new(line.text.clone()).with_highlights(
+                                            line.spans.iter().map(|span| (span.clone(), style)),
+                                        ))
+                                })
+                                .collect::<Vec<_>>()
+                        })
+                        .size_full()
+                        .track_scroll(&find.scroll)
+                        .with_horizontal_sizing_behavior(
+                            ListHorizontalSizingBehavior::Unconstrained,
+                        )
+                        .with_width_from_item(measure),
+                    )
+                    .vertical_scrollbar(&find.scroll),
             )
     }
 }
@@ -1826,6 +2291,12 @@ impl Element for TerminalElement {
                     MouseButton::Middle => ReportButton::Middle,
                     _ => return,
                 };
+                if button == ReportButton::Middle
+                    && view.update(cx, |view, cx| view.middle_click(window, cx))
+                {
+                    cx.stop_propagation();
+                    return;
+                }
                 if button == ReportButton::Left
                     && opens_links(&event.modifiers)
                     && let Some((_, uri)) = links.at(cell)
@@ -1945,6 +2416,12 @@ impl Element for TerminalElement {
         let view = self.view.clone();
         window.on_mouse_event(move |event: &ScrollWheelEvent, phase, window, cx| {
             if !phase.bubble() || !hitbox.should_handle_scroll(window) {
+                return;
+            }
+            if view.update(cx, |view, cx| {
+                view.zoom_with_wheel(event, viewport.geometry.line_height, window, cx)
+            }) {
+                cx.stop_propagation();
                 return;
             }
             let cell = viewport.nearest_cell(event.position);

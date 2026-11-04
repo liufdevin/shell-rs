@@ -83,11 +83,11 @@ host.credential_draft.key_path:
   en: Choose a private key file for a key credential
 
 host.database.newer:
-  zh-CN: 数据库来自更新版本的 ShellRS（结构版本 %{version}，本版本支持到 %{supported}），请安装最新版本
-  en: The database is from a newer version of ShellRS (schema version %{version}; this version supports up to %{supported}). Install the latest version.
+  zh-CN: 数据库来自更新版本的 ShellLF（结构版本 %{version}，本版本支持到 %{supported}），请安装最新版本
+  en: The database is from a newer version of ShellLF (schema version %{version}; this version supports up to %{supported}). Install the latest version.
 host.database.too_old:
-  zh-CN: 数据库来自 ShellRS 的早期开发版本（结构版本 %{version}），无法升级
-  en: The database is from an early development version of ShellRS (schema version %{version}) and can’t be upgraded.
+  zh-CN: 数据库来自 ShellLF 的早期开发版本（结构版本 %{version}），无法升级
+  en: The database is from an early development version of ShellLF (schema version %{version}) and can’t be upgraded.
 
 host.forward_kind.local:
   zh-CN: 本地转发
@@ -263,8 +263,8 @@ host.dialog.logs_in_with.password:
   zh-CN: 以 %{user} 登录，使用凭据保存的密码
   en: Logs in as %{user} with the password saved in the credential
 host.dialog.logs_in_with.kept_key:
-  zh-CN: 以 %{user} 登录，使用 ShellRS 保存的私钥
-  en: Logs in as %{user} with the private key ShellRS keeps
+  zh-CN: 以 %{user} 登录，使用 ShellLF 保存的私钥
+  en: Logs in as %{user} with the private key ShellLF keeps
 host.dialog.logs_in_with.key:
   zh-CN: 以 %{user} 登录，使用私钥 %{path}
   en: Logs in as %{user} with the private key %{path}
@@ -287,8 +287,8 @@ host.dialog.optional:
   zh-CN: 可选
   en: Optional
 host.dialog.keychain_note:
-  zh-CN: 密码保存在系统钥匙串，不会写入 ShellRS 的数据库。
-  en: Passwords are kept in the system keychain, never in ShellRS’s database.
+  zh-CN: 密码保存在系统钥匙串，不会写入 ShellLF 的数据库。
+  en: Passwords are kept in the system keychain, never in ShellLF’s database.
 host.dialog.no_keychain_note:
   zh-CN: 系统钥匙串不可用，这台机器上无法保存密码，每次连接都会询问。
   en: The system keychain isn’t available, so passwords can’t be saved on this computer and are asked for at each connection.
@@ -726,8 +726,8 @@ host.store.key_unreadable:
   zh-CN: 读不出这个私钥文件，或它太大，不像私钥
   en: Couldn’t read the key file, or it’s too large to be a key
 host.store.key_not_deleted:
-  zh-CN: ShellRS 保存的私钥未能删除：%{error}
-  en: "Couldn’t delete a private key ShellRS keeps: %{error}"
+  zh-CN: ShellLF 保存的私钥未能删除：%{error}
+  en: "Couldn’t delete a private key ShellLF keeps: %{error}"
 
 host.store.sync.not_saved:
   zh-CN: 同步来的改动未能保存，这一轮没有应用：%{error}
@@ -773,8 +773,8 @@ host.store.secret.sync_keyring:
 
 # 导入主机: the dialog that adds the hosts ~/.ssh/config or known_hosts names.
 host.import.key_not_copied:
-  zh-CN: 私钥未能复制到 ShellRS 保存私钥的目录，凭据仍用原文件：%{error}
-  en: "Couldn’t copy a key to the folder ShellRS keeps keys in, so its credential uses the file where it is: %{error}"
+  zh-CN: 私钥未能复制到 ShellLF 保存私钥的目录，凭据仍用原文件：%{error}
+  en: "Couldn’t copy a key to the folder ShellLF keeps keys in, so its credential uses the file where it is: %{error}"
 host.import.title.ssh_config:
   zh-CN: 从 ~/.ssh/config 导入
   en: Import from ~/.ssh/config

@@ -225,7 +225,7 @@ fn shell_command(shell: &LocalShell) -> Result<CommandBuilder> {
     strip_launcher_vars(&mut command);
     command.env("TERM", "xterm-256color");
     command.env("COLORTERM", "truecolor");
-    command.env("TERM_PROGRAM", "ShellRS");
+    command.env("TERM_PROGRAM", crate::app::APP_NAME);
     Ok(command)
 }
 

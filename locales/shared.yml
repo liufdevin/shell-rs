@@ -1,4 +1,7 @@
 _version: 2
+shared.tab_menu.detach:
+  zh-CN: 移至独立窗口
+  en: Move to separate window
 
 shared.tab.unsaved:
   zh-CN: 未保存

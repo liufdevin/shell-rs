@@ -16,6 +16,9 @@ pub const PORTABLE_BIN: &str = "bin";
 
 /// The program a portable copy is started as.
 const PROGRAM: &str = "shellrs.exe";
+/// The branded name this build is distributed under. Both names open the
+/// portable folder, so a copy renamed for display keeps its data beside it.
+const BRANDED_PROGRAM: &str = "ShellLF.exe";
 
 /// What the Windows setup program leaves beside the copy it installed. Its
 /// uninstaller deletes the whole folder, so a `data` folder there must not
@@ -144,7 +147,11 @@ pub(crate) fn portable_root_of(exe: &Path) -> Option<PathBuf> {
         .is_some_and(|name| name.eq_ignore_ascii_case(PORTABLE_BIN))
         .then(|| folder.parent())
         .flatten()
-        .filter(|above| above.join(PROGRAM).is_file());
+        .filter(|above| {
+            [PROGRAM, BRANDED_PROGRAM]
+                .iter()
+                .any(|program| above.join(program).is_file())
+        });
     [Some(folder), above]
         .into_iter()
         .flatten()
@@ -181,6 +188,10 @@ mod tests {
         assert_eq!(portable_root_of(&exe), None);
         fs::create_dir(root.path().join(PORTABLE_DATA)).unwrap();
         assert_eq!(portable_root_of(&exe).as_deref(), Some(root.path()));
+        let branded = root.path().join("ShellLF.exe");
+        fs::write(&branded, "").unwrap();
+        fs::remove_file(&exe).unwrap();
+        assert_eq!(portable_root_of(&branded).as_deref(), Some(root.path()));
         // Its console program finds the same folder.
         let cli = root.path().join("shellrs-cli.exe");
         assert_eq!(portable_root_of(&cli).as_deref(), Some(root.path()));

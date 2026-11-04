@@ -27,17 +27,17 @@ use crate::app::ExplorerDispatch as _;
 use crate::app::{
     CenterTab, ClearTerminal, CloseActiveTab, CloseEditor, CloseExplorer, CloseLocalTerminal,
     CloseSettings, CloseTabs, CloseTerminal, CollapseAllGroups, ConnectGroup, ConnectHost,
-    CopyAgentSkill, CopyHostAddress, CopyHostId, CopyTerminal, DeleteGroup, DeleteHost,
-    DisconnectTerminal, DismissTerminalFind, DuplicateHost, DuplicateTerminal, EditHost,
-    ExpandAllGroups, ExplorerAction, ExplorerCommand, ExplorerShortcut, FindInTerminal,
-    FindNextInTerminal, FindPreviousInTerminal, FocusSearch, InstallAgentSkill, InstallCliCommand,
-    MaximizeWindow, MoveHostNode, NewChildGroup, NewGroup, NewHost, NewHostInGroup,
-    NewLocalTerminal, NewTemporaryConnection, OpenExplorer, OpenSettings, PasteTerminal,
-    QuickConnect, ReconnectTerminal, RefreshCliIntegration, RemoveAgentSkill, RemoveCliCommand,
-    RenameExplorer, RenameGroup, RenameTerminal, RestartLocalTerminal, RestoreWindow,
-    SelectAllTerminal, SendBreak, SetFileSizeFormat, ShowOrHideApp, ToggleHiddenFiles,
-    ToggleHostPanel, ToggleTheme, ToolKind, ZoomIn, ZoomOut, ZoomReset, ZoomTerminalIn,
-    ZoomTerminalOut, ZoomTerminalReset,
+    CopyAgentSkill, CopyHostAddress, CopyHostId, CopyTerminal, CopyTerminalFindResults,
+    DeleteGroup, DeleteHost, DisconnectTerminal, DismissTerminalFind, DuplicateHost,
+    DuplicateTerminal, EditHost, ExpandAllGroups, ExplorerAction, ExplorerCommand,
+    ExplorerShortcut, FindInTerminal, FindNextInTerminal, FindPreviousInTerminal, FocusSearch,
+    InstallAgentSkill, InstallCliCommand, MaximizeWindow, MoveHostNode, NewChildGroup, NewGroup,
+    NewHost, NewHostInGroup, NewLocalTerminal, NewTemporaryConnection, OpenExplorer, OpenSettings,
+    PasteTerminal, QuickConnect, ReconnectTerminal, RefreshCliIntegration, RemoveAgentSkill,
+    RemoveCliCommand, RenameExplorer, RenameGroup, RenameTerminal, RestartLocalTerminal,
+    RestoreWindow, ReturnDetachedTab, SelectAllTerminal, SendBreak, SetFileSizeFormat,
+    ShowOrHideApp, ToggleHiddenFiles, ToggleHostPanel, ToggleTerminalFindOption, ToggleTheme,
+    ToolKind, ZoomIn, ZoomOut, ZoomReset, ZoomTerminalIn, ZoomTerminalOut, ZoomTerminalReset,
 };
 use crate::cli::{CliIntegration, CliServer, IntegrationPaths, SshCliBackend};
 use crate::connection::{
@@ -154,6 +154,10 @@ pub(super) enum PromptOwner {
 /// Owns the host store, the dock and the registry of open per-host
 /// panels, and handles every application action.
 pub struct Workspace {
+    pub(super) primary_window: AnyWindowHandle,
+    pub(super) detached_windows: Vec<super::detached::DetachedWindow>,
+    pub(super) dragged_tab: Option<(WindowId, CenterTab)>,
+    pub(super) detaching_tabs: Vec<CenterTab>,
     pub(super) broadcast: super::terminal_groups::TerminalBroadcast,
     /// 撰写窗格, in the bottom dock while it shows.
     pub(super) compose: Entity<ComposePane>,
@@ -443,8 +447,7 @@ impl Workspace {
             // workspace goes with its window, as ShellRS quits (and on
             // Windows and Linux as the window closes, before it quits).
             cx.on_release(|this, cx| this.keep_on_close(cx)),
-            // Neither sidebar is dragged narrower than it opens, nor
-            // 撰写窗格 lower than a line or two.
+            // Keep the sidebars and compose pane usable while resizing.
             cx.observe_in(&dock_area, window, move |this, area, window, cx| {
                 this.hold_sidebar_width(window, cx);
                 this.hold_tool_sidebar_width(window, cx);
@@ -543,6 +546,7 @@ impl Workspace {
                 window,
                 |this, _, event: &DockEvent, window, cx| {
                     if matches!(event, DockEvent::LayoutChanged) {
+                        this.save_sidebar_width(cx);
                         this.on_layout_changed(window, cx);
                     }
                 },
@@ -641,6 +645,15 @@ impl Workspace {
             center = center.active_index(terminals.len() + index);
         }
         let center_empty = terminals.is_empty() && local_terminals.is_empty();
+        let minimum_sidebar_width = rems(10.).to_pixels(window.rem_size());
+        let maximum_sidebar_width = (window.viewport_size().width
+            - rems(12.).to_pixels(window.rem_size()))
+        .max(minimum_sidebar_width);
+        let restored_sidebar_width = launch_settings
+            .sidebar_width
+            .map(px)
+            .unwrap_or(SIDEBAR_WIDTH)
+            .clamp(minimum_sidebar_width, maximum_sidebar_width);
 
         dock_area.update(cx, |area, cx| {
             // With nothing to show, the center keeps the empty layout the
@@ -655,7 +668,7 @@ impl Workspace {
                 cx,
             );
             // Dock geometry is an API boundary that takes `Pixels`.
-            area.set_dock_size(DockPlacement::Left, SIDEBAR_WIDTH, window, cx);
+            area.set_dock_size(DockPlacement::Left, restored_sidebar_width, window, cx);
             area.set_dock_collapsible(DockPlacement::Left, true, window, cx);
             if launch_settings.sidebar_collapsed {
                 area.toggle_dock(DockPlacement::Left, window, cx);
@@ -691,6 +704,10 @@ impl Workspace {
         forwards.update(cx, |forwards, cx| forwards.start_automatic(cx));
 
         let this = Self {
+            primary_window: window.window_handle(),
+            detached_windows: Vec::new(),
+            dragged_tab: None,
+            detaching_tabs: Vec::new(),
             store,
             dock_area,
             skin,
@@ -1476,6 +1493,9 @@ impl Workspace {
     /// Open the settings tab, or bring the open one forward: settings are
     /// one place, not one tab per visit.
     fn on_open_settings(&mut self, _: &OpenSettings, window: &mut Window, cx: &mut Context<Self>) {
+        if self.show_detached_tab(CenterTab::Settings, window, cx) {
+            return;
+        }
         if let Some(panel) = self.settings_tab.clone() {
             let group = panel.read(cx).tab_group();
             self.activate_tab(group, panel.entity_id(), window, cx);
@@ -1500,6 +1520,7 @@ impl Workspace {
                         this.set_active_tab(Some(CenterTab::Settings), window, cx);
                     }
                     SettingsPanelEvent::Closed => {
+                        this.finish_detached_tab(CenterTab::Settings, cx);
                         this.settings_tab = None;
                         if this.active_tab == Some(CenterTab::Settings) {
                             this.set_active_tab(None, window, cx);
@@ -1636,8 +1657,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         if let Some(panel) = self.settings_tab.clone() {
-            self.dock_area
-                .update(cx, |area, cx| area.remove_panel(panel, window, cx));
+            self.remove_tab_panel(panel, window, cx);
         }
     }
 
@@ -1649,6 +1669,11 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if let Some(tab) = self.center_tab_for_panel(PanelId::from(panel))
+            && self.show_detached_tab(tab, window, cx)
+        {
+            return;
+        }
         let Some(group) = group.and_then(|group| group.upgrade()) else {
             return;
         };
@@ -1700,8 +1725,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         if let Some(panel) = self.terminals.get(&id).cloned() {
-            self.dock_area
-                .update(cx, |area, cx| area.remove_panel(panel, window, cx));
+            self.remove_tab_panel(panel, window, cx);
         }
     }
 
@@ -1813,8 +1837,7 @@ impl Workspace {
                 window,
                 cx,
             );
-            self.dock_area
-                .update(cx, |area, cx| area.remove_panel(panel, window, cx));
+            self.remove_tab_panel(panel, window, cx);
         }
     }
     fn on_explorer_action(
@@ -1902,8 +1925,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         if let Some(panel) = self.local_terminals.get(&action.0).cloned() {
-            self.dock_area
-                .update(cx, |area, cx| area.remove_panel(panel, window, cx));
+            self.remove_tab_panel(panel, window, cx);
         }
     }
 
@@ -1913,7 +1935,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Some(tab) = self.active_tab {
+        if let Some(tab) = self.tab_in_window(window) {
             self.close_center_tab(tab, window, cx);
         }
     }
@@ -2124,8 +2146,16 @@ impl Workspace {
     }
 
     /// The terminal of the center tab shown most recently, remote or local.
-    fn active_terminal(&self, cx: &App) -> Option<Entity<TerminalView>> {
-        match self.active_tab? {
+    fn tab_in_window(&self, window: &Window) -> Option<CenterTab> {
+        self.detached_windows
+            .iter()
+            .find(|detached| detached.handle.window_id() == window.window_handle().window_id())
+            .map(|detached| detached.tab)
+            .or(self.active_tab)
+    }
+
+    fn active_terminal(&self, window: &Window, cx: &App) -> Option<Entity<TerminalView>> {
+        match self.tab_in_window(window)? {
             CenterTab::Terminal(id) => Some(self.terminals.get(&id)?.read(cx).terminal().clone()),
             CenterTab::LocalTerminal(id) => {
                 Some(self.local_terminals.get(&id)?.read(cx).terminal().clone())
@@ -2134,14 +2164,19 @@ impl Workspace {
         }
     }
 
-    fn on_copy_terminal(&mut self, _: &CopyTerminal, _: &mut Window, cx: &mut Context<Self>) {
-        if let Some(terminal) = self.active_terminal(cx) {
+    fn on_copy_terminal(&mut self, _: &CopyTerminal, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(terminal) = self.active_terminal(window, cx) {
             terminal.update(cx, |terminal, cx| terminal.copy_selection(cx));
         }
     }
 
-    fn on_paste_terminal(&mut self, _: &PasteTerminal, _: &mut Window, cx: &mut Context<Self>) {
-        if let Some(terminal) = self.active_terminal(cx) {
+    fn on_paste_terminal(
+        &mut self,
+        _: &PasteTerminal,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(terminal) = self.active_terminal(window, cx) {
             terminal.update(cx, |terminal, cx| terminal.paste_clipboard(cx));
         }
     }
@@ -2149,10 +2184,10 @@ impl Workspace {
     fn on_select_all_terminal(
         &mut self,
         _: &SelectAllTerminal,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Some(terminal) = self.active_terminal(cx) {
+        if let Some(terminal) = self.active_terminal(window, cx) {
             terminal.update(cx, |terminal, cx| terminal.select_all(cx));
         }
     }
@@ -2163,7 +2198,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Some(terminal) = self.active_terminal(cx) {
+        if let Some(terminal) = self.active_terminal(window, cx) {
             terminal.update(cx, |terminal, cx| terminal.open_find(window, cx));
             self.count(Counter::Find);
         }
@@ -2172,10 +2207,10 @@ impl Workspace {
     fn on_find_next_in_terminal(
         &mut self,
         _: &FindNextInTerminal,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Some(terminal) = self.active_terminal(cx) {
+        if let Some(terminal) = self.active_terminal(window, cx) {
             terminal.update(cx, |terminal, cx| {
                 terminal.step_find(SearchDirection::Down, cx)
             });
@@ -2185,10 +2220,10 @@ impl Workspace {
     fn on_find_previous_in_terminal(
         &mut self,
         _: &FindPreviousInTerminal,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Some(terminal) = self.active_terminal(cx) {
+        if let Some(terminal) = self.active_terminal(window, cx) {
             terminal.update(cx, |terminal, cx| {
                 terminal.step_find(SearchDirection::Up, cx)
             });
@@ -2201,13 +2236,42 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Some(terminal) = self.active_terminal(cx) {
+        if let Some(terminal) = self.active_terminal(window, cx) {
             terminal.update(cx, |terminal, cx| terminal.dismiss_find(window, cx));
         }
     }
 
-    fn on_clear_terminal(&mut self, _: &ClearTerminal, _: &mut Window, cx: &mut Context<Self>) {
-        if let Some(terminal) = self.active_terminal(cx) {
+    fn on_toggle_terminal_find_option(
+        &mut self,
+        action: &ToggleTerminalFindOption,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(terminal) = self.active_terminal(window, cx) {
+            terminal.update(cx, |terminal, cx| {
+                terminal.toggle_find_option(action.0, window, cx)
+            });
+        }
+    }
+
+    fn on_copy_terminal_find_results(
+        &mut self,
+        _: &CopyTerminalFindResults,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(terminal) = self.active_terminal(window, cx) {
+            terminal.update(cx, |terminal, cx| terminal.copy_find_results(cx));
+        }
+    }
+
+    fn on_clear_terminal(
+        &mut self,
+        _: &ClearTerminal,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(terminal) = self.active_terminal(window, cx) {
             terminal.update(cx, |terminal, cx| terminal.clear(cx));
         }
     }
@@ -2661,6 +2725,7 @@ fn new_terminal_panel(
                 this.set_active_tab(Some(CenterTab::Terminal(*terminal_id)), window, cx)
             }
             TerminalPanelEvent::Closed(terminal_id, host_id) => {
+                this.finish_detached_tab(CenterTab::Terminal(*terminal_id), cx);
                 this.cancel_prompts_for_terminal(*terminal_id, window, cx);
                 this.terminals.remove(terminal_id);
                 this.close_file_sidebar(*terminal_id, window, cx);
@@ -2830,6 +2895,7 @@ fn new_explorer_panel(
                 this.set_active_tab(Some(CenterTab::Explorer(*id)), window, cx)
             }
             ExplorerPanelEvent::Closed(id, host_id) => {
+                this.finish_detached_tab(CenterTab::Explorer(*id), cx);
                 // Its remote files can no longer be written: their editors
                 // go with it (anything unsaved was asked about first).
                 for editor in this.editors_of(*id, cx) {
@@ -2906,6 +2972,7 @@ fn new_local_terminal_panel(
                 cx.notify();
             }
             LocalTerminalPanelEvent::Closed(id) => {
+                this.finish_detached_tab(CenterTab::LocalTerminal(*id), cx);
                 this.keep_what_it_shows(*id, panel, cx);
                 this.local_terminals.remove(id);
                 this.saved_terminals.remove(id);
@@ -2942,6 +3009,17 @@ fn new_local_terminal_panel(
 
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.render_window(None, window, cx)
+    }
+}
+
+impl Workspace {
+    pub(super) fn render_window(
+        &mut self,
+        detached: Option<(CenterTab, AnyView)>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let status = match self.active_tab {
             // A terminal tells its own connection, to the host as it took it.
             Some(CenterTab::Terminal(id)) => match self.terminals.get(&id) {
@@ -3000,6 +3078,11 @@ impl Render for Workspace {
             .id("workspace")
             .key_context("Workspace")
             .track_focus(&self.focus_handle)
+            .on_drag_move(cx.listener(Self::on_tab_drag))
+            .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_tab_drag_outside))
+            .on_action(cx.listener(Self::on_detach_tab))
+            .on_action(cx.listener(Self::on_return_detached_tab))
+            .on_action(cx.listener(Self::on_close_detached_tab))
             .on_action(cx.listener(Self::on_new_host))
             .on_action(cx.listener(Self::on_new_temporary_connection))
             .on_action(cx.listener(Self::on_quick_connect))
@@ -3009,6 +3092,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_toggle_compose_pane))
             .on_action(cx.listener(Self::on_send_compose))
             .on_action(cx.listener(Self::on_send_compose_snippet))
+            .on_action(cx.listener(Self::on_insert_snippet))
             .on_action(cx.listener(Self::on_send_compose_interrupt))
             .on_action(cx.listener(Self::on_toggle_broadcast_keys))
             .on_action(cx.listener(Self::on_edit_host))
@@ -3087,6 +3171,8 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_find_next_in_terminal))
             .on_action(cx.listener(Self::on_find_previous_in_terminal))
             .on_action(cx.listener(Self::on_dismiss_terminal_find))
+            .on_action(cx.listener(Self::on_toggle_terminal_find_option))
+            .on_action(cx.listener(Self::on_copy_terminal_find_results))
             .on_action(cx.listener(Self::on_clear_terminal))
             .on_action(cx.listener(Self::on_toggle_host_panel))
             .on_action(cx.listener(Self::on_maximize_window))
@@ -3168,48 +3254,80 @@ impl Render for Workspace {
             .flex_col()
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
-            .child(render_title_bar(
-                sidebar,
-                running_forwards,
-                self.updater.read(cx).snapshot().badge(),
-                &self.focus_handle,
-                cx,
-            ))
-            .child(render_sidebar_toggle(
-                sidebar.is_some(),
-                self.dock_area
-                    .read(cx)
-                    .dock_size(DockPlacement::Left)
-                    .unwrap_or_default(),
-                &self.focus_handle,
-            ))
-            .child(
-                h_flex()
-                    .flex_1()
-                    .min_h_0()
+            .map(|root| {
+                if let Some((tab, content)) = detached {
+                    root.child(
+                        TitleBar::new().child(crate::app::APP_NAME).child(
+                            div()
+                                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                                .child(
+                                    gpui_kit::component::button::Button::new("return-detached-tab")
+                                        .small()
+                                        .label(t!("workspace.detached.return"))
+                                        .on_click(move |_, window, cx| {
+                                            window.dispatch_action(
+                                                Box::new(ReturnDetachedTab(tab)),
+                                                cx,
+                                            )
+                                        }),
+                                ),
+                        ),
+                    )
                     .child(
                         div()
+                            .id("detached-tab-content")
+                            .test_support()
                             .flex_1()
+                            .min_h_0()
                             .min_w_0()
-                            .h_full()
-                            .child(self.dock_area.clone()),
+                            .child(content),
                     )
-                    // The switch comes and goes with the SSH terminals.
-                    .when(!offered_tools.is_empty(), |area| {
-                        area.child(render_tool_switch(
-                            tool,
-                            &offered_tools,
-                            &self.focus_handle,
-                            cx,
-                        ))
-                    }),
-            )
-            .child(status)
+                } else {
+                    root.child(render_title_bar(
+                        sidebar,
+                        running_forwards,
+                        self.updater.read(cx).snapshot().badge(),
+                        &self.focus_handle,
+                        cx,
+                    ))
+                    .child(render_sidebar_toggle(
+                        sidebar.is_some(),
+                        self.dock_area
+                            .read(cx)
+                            .dock_size(DockPlacement::Left)
+                            .unwrap_or_default(),
+                        &self.focus_handle,
+                    ))
+                    .child(
+                        h_flex()
+                            .flex_1()
+                            .min_h_0()
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .h_full()
+                                    .child(self.dock_area.clone()),
+                            )
+                            // The switch comes and goes with the SSH terminals.
+                            .when(!offered_tools.is_empty(), |area| {
+                                area.child(render_tool_switch(
+                                    tool,
+                                    &offered_tools,
+                                    &self.focus_handle,
+                                    cx,
+                                ))
+                            }),
+                    )
+                    .child(status)
+                }
+            })
             .children(Root::render_sheet_layer(window, cx))
             .children(Root::render_dialog_layer(window, cx))
             .children(
                 Root::render_notification_layer(window, cx)
                     .map(|layer| deferred(layer).with_priority(NOTIFICATION_PRIORITY)),
             )
+            .into_any_element()
     }
 }

@@ -217,6 +217,8 @@ impl BasePanel for LocalTerminalPanel {
 
     fn set_active(&mut self, active: bool, window: &mut Window, cx: &mut Context<Self>) {
         if active {
+            self.terminal
+                .update(cx, |terminal, cx| terminal.attach_window(window, cx));
             let focus = self.terminal.read(cx).focus_handle();
             window.focus(&focus, cx);
             cx.emit(LocalTerminalPanelEvent::Activated(self.id));
@@ -229,6 +231,9 @@ impl BasePanel for LocalTerminalPanel {
 
     fn on_removed(&mut self, _: &mut Window, cx: &mut Context<Self>) {
         self.tab_group = None;
+        if crate::shared::is_panel_transfer(cx.entity_id(), cx) {
+            return;
+        }
         self.terminal
             .update(cx, |terminal, cx| terminal.shutdown(cx));
         cx.emit(LocalTerminalPanelEvent::Closed(self.id));

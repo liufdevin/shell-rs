@@ -6,7 +6,7 @@
 # Needs appimagetool on the PATH (or APPIMAGETOOL), which uses the static
 # type2 runtime: the AppImage runs without libfuse2, which Ubuntu 22.04 and
 # later no longer install. The graphics stack (Vulkan, Mesa, Wayland, X) is
-# the host's and is not bundled. The icon is assets/logo/shellrs.png.
+# the host's and is not bundled. The icon is assets/logo/shelllf.png.
 set -euo pipefail
 
 binary=$1
@@ -23,7 +23,7 @@ mkdir -p "$appdir/usr/bin"
 cp "$binary" "$appdir/usr/bin/shellrs"
 chmod 755 "$appdir/usr/bin/shellrs"
 cp "$here/shellrs.desktop" "$appdir/shellrs.desktop"
-icon="$root/assets/logo/shellrs.png"
+icon="$root/assets/logo/shelllf.png"
 if [ ! -f "$icon" ]; then
     echo "error: $icon is missing; an AppImage needs an icon" >&2
     exit 1

@@ -1,4 +1,4 @@
-//! Find in a terminal: a literal, smart-case search over the scrollback and
+//! Find in a terminal: literal or regular-expression search over the scrollback and
 //! the screen.
 //!
 //! Only the visible rows are searched while rendering, so highlighting costs
@@ -9,8 +9,11 @@
 use alacritty_terminal::grid::Dimensions as _;
 use alacritty_terminal::index::{Column, Direction, Line, Point};
 use alacritty_terminal::term::Term;
+use alacritty_terminal::term::cell::{Flags, LineLength as _};
 use alacritty_terminal::term::search::{Match, RegexIter, RegexSearch};
 use gpui_kit::SharedString;
+use regex::Regex;
+use std::ops::Range;
 
 use crate::i18n::{t, tn};
 
@@ -18,12 +21,132 @@ use crate::i18n::{t, tn};
 /// wrapped line. Longer wrapped lines are cut there, as in Alacritty.
 pub(super) const MAX_WRAPPED_LINES: i32 = 100;
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub(super) struct SearchOptions {
+    pub regex: bool,
+    pub case_sensitive: bool,
+}
+
+impl SearchOptions {
+    pub fn compile(self, query: &str) -> Result<Regex, String> {
+        let pattern = if self.regex {
+            query.to_string()
+        } else {
+            regex::escape(query)
+        };
+        regex::RegexBuilder::new(&pattern)
+            .case_insensitive(!self.case_sensitive)
+            .size_limit(2 * 1024 * 1024)
+            .build()
+            .map_err(|error| error.to_string())
+    }
+}
+
+pub(super) struct SearchLine {
+    pub text: String,
+    pub line: i32,
+    cells: Vec<(Range<usize>, Point)>,
+}
+
+impl SearchLine {
+    fn matches(&self, regex: &Regex) -> Vec<Match> {
+        regex
+            .find_iter(&self.text)
+            .filter(|found| !found.is_empty())
+            .filter_map(|found| {
+                let start = self
+                    .cells
+                    .get(
+                        self.cells
+                            .partition_point(|(bytes, _)| bytes.end <= found.start()),
+                    )?
+                    .1;
+                let end = self
+                    .cells
+                    .get(
+                        self.cells
+                            .partition_point(|(bytes, _)| bytes.end < found.end()),
+                    )?
+                    .1;
+                Some(start..=end)
+            })
+            .collect()
+    }
+}
+
+pub(super) fn text_lines<T>(term: &Term<T>) -> impl Iterator<Item = SearchLine> + '_ {
+    lines_between(term, term.topmost_line().0, term.bottommost_line().0)
+}
+
+fn lines_between<T>(
+    term: &Term<T>,
+    first: i32,
+    last: i32,
+) -> impl Iterator<Item = SearchLine> + '_ {
+    let mut next = first;
+    std::iter::from_fn(move || {
+        if next > last {
+            return None;
+        }
+        let mut line = SearchLine {
+            text: String::new(),
+            line: next,
+            cells: Vec::new(),
+        };
+        loop {
+            let row = &term.grid()[Line(next)];
+            let wraps = row[term.last_column()].flags.contains(Flags::WRAPLINE);
+            let end = if wraps {
+                term.columns()
+            } else {
+                row.line_length().0
+            };
+            for column in 0..end {
+                let cell = &row[Column(column)];
+                if cell
+                    .flags
+                    .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER)
+                {
+                    continue;
+                }
+                let start = line.text.len();
+                line.text.push(if cell.flags.contains(Flags::HIDDEN) {
+                    ' '
+                } else {
+                    cell.c
+                });
+                if !cell.flags.contains(Flags::HIDDEN) {
+                    line.text.extend(cell.zerowidth().unwrap_or_default());
+                }
+                line.cells.push((
+                    start..line.text.len(),
+                    Point::new(Line(next), Column(column)),
+                ));
+            }
+            next += 1;
+            if !wraps || next > last {
+                break;
+            }
+        }
+        Some(line)
+    })
+}
+
 /// Which way to step from the focused match: `Up` towards older output,
 /// `Down` towards newer output.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SearchDirection {
     Up,
     Down,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TerminalFindOption {
+    Regex,
+    CaseSensitive,
+    MatchingLines,
+    Pause,
 }
 
 /// How a cell takes part in the open search, weakest first.
@@ -71,7 +194,9 @@ impl SearchPosition {
 pub struct TerminalSearch {
     query: String,
     /// `None` for an empty query, which matches nothing.
-    regex: Option<RegexSearch>,
+    regex: Option<Regex>,
+    options: SearchOptions,
+    error: Option<String>,
     focused: Option<Match>,
     /// The scrollback length when `focused` was located. Every line pushed
     /// into the scrollback since then moves the match up one line.
@@ -84,6 +209,8 @@ impl TerminalSearch {
         Self {
             query: String::new(),
             regex: None,
+            options: SearchOptions::default(),
+            error: None,
             focused: None,
             history_size: 0,
             position: SearchPosition::new(None, 0),
@@ -104,9 +231,18 @@ impl TerminalSearch {
         term: &mut Term<T>,
     ) {
         self.query = query.to_string();
-        self.regex = (!query.is_empty())
-            .then(|| RegexSearch::new(&escape_literal(query)).ok())
-            .flatten();
+        self.error = None;
+        self.regex = if query.is_empty() {
+            None
+        } else {
+            match self.options.compile(query) {
+                Ok(regex) => Some(regex),
+                Err(error) => {
+                    self.error = Some(error);
+                    None
+                }
+            }
+        };
         self.focused = None;
         let Some(regex) = self.regex.as_mut() else {
             self.position = SearchPosition::new(None, 0);
@@ -120,6 +256,14 @@ impl TerminalSearch {
             .filter(|(_, found)| *found.start() <= bottom);
         let current = on_screen.or(survey.last_to_bottom).or(survey.first);
         self.focus(term, current, total);
+    }
+
+    pub(super) fn set_options(&mut self, options: SearchOptions) {
+        self.options = options;
+    }
+
+    pub fn error(&self) -> Option<&str> {
+        self.error.as_deref()
     }
 
     /// Move the focus one match up or down, wrapping at either end. Without a
@@ -162,7 +306,12 @@ impl TerminalSearch {
         self.history_size = history_size;
         let moved = shifted(&focused, shift);
         let still_there = moved.start().line >= term.topmost_line()
-            && term.regex_search_right(regex, *moved.start(), *moved.end()) == Some(moved.clone());
+            && lines_between(
+                term,
+                term.line_search_left(*moved.start()).line.0,
+                term.line_search_right(*moved.end()).line.0,
+            )
+            .any(|line| line.matches(regex).contains(&moved));
         if still_there {
             self.focused = Some(moved);
         } else {
@@ -191,7 +340,7 @@ impl TerminalSearch {
         let Some(regex) = self.regex.as_mut() else {
             return (Vec::new(), None);
         };
-        (visible_matches(term, regex), self.focused.clone())
+        (visible_text_matches(term, regex), self.focused.clone())
     }
 }
 
@@ -232,32 +381,25 @@ impl<'a> MatchMarker<'a> {
     }
 }
 
-/// Escape `query` so the search engine matches it literally.
-pub fn escape_literal(query: &str) -> String {
-    let mut escaped = String::with_capacity(query.len());
-    for character in query.chars() {
-        if r"\.+*?()|[]{}^$#&-~".contains(character) {
-            escaped.push('\\');
-        }
-        escaped.push(character);
-    }
-    escaped
-}
-
 /// Every match in the scrollback and on the screen, oldest first. A lazy
 /// iterator: a one-letter query can match millions of times, far too many to
 /// collect.
-fn all_matches<'a, T>(
-    term: &'a Term<T>,
-    regex: &'a mut RegexSearch,
-) -> impl Iterator<Item = Match> + 'a {
-    let start = Point::new(term.topmost_line(), Column(0));
-    let end = Point::new(term.bottommost_line(), term.last_column());
-    RegexIter::new(start, end, Direction::Right, term, regex)
+fn all_matches<'a, T>(term: &'a Term<T>, regex: &'a Regex) -> impl Iterator<Item = Match> + 'a {
+    text_lines(term).flat_map(move |line| line.matches(regex))
 }
 
 /// The matches that touch the viewport. The search reaches back along a line
 /// wrapped across the top edge, so a match that starts above it still shows.
+fn visible_text_matches<T>(term: &Term<T>, regex: &Regex) -> Vec<Match> {
+    let top = viewport_top(term);
+    let start = term.line_search_left(top);
+    let start = start.line.max(top.line - MAX_WRAPPED_LINES);
+    let end = term.line_search_right(viewport_bottom(term));
+    lines_between(term, start.0, end.line.0)
+        .flat_map(|line| line.matches(regex))
+        .collect()
+}
+
 pub fn visible_matches<T>(term: &Term<T>, regex: &mut RegexSearch) -> Vec<Match> {
     let top = viewport_top(term);
     let start = term.line_search_left(top);
@@ -367,9 +509,11 @@ mod tests {
 
     #[test]
     fn literal_queries_escape_regex_syntax() {
-        assert_eq!(escape_literal("a.b"), r"a\.b");
-        assert_eq!(escape_literal("[x]*"), r"\[x\]\*");
-        assert_eq!(escape_literal("日志"), "日志");
+        let options = SearchOptions::default();
+        assert!(options.compile("a.b").unwrap().is_match("a.b"));
+        assert!(!options.compile("a.b").unwrap().is_match("axb"));
+        assert!(options.compile("[x]*").unwrap().is_match("[x]*"));
+        assert!(options.compile("日志").unwrap().is_match("日志"));
     }
 
     #[test]

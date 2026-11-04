@@ -31,9 +31,12 @@ use super::highlight::{
     advance_watching, current,
 };
 use super::links::{LinkMarker, url_search, visible_links};
+use super::log_filter::LogSource;
 use super::notices::{NoticeScanner, ProgramNotice, TerminalNotice};
 use super::run::{BusyReason, RunFailure, RunHandle};
-use super::search::{MatchMarker, SearchDirection, SearchMark, SearchPosition, TerminalSearch};
+use super::search::{
+    MatchMarker, SearchDirection, SearchMark, SearchOptions, SearchPosition, TerminalSearch,
+};
 use super::zmodem::{Fed, Shown, Zmodem, ZmodemControl, ZmodemDirection, ZmodemReply};
 use super::{
     ExecRequest, ExecResult, SharedTerminalTransportFactory, TerminalChannels, TerminalColors,
@@ -119,6 +122,7 @@ pub struct TerminalEngine {
     directory: Option<ReportedDirectory>,
     reconnect_on_enter: bool,
     generation: u64,
+    output_revision: u64,
     size: TerminalSize,
     event_sender: mpsc::Sender<TerminalUiEvent>,
     event_task: Option<gpui_kit::Task<()>>,
@@ -180,6 +184,7 @@ impl TerminalEngine {
             directory: None,
             reconnect_on_enter: false,
             generation,
+            output_revision: 0,
             size,
             event_sender,
             event_task: None,
@@ -248,6 +253,7 @@ impl TerminalEngine {
                 return Some(TerminalEvent::Started);
             }
             TerminalUiEventKind::Wakeup => {
+                self.output_revision = self.output_revision.wrapping_add(1);
                 self.runtime.wakeup_pending.store(false, Ordering::Release);
             }
             TerminalUiEventKind::Title(title) => self.title = sanitize_title(&title),
@@ -317,6 +323,7 @@ impl TerminalEngine {
     }
 
     pub fn restart(&mut self, cx: &mut gpui_kit::Context<Self>) {
+        self.output_revision = self.output_revision.wrapping_add(1);
         self.generation = self.generation.saturating_add(1);
         self.runtime.shutdown();
         self.lifecycle = TerminalLifecycle::Starting;
@@ -436,6 +443,7 @@ impl TerminalEngine {
         if size == self.size {
             return;
         }
+        self.output_revision = self.output_revision.wrapping_add(1);
         self.size = size;
         *self
             .runtime
@@ -516,13 +524,37 @@ impl TerminalEngine {
     /// Open the find, or search the open one for `query`, focusing the newest
     /// match at or above the bottom of the viewport.
     pub fn set_search_query(&mut self, query: &str, cx: &mut gpui_kit::Context<Self>) {
+        self.search_with_options(query, SearchOptions::default(), cx);
+    }
+
+    pub(super) fn search_with_options(
+        &mut self,
+        query: &str,
+        options: SearchOptions,
+        cx: &mut gpui_kit::Context<Self>,
+    ) {
         let mut term = self.runtime.term.lock();
-        self.search
-            .borrow_mut()
-            .get_or_insert_with(TerminalSearch::new)
-            .set_query(query, &mut term);
+        let mut search = self.search.borrow_mut();
+        let search = search.get_or_insert_with(TerminalSearch::new);
+        search.set_options(options);
+        search.set_query(query, &mut term);
         drop(term);
         cx.notify();
+    }
+
+    pub(super) fn search_error(&self) -> Option<String> {
+        self.search
+            .borrow()
+            .as_ref()
+            .and_then(|search| search.error().map(str::to_owned))
+    }
+
+    pub(super) fn log_source(&self) -> LogSource {
+        LogSource::new(self.runtime.term.clone())
+    }
+
+    pub(super) fn output_revision(&self) -> u64 {
+        self.output_revision
     }
 
     /// Focus the next match up (older output) or down (newer output).
@@ -564,6 +596,7 @@ impl TerminalEngine {
         if !clear_keeping_cursor_line(&mut term) {
             return;
         }
+        self.output_revision = self.output_revision.wrapping_add(1);
         if let Some(search) = self.search.borrow_mut().as_mut() {
             search.refresh(&mut term);
         }
@@ -1870,19 +1903,88 @@ mod tests {
     }
 
     #[test]
-    fn find_is_literal_and_smart_case() {
+    fn find_is_literal_and_case_insensitive_by_default() {
         let mut term = test_term(20, 2);
         feed(&mut term, b"Error: err");
         let mut search = TerminalSearch::new();
         search.set_query("err", &mut term);
         assert_eq!(position(&search).1, 2);
         search.set_query("Err", &mut term);
-        assert_eq!(position(&search).1, 1);
+        assert_eq!(position(&search).1, 2);
         search.set_query("e.r", &mut term);
         assert_eq!(position(&search).1, 0);
         assert_eq!(search.position().unwrap().label(), "无结果");
         search.set_query("", &mut term);
         assert!(search.position().is_none());
+    }
+
+    #[test]
+    fn regex_search_respects_line_anchors_case_and_invalid_patterns() {
+        let mut term = test_term(30, 5);
+        feed(
+            &mut term,
+            "ERROR code=42\r\ninfo code=42\r\nerror code=7\r\n日志:失败".as_bytes(),
+        );
+        let mut search = TerminalSearch::new();
+        search.set_options(super::SearchOptions {
+            regex: true,
+            case_sensitive: false,
+        });
+        search.set_query(r"^error code=\d+$", &mut term);
+        assert_eq!(position(&search).1, 2);
+        search.set_options(super::SearchOptions {
+            regex: true,
+            case_sensitive: true,
+        });
+        search.set_query(r"^ERROR code=\d+$", &mut term);
+        assert_eq!(position(&search).1, 1);
+        search.set_query("[", &mut term);
+        assert!(search.error().is_some());
+        assert!(search.position().is_none());
+        assert!(search.visible(&term).0.is_empty());
+        search.set_query("日志:失败", &mut term);
+        assert!(search.error().is_none());
+        assert_eq!(position(&search).1, 1);
+        search.set_query(r"\bERROR\b|\b日志\b", &mut term);
+        assert_eq!(position(&search).1, 2);
+        search.set_query("^", &mut term);
+        assert_eq!(position(&search).1, 0);
+    }
+
+    #[test]
+    fn log_filter_keeps_whole_wrapped_lines_and_the_original_output() {
+        let mut term = test_term(12, 4);
+        let log = "INFO start\r\nERROR 日志 failed code=42\r\nINFO end";
+        feed(&mut term, log.as_bytes());
+        let term = Arc::new(FairMutex::new(term));
+        let before = crate::terminal::kept_output::kept_output(&term.lock(), 100);
+        let source = super::LogSource::new(term.clone());
+        let result = source.filter(
+            r"^ERROR.*code=\d+$",
+            super::SearchOptions {
+                regex: true,
+                case_sensitive: true,
+            },
+        );
+        assert_eq!(result.lines.len(), 1);
+        assert_eq!(result.text(), "ERROR 日志 failed code=42");
+        assert!(!result.lines[0].spans.is_empty());
+        assert_eq!(
+            crate::terminal::kept_output::kept_output(&term.lock(), 100),
+            before
+        );
+        assert!(
+            source
+                .filter(
+                    "[",
+                    super::SearchOptions {
+                        regex: true,
+                        case_sensitive: false
+                    }
+                )
+                .lines
+                .is_empty()
+        );
     }
 
     #[test]

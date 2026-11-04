@@ -184,23 +184,11 @@ fn turned_off_in_the_settings_nothing_is_reported(cx: &mut TestAppContext) {
     };
     assert!(enabled(cx));
 
-    // 设置 › 关于 › 隐私 › 发送匿名使用统计.
-    in_frame(cx, handle, |window, cx| window.click("open-settings", cx));
-    in_frame(cx, handle, |window, cx| {
-        window.within("settings").click("0-8", cx)
-    });
-    in_frame(cx, handle, |window, cx| {
-        let switch = window
-            .within("settings")
-            .within("group-1")
-            .within("item-0")
-            .find("check");
-        assert_eq!(switch.checked(), Some(true));
-        window
-            .within("settings")
-            .within("group-1")
-            .within("item-0")
-            .click("check", cx);
+    // 发送匿名使用统计, which the hidden 关于 page writes the same way.
+    workspace.update(cx, |workspace, cx| {
+        workspace.settings().update(cx, |settings, cx| {
+            settings.update(|settings| settings.analytics.enabled = false, cx)
+        });
     });
     assert!(!enabled(cx));
     let received: Vec<Signal> = signals.try_iter().collect();

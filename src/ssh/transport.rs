@@ -162,7 +162,7 @@ impl SshTerminalTransport {
                             let _ = channel.close().await;
                             let _ = handle.disconnect(
                                 russh::Disconnect::ByApplication,
-                                "ShellRS closed the terminal",
+                                "ShellLF closed the terminal",
                                 "zh-CN",
                             ).await;
                         }).await;
@@ -1125,7 +1125,7 @@ mod tests {
         let (result, stdout, _) = run_cli_command(&host, &known_hosts, keychain);
         let error = result.unwrap_err();
         assert_eq!(error.kind, crate::ssh::ExecErrorKind::HostKeyUnknown);
-        assert!(crate::ssh::describe_exec_error(&error).contains("请先在 ShellRS 中连接一次"));
+        assert!(crate::ssh::describe_exec_error(&error).contains("请先在 ShellLF 中连接一次"));
         assert!(stdout.is_empty());
         // Nothing was trusted on the user's behalf.
         assert!(!known_hosts.exists());

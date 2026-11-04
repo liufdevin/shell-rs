@@ -365,20 +365,20 @@ ssh.exec.host_key_changed:
   zh-CN: "%{endpoint} 的主机密钥与已保存的不一致，已拒绝连接。请先核实服务器身份"
   en: The host key of %{endpoint} doesn’t match the saved one, so the connection was refused. Verify the server’s identity first
 ssh.exec.host_key_unknown:
-  zh-CN: 尚未信任 %{endpoint} 的主机密钥：请先在 ShellRS 中连接一次这台主机
-  en: The host key of %{endpoint} isn’t trusted yet. Connect to this host in ShellRS once first
+  zh-CN: 尚未信任 %{endpoint} 的主机密钥：请先在 ShellLF 中连接一次这台主机
+  en: The host key of %{endpoint} isn’t trusted yet. Connect to this host in ShellLF once first
 ssh.exec.no_saved_password:
-  zh-CN: 这台主机没有保存密码：请先在 ShellRS 中连接一次这台主机并保存密码
-  en: This host has no saved password. Connect to it in ShellRS once and save the password
+  zh-CN: 这台主机没有保存密码：请先在 ShellLF 中连接一次这台主机并保存密码
+  en: This host has no saved password. Connect to it in ShellLF once and save the password
 ssh.exec.saved_password_rejected:
-  zh-CN: 保存的密码被服务器拒绝：请先在 ShellRS 中连接一次这台主机并保存密码
-  en: The server rejected the saved password. Connect to this host in ShellRS once and save the right one
+  zh-CN: 保存的密码被服务器拒绝：请先在 ShellLF 中连接一次这台主机并保存密码
+  en: The server rejected the saved password. Connect to this host in ShellLF once and save the right one
 ssh.exec.no_saved_passphrase:
-  zh-CN: 私钥已加密，但没有保存口令：请先在 ShellRS 中连接一次这台主机并保存密码
-  en: The private key is encrypted and has no saved passphrase. Connect to this host in ShellRS once and save it
+  zh-CN: 私钥已加密，但没有保存口令：请先在 ShellLF 中连接一次这台主机并保存密码
+  en: The private key is encrypted and has no saved passphrase. Connect to this host in ShellLF once and save it
 ssh.exec.saved_passphrase_rejected:
-  zh-CN: 保存的私钥口令不正确：请先在 ShellRS 中连接一次这台主机并保存密码
-  en: The saved private key passphrase is incorrect. Connect to this host in ShellRS once and save the right one
+  zh-CN: 保存的私钥口令不正确：请先在 ShellLF 中连接一次这台主机并保存密码
+  en: The saved private key passphrase is incorrect. Connect to this host in ShellLF once and save the right one
 ssh.exec.keyboard_interactive:
   zh-CN: 服务器在键盘交互式认证中提出了密码以外的问题（如验证码），外部 CLI 无法回答
   en: The server asks keyboard-interactive questions besides the password (such as a verification code), which the external CLI can’t answer

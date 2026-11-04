@@ -2,11 +2,142 @@
 //! in categories, and puts them on the SSH terminal's line.
 
 use crate::support::*;
+use shellrs::app::SnippetShortcut;
 use shellrs::app::{
     DeleteSnippet, DeleteSnippetCategory, EditSnippet, NewSnippetCategory, NewSnippetIn,
     RenameSnippetCategory,
 };
 use shellrs::host::{SnippetCategoryId, SnippetDraft, SnippetId};
+
+#[gpui_kit::test]
+async fn snippet_shortcuts_record_run_and_rebind_without_running_in_fields(
+    cx: &mut TestAppContext,
+) {
+    let (handle, workspace, factory) = open_snippets(cx, store_with_snippets()).await;
+    let label = shellrs::app::key_text("ctrl-1", false);
+    dispatch_from_panel(cx, handle, EditSnippet(SnippetId(IMAGES)));
+    in_frame(cx, handle, |window, cx| {
+        window.click("snippet-shortcut", cx)
+    });
+    in_frame(cx, handle, |window, cx| window.press("ctrl-1", cx));
+    in_frame(cx, handle, |window, cx| {
+        assert_eq!(
+            window.find("snippet-shortcut").label(),
+            Some(label.as_str())
+        );
+        assert_eq!(
+            window.find("snippet-run-on-shortcut").checked(),
+            Some(false)
+        );
+        window.click("snippet-run-on-shortcut", cx);
+        window.click("commit", cx);
+    });
+    in_frame(cx, handle, |window, cx| {
+        assert_eq!(window.find(("snippet", IMAGES)).label(), Some("镜像"));
+        assert!(window.try_find(("snippet-shortcut", IMAGES)).is_none());
+        window.click(("terminal", INITIAL_WEB_TERMINAL), cx);
+    });
+    let before = factory.written_text().len();
+    in_frame(cx, handle, |window, cx| window.press("ctrl-1", cx));
+    cx.wait_for(handle.into(), Duration::from_secs(2), |_, _| {
+        &factory.written_text()[before..] == "docker images\r"
+    })
+    .await;
+
+    dispatch_from_panel(cx, handle, EditSnippet(SnippetId(IMAGES)));
+    in_frame(cx, handle, |window, cx| {
+        assert_eq!(
+            window.find("snippet-shortcut").label(),
+            Some(label.as_str())
+        );
+        assert!(window.find("snippet-command").visible());
+        assert_eq!(window.find("snippet-run-on-shortcut").checked(), Some(true));
+        window.click("snippet-run-on-shortcut", cx);
+        window.click("snippet-shortcut", cx);
+    });
+    in_frame(cx, handle, |window, cx| window.press("ctrl-2", cx));
+    in_frame(cx, handle, |window, cx| window.click("commit", cx));
+    in_frame(cx, handle, |window, cx| {
+        window.click("host-search", cx);
+        window.press("ctrl-2", cx);
+    });
+    let before = factory.written_text().len();
+    in_frame(cx, handle, |window, cx| {
+        window.click(("terminal", INITIAL_WEB_TERMINAL), cx);
+        window.press("ctrl-1", cx);
+        window.press("ctrl-2", cx);
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(2), |_, _| {
+        &factory.written_text()[before..] == "docker images"
+    })
+    .await;
+    cx.update(|cx| {
+        let store = workspace.read(cx).store().read(cx);
+        assert!(!store.snippet(SnippetId(IMAGES)).unwrap().run_on_click);
+    });
+}
+
+#[gpui_kit::test]
+async fn snippet_shortcut_conflicts_are_refused_and_cancel_keeps_settings(cx: &mut TestAppContext) {
+    let (handle, workspace, _) = open_snippets(cx, store_with_snippets()).await;
+    cx.update(|cx| {
+        let (id, settings) = {
+            let workspace = workspace.read(cx);
+            let id = workspace
+                .store()
+                .read(cx)
+                .snippet(SnippetId(IMAGES))
+                .unwrap()
+                .sync_id
+                .to_string();
+            (id, workspace.settings().clone())
+        };
+        settings.update(cx, |store, cx| {
+            store.update(
+                |settings| {
+                    settings
+                        .snippet_shortcuts
+                        .set(id, Some(SnippetShortcut::new("ctrl-1".into(), false)))
+                },
+                cx,
+            );
+        });
+    });
+    dispatch_from_panel(cx, handle, EditSnippet(SnippetId(DISK)));
+    in_frame(cx, handle, |window, cx| {
+        window.click("snippet-shortcut", cx)
+    });
+    in_frame(cx, handle, |window, cx| window.press("ctrl-1", cx));
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, _| {
+        window.try_find("form-error").is_some_and(|error| {
+            error
+                .label()
+                .is_some_and(|text| text.contains("已用于另一个命令片段"))
+        })
+    })
+    .await;
+    in_frame(cx, handle, |window, cx| window.press("ctrl-2", cx));
+    in_frame(cx, handle, |window, cx| window.press("escape", cx));
+    cx.update(|cx| {
+        let workspace = workspace.read(cx);
+        let id = workspace
+            .store()
+            .read(cx)
+            .snippet(SnippetId(DISK))
+            .unwrap()
+            .sync_id
+            .as_str();
+        assert!(
+            workspace
+                .settings()
+                .read(cx)
+                .settings()
+                .snippet_shortcuts
+                .get(id)
+                .is_none()
+        );
+    });
+}
 
 /// Two categories and a snippet of none, made in an order the list does
 /// not keep: Docker's 「容器」 and 「镜像」, 日志's 「系统日志」, and 「磁盘」.
@@ -121,10 +252,7 @@ async fn snippets_are_listed_by_category_and_a_click_puts_one_on_the_line(cx: &m
         ];
         assert!(order.windows(2).all(|pair| pair[0] < pair[1]), "{order:?}");
         assert_eq!(window.find("snippet-category:2").label(), Some("Docker 2"));
-        assert_eq!(
-            window.find(("snippet", CONTAINERS)).label(),
-            Some("容器 · docker ps -a")
-        );
+        assert_eq!(window.find(("snippet", CONTAINERS)).label(), Some("容器"));
     });
 
     // A click puts it on the line in place of what is typed there, and the
@@ -154,12 +282,8 @@ async fn snippets_are_listed_by_category_and_a_click_puts_one_on_the_line(cx: &m
     });
     assert_eq!(&factory.written_text()[before..], "\x05\x15df -h\r");
 
-    // One set to run on a click says so, and runs.
     in_frame(cx, handle, |window, _| {
-        assert_eq!(
-            window.find(("snippet", JOURNAL)).label(),
-            Some("系统日志 · journalctl -f · 点击时自动执行")
-        );
+        assert_eq!(window.find(("snippet", JOURNAL)).label(), Some("系统日志"));
     });
     let before = factory.written_text().len();
     in_frame(cx, handle, |window, cx| {
@@ -231,10 +355,7 @@ async fn a_snippet_is_made_edited_and_deleted(cx: &mut TestAppContext) {
     })
     .await;
     in_frame(cx, handle, |window, _| {
-        assert_eq!(
-            window.find(("snippet", 1u64)).label(),
-            Some("查看端口 · ss -tlnp · 点击时自动执行")
-        );
+        assert_eq!(window.find(("snippet", 1u64)).label(), Some("查看端口"));
         assert_eq!(window.find("snippets-summary").label(), Some("共 1 个片段"));
     });
 

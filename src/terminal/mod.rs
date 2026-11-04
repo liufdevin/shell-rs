@@ -15,6 +15,7 @@ mod links;
 mod local_pty;
 mod local_shell;
 mod local_terminal_panel;
+mod log_filter;
 mod model;
 mod mouse;
 mod notices;
@@ -50,15 +51,15 @@ pub use local_pty::LocalPtyTransportProvider;
 pub use local_shell::{LocalLaunch, LocalShell, default_shell_name, installed_shells, quote_word};
 pub use local_terminal_panel::{LocalTerminalPanel, LocalTerminalPanelEvent, SavedName};
 pub use model::{
-    LocalTerminalId, RemoteTerminalId, RightClick, TerminalCursorStyle, TerminalInteraction,
-    TerminalLifecycle, TerminalSize, TerminalStatus,
+    LocalTerminalId, MiddleClick, RemoteTerminalId, RightClick, TerminalCursorStyle,
+    TerminalInteraction, TerminalLifecycle, TerminalSize, TerminalStatus,
 };
 pub use notices::TerminalNotice;
 pub use run::{
     BusyReason, RunContext, RunEvent, RunFailure, RunHandle, RunProgress, RunShell, RunTiming,
     TerminalRun,
 };
-pub use search::{SearchDirection, SearchMark, SearchPosition};
+pub use search::{SearchDirection, SearchMark, SearchPosition, TerminalFindOption};
 pub(crate) use terminal_panel::TerminalCopy;
 pub use terminal_panel::{TerminalPanel, TerminalPanelEvent};
 pub(crate) use terminal_view::terminal_key_bindings;

@@ -6,7 +6,7 @@ use gpui_kit::*;
 
 use crate::app::{
     CenterTab, CloseEditor, CloseExplorer, CloseLocalTerminal, CloseScope, CloseSettings,
-    CloseTabs, CloseTerminal,
+    CloseTabs, CloseTerminal, DetachTab,
 };
 use crate::i18n::t;
 
@@ -34,7 +34,9 @@ pub fn close_tab_items(
         |scope: CloseScope| position.is_none_or(|(len, ix)| scope.targets(len, ix).is_empty());
     let batch = |scope| Box::new(CloseTabs { tab, scope });
 
-    menu.menu(t!("common.close"), close_action(tab))
+    menu.menu(t!("shared.tab_menu.detach"), Box::new(DetachTab(tab)))
+        .separator()
+        .menu(t!("common.close"), close_action(tab))
         .menu_with_disabled(
             t!("shared.tab_menu.close_left"),
             batch(CloseScope::Left),

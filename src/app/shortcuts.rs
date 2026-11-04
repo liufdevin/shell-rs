@@ -300,7 +300,7 @@ pub static SHORTCUTS: [Shortcut; 30] = [
         Terminal,
         TERMINAL_AND_FIND,
         "cmd-f",
-        "ctrl-shift-f",
+        "ctrl-f",
         FindInTerminal
     ),
     shortcut!(
@@ -371,6 +371,14 @@ pub static SHORTCUTS: [Shortcut; 30] = [
 ];
 
 impl Shortcut {
+    pub fn conflicts_with_snippets(&self, keys: &str, snippets: &SnippetShortcuts) -> bool {
+        (self.is_global() || self.system_wide || self.contexts.contains(&TERMINAL_KEY_CONTEXT))
+            && self
+                .keystrokes(keys)
+                .iter()
+                .any(|(key, _)| snippets.uses(&key.unparse(), None))
+    }
+
     pub fn find(id: &str) -> Option<&'static Shortcut> {
         SHORTCUTS.iter().find(|shortcut| shortcut.id == id)
     }
@@ -561,6 +569,7 @@ pub enum Refusal {
     /// The system would not give it to a shortcut that works in any app:
     /// another app has it, or the system knows no such key.
     Unavailable,
+    SnippetUsed,
 }
 
 impl Refusal {
@@ -583,8 +592,41 @@ impl Refusal {
             .to_string(),
             Self::Reserved => t!("app.shortcut_refusal.reserved", keys = keys).to_string(),
             Self::Unavailable => t!("app.shortcut_refusal.unavailable", keys = keys).to_string(),
+            Self::SnippetUsed => t!("snippets.shortcut.used", keys = keys).to_string(),
         }
     }
+}
+
+pub fn check_snippet(
+    keystroke: &Keystroke,
+    editing: Option<&str>,
+    overrides: &ShortcutOverrides,
+    snippets: &SnippetShortcuts,
+) -> Result<String, Refusal> {
+    let shortcut = shortcut!(
+        "snippet",
+        "snippets.dialog.shortcut",
+        Terminal,
+        TERMINAL,
+        "",
+        "",
+        NoAction {}
+    );
+    let keys = check(&shortcut, keystroke, overrides, &[])?;
+    for other in SHORTCUTS.iter().filter(|shortcut| shortcut.is_global()) {
+        if let Some(taken) = overrides.keys(other)
+            && other
+                .keystrokes(&taken)
+                .iter()
+                .any(|(taken, _)| same_keystroke(keystroke, taken))
+        {
+            return Err(Refusal::UsedBy(other.id));
+        }
+    }
+    if snippets.uses(&keys, editing) {
+        return Err(Refusal::SnippetUsed);
+    }
+    Ok(keys)
 }
 
 /// The key to store for `shortcut` when the user pressed `keystroke`, or
@@ -716,7 +758,7 @@ impl Global for KitBindings {}
 
 /// The changes the keymap was last built with.
 #[derive(PartialEq)]
-struct AppliedShortcuts(ShortcutOverrides);
+struct AppliedShortcuts(ShortcutOverrides, SnippetShortcuts);
 
 impl Global for AppliedShortcuts {}
 
@@ -728,10 +770,10 @@ pub(super) fn keep_kit_bindings(cx: &mut App) {
 
 /// Bind the keys: gpui-kit's, then ours with the user's changes. Does
 /// nothing when they are the ones in place.
-pub fn apply_shortcuts(overrides: &ShortcutOverrides, cx: &mut App) {
+pub fn apply_shortcuts(overrides: &ShortcutOverrides, snippets: &SnippetShortcuts, cx: &mut App) {
     if cx
         .try_global::<AppliedShortcuts>()
-        .is_some_and(|applied| applied.0 == *overrides)
+        .is_some_and(|applied| applied.0 == *overrides && applied.1 == *snippets)
     {
         return;
     }
@@ -742,8 +784,12 @@ pub fn apply_shortcuts(overrides: &ShortcutOverrides, cx: &mut App) {
     cx.clear_key_bindings();
     cx.bind_keys(kit);
     cx.bind_keys(key_bindings(overrides));
+    cx.bind_keys(snippets.bindings());
     super::system_hotkey::take(overrides.keys(system_wide()).as_deref(), cx);
-    cx.set_global(AppliedShortcuts(overrides.clone()));
+    if cx.try_global::<SnippetShortcuts>() != Some(snippets) {
+        cx.set_global(snippets.clone());
+    }
+    cx.set_global(AppliedShortcuts(overrides.clone(), snippets.clone()));
 }
 
 /// Take 显示或隐藏 ShellRS's key from the system from now on, the one the
@@ -1111,7 +1157,48 @@ fn file_list_key_bindings() -> Vec<KeyBinding> {
 mod tests {
     use gpui_kit::{Action as _, KeyBinding, Keystroke, NoAction};
 
-    use super::{Refusal, SHORTCUTS, Shortcut, ShortcutOverrides, check, key_bindings, key_caps};
+    use super::{
+        Refusal, SHORTCUTS, Shortcut, ShortcutOverrides, check, check_snippet, key_bindings,
+        key_caps,
+    };
+    use crate::app::{SnippetShortcut, SnippetShortcuts};
+
+    #[test]
+    fn snippet_keys_require_a_modifier_and_cannot_take_existing_shortcuts() {
+        let overrides = ShortcutOverrides::default();
+        let mut snippets = SnippetShortcuts::default();
+        assert_eq!(
+            check_snippet(&keys("a"), None, &overrides, &snippets),
+            Err(Refusal::NeedsModifier)
+        );
+        assert_eq!(
+            check_snippet(&keys(&primary("n")), None, &overrides, &snippets),
+            Err(Refusal::UsedBy("new-host"))
+        );
+        assert_eq!(
+            check_snippet(&keys("ctrl-1"), None, &overrides, &snippets),
+            Ok("ctrl-1".into())
+        );
+        snippets.set(
+            "one".into(),
+            Some(SnippetShortcut::new("ctrl-1".into(), false)),
+        );
+        assert_eq!(
+            check_snippet(&keys("ctrl-1"), None, &overrides, &snippets),
+            Err(Refusal::SnippetUsed)
+        );
+        assert_eq!(
+            check_snippet(&keys("ctrl-1"), Some("one"), &overrides, &snippets),
+            Ok("ctrl-1".into())
+        );
+        assert!(shortcut("new-host").conflicts_with_snippets("ctrl-1", &snippets));
+        let binding = snippets.bindings().pop().unwrap();
+        assert_eq!(
+            binding.predicate().unwrap().to_string(),
+            crate::terminal::TERMINAL_KEY_CONTEXT
+        );
+        assert_eq!(binding.action().name(), "shellrs::InsertSnippet");
+    }
 
     fn shortcut(id: &str) -> &'static Shortcut {
         Shortcut::find(id).unwrap()

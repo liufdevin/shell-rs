@@ -2,7 +2,7 @@ _version: 2
 
 app.database_unavailable:
   zh-CN: 无法打开本地数据库，本次运行的改动不会被保存：%{error}
-  en: "Couldn’t open the local database, so changes last only until ShellRS quits: %{error}"
+  en: "Couldn’t open the local database, so changes last only until ShellLF quits: %{error}"
 
 app.tray.show:
   zh-CN: 显示窗口
@@ -40,8 +40,8 @@ app.shortcut.restore_window:
   zh-CN: 还原窗口
   en: Restore window
 app.shortcut.show_hide_app:
-  zh-CN: 显示或隐藏 ShellRS（全局）
-  en: Show or hide ShellRS (system-wide)
+  zh-CN: 显示或隐藏 ShellLF（全局）
+  en: Show or hide ShellLF (system-wide)
 app.shortcut.focus_search:
   zh-CN: 聚焦搜索
   en: Focus search

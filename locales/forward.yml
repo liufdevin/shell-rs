@@ -121,8 +121,8 @@ forward.dialog.target_placeholder_remote:
   zh-CN: 例如 localhost
   en: e.g. localhost
 forward.dialog.auto_start:
-  zh-CN: 启动 ShellRS 时自动开启
-  en: Start when ShellRS opens
+  zh-CN: 启动 ShellLF 时自动开启
+  en: Start when ShellLF opens
 forward.dialog.gateway_ports_note:
   zh-CN: 服务器的 sshd_config 需设置 GatewayPorts clientspecified 或 yes，其他机器才连得上；默认是 no，这时转发照常运行，但只监听服务器自己的 127.0.0.1。
   en: Other machines can connect only if the server’s sshd_config sets GatewayPorts to clientspecified or yes. With the default, no, the forward still runs but listens only on the server’s own 127.0.0.1.

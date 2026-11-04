@@ -22,7 +22,7 @@ use crate::{
     monitor::MonitorDetail,
     processes::ProcessSort,
     services::ServiceCommand,
-    terminal::{LocalTerminalId, RemoteTerminalId},
+    terminal::{LocalTerminalId, RemoteTerminalId, TerminalFindOption},
 };
 
 gpui_kit::actions!(
@@ -69,6 +69,7 @@ gpui_kit::actions!(
         FindPreviousInTerminal,
         /// Close the active terminal's find bar and its highlights.
         DismissTerminalFind,
+        CopyTerminalFindResults,
         /// Close the 查找文件 window it is pressed in.
         CloseFindFiles,
         /// 复制结果 in the 查找文件 window: every result's path.
@@ -373,6 +374,11 @@ id_actions! {
     NewSnippetIn(SnippetCategoryId);
     /// Open the edit-snippet dialog.
     EditSnippet(SnippetId);
+    InsertSnippet(String);
+    DetachTab(CenterTab);
+    ReturnDetachedTab(CenterTab);
+    CloseDetachedTab(CenterTab);
+    ToggleTerminalFindOption(TerminalFindOption);
     /// Ask for confirmation, then delete a snippet.
     DeleteSnippet(SnippetId);
     /// Send a snippet where 撰写窗格 sends: the terminal in front, or every

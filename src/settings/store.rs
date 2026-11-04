@@ -168,9 +168,16 @@ mod tests {
             settings.app_lock_idle_minutes = 15;
             settings.app_lock_allow_cli = true;
             settings.window.close_to_tray = true;
+            settings.sidebar_width = Some(196.);
             settings.language = InterfaceLanguage::English;
             settings.terminal_interaction.cursor_style = crate::terminal::TerminalCursorStyle::Beam;
             settings.terminal_interaction.cursor_blinking = false;
+            settings.terminal_interaction.right_click = crate::terminal::RightClick::Enter;
+            settings.terminal_interaction.middle_click = crate::terminal::MiddleClick::Paste;
+            settings.snippet_shortcuts.set(
+                "stable-snippet-id".into(),
+                Some(crate::app::SnippetShortcut::new("ctrl-1".into(), true)),
+            );
             settings
                 .sidebar_tools
                 .set(crate::app::ToolKind::Kubernetes, true);
@@ -183,12 +190,29 @@ mod tests {
         assert_eq!(reloaded.settings().app_lock_idle_minutes, 15);
         assert!(reloaded.settings().app_lock_allow_cli);
         assert!(reloaded.settings().window.close_to_tray);
+        assert_eq!(reloaded.settings().sidebar_width, Some(196.));
         assert_eq!(reloaded.settings().language, InterfaceLanguage::English);
         assert_eq!(
             reloaded.settings().terminal_interaction.cursor_style,
             crate::terminal::TerminalCursorStyle::Beam
         );
         assert!(!reloaded.settings().terminal_interaction.cursor_blinking);
+        assert_eq!(
+            reloaded.settings().terminal_interaction.right_click,
+            crate::terminal::RightClick::Enter
+        );
+        assert_eq!(
+            reloaded.settings().terminal_interaction.middle_click,
+            crate::terminal::MiddleClick::Paste
+        );
+        let shortcut = reloaded
+            .settings()
+            .snippet_shortcuts
+            .get("stable-snippet-id")
+            .cloned()
+            .unwrap();
+        assert_eq!(shortcut.keys(), "ctrl-1");
+        assert!(shortcut.runs());
         assert!(
             reloaded
                 .settings()
@@ -244,5 +268,20 @@ mod tests {
         let written = store.update_unnotified(|settings| settings.appearance = Appearance::Dark);
         assert!(matches!(written, Some(Ok(()))));
         assert_eq!(store.settings().appearance, Appearance::Dark);
+    }
+
+    #[test]
+    fn sidebar_width_rejects_invalid_numbers_but_keeps_other_settings() {
+        for width in [0., -1., f32::NAN, f32::INFINITY] {
+            let mut store = SettingsStore::in_memory();
+            store.update_unnotified(|settings| {
+                settings.sidebar_width = Some(width);
+                settings.appearance = Appearance::Dark;
+            });
+            assert_eq!(store.settings().sidebar_width, None);
+            assert_eq!(store.settings().appearance, Appearance::Dark);
+        }
+        let settings: AppSettings = serde_json::from_str("{}").unwrap();
+        assert_eq!(settings.sidebar_width, None);
     }
 }

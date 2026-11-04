@@ -78,6 +78,21 @@ snippets.dialog.name_placeholder:
 snippets.dialog.category:
   zh-CN: 分类
   en: Category
+snippets.dialog.shortcut:
+  zh-CN: 快捷键
+  en: Shortcut
+snippets.shortcut.clear:
+  zh-CN: 清除
+  en: Clear
+snippets.shortcut.run:
+  zh-CN: 按快捷键时直接执行
+  en: Run immediately on shortcut
+snippets.shortcut.description:
+  zh-CN: 点击录入组合键，例如 Ctrl+1。仅在终端中生效；关闭直接执行时只输入命令。快捷键保存在当前设备。
+  en: Click to record a shortcut, such as Ctrl+1. It works in terminals only. Turn off immediate execution to insert the command without running it. Shortcuts are saved on this device.
+snippets.shortcut.used:
+  zh-CN: "%{keys} 已用于另一个命令片段，请选择其他快捷键。"
+  en: "%{keys} is assigned to another snippet. Choose a different shortcut."
 snippets.dialog.command:
   zh-CN: 命令
   en: Command

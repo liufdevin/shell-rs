@@ -55,8 +55,8 @@ pub use server::{ChangeReply, CliBackend, CliServer, CliTarget, CliUse};
 // settings it points to in both.
 const AFTER_HELP: &str = concat!(
     "Hosts are named by the 16-character ID that `shellrs hosts list` prints, ",
-    "the one ShellRS copies with Copy ID (复制 ID).\n", // i18n: keep
-    "ShellRS must be running, with Settings → External CLI → Enable external CLI ",
+    "the one ShellLF copies with Copy ID (复制 ID).\n", // i18n: keep
+    "ShellLF must be running, with Settings → External CLI → Enable external CLI ",
     "(设置 → 外部 CLI → 启用外部 CLI) turned on.\n", // i18n: keep
     "\n",
     "Exit codes: exec exits with the remote command's code; 1 means a transfer finished with failures;\n",
@@ -101,13 +101,13 @@ Reads one JSON object from stdin. Every field may be left out; `update` changes 
   user         Default root.
   password     A password credential's, saved to the keychain and never printed; null deletes it.
   key_path     A private key file on this machine (relative to the current directory, or ~/...).
-  private_key  The private key's text instead, for ShellRS to keep in a file of its own.
+  private_key  The private key's text instead, for ShellLF to keep in a file of its own.
   passphrase   The key's passphrase, saved to the keychain; null deletes it.
 What `shellrs credentials show <ID> --json` prints can be edited and passed back as it is.";
 
-/// Run commands, move files and manage the SSH hosts saved in ShellRS.
+/// Run commands, move files and manage the SSH hosts saved in ShellLF.
 ///
-/// ShellRS holds the passwords and keys and makes the connections; this
+/// ShellLF holds the passwords and keys and makes the connections; this
 /// command never reads them. One given to it to save goes to the keychain
 /// and is never printed back.
 #[derive(Debug, Parser)]
@@ -152,7 +152,7 @@ enum Command {
         /// garble it. {"terminal": true} is the same as --terminal.
         #[arg(long, conflicts_with_all = ["id", "command", "stdin"])]
         json: bool,
-        /// Type the command into the host's terminal open in ShellRS
+        /// Type the command into the host's terminal open in ShellLF
         /// instead of logging in again, for a bastion host that allows one
         /// login. It sends Ctrl-C first, which interrupts whatever runs
         /// there. Its stderr comes as stdout; with --json, the result also
@@ -250,7 +250,7 @@ enum HostsCommand {
         json: bool,
     },
     /// Delete a saved host, with its port forwarding rules. Its open tabs
-    /// in ShellRS stay.
+    /// in ShellLF stay.
     Delete {
         /// Host ID, from `shellrs hosts list`.
         id: String,

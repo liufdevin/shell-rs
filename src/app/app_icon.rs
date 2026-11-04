@@ -1,6 +1,6 @@
 //! The logo as the Dock icon of a ShellRS that is not in an app bundle.
 //!
-//! A packaged ShellRS takes its icon from the bundle (`ShellRS.icns`, see
+//! A packaged ShellLF takes its icon from the bundle (`ShellLF.icns`, see
 //! `packaging/macos`). Run straight from `cargo run` there is no bundle,
 //! and macOS shows a generic program icon; this sets the logo at runtime
 //! instead. Windows reads the icon built into the executable (`build.rs`);
@@ -22,7 +22,7 @@ pub fn show_logo_when_unbundled(cx: &gpui_kit::App) {
     let Some(main_thread) = MainThreadMarker::new() else {
         return;
     };
-    let data = NSData::with_bytes(include_bytes!("../../assets/logo/shellrs.png"));
+    let data = NSData::with_bytes(include_bytes!("../../assets/logo/shelllf.png"));
     let Some(image) = NSImage::initWithData(NSImage::alloc(), &data) else {
         return;
     };

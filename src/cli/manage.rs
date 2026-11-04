@@ -1053,11 +1053,11 @@ mod tests {
         );
         assert_eq!(
             refused(group("生产/新的", &store)),
-            bad("有 2 个分组的路径都是「生产」：请先在 ShellRS 里给它们改名")
+            bad("有 2 个分组的路径都是「生产」：请先在 ShellLF 里给它们改名")
         );
         assert_eq!(
             refused(group("生产", &store)),
-            bad("有 2 个分组的路径都是「生产」：请先在 ShellRS 里给它们改名")
+            bad("有 2 个分组的路径都是「生产」：请先在 ShellLF 里给它们改名")
         );
         // Unchanged when left out, the top level for null.
         let plan = plan_host(HostFields::default(), Some(web), &store).unwrap();

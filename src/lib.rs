@@ -53,6 +53,6 @@ rust_i18n::i18n!("locales", fallback = "zh-CN");
 pub fn init(cx: &mut gpui_kit::App) {
     // The identity the system shows notifications under, set before any
     // window opens: on Windows the AppUserModelID.
-    cx.set_app_identity(app::app_identity(), "ShellRS");
+    cx.set_app_identity(app::app_identity(), app::APP_NAME);
     app::init(cx);
 }

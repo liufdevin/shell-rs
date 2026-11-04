@@ -100,7 +100,7 @@ pub fn apply(settings: AppSettings, window: &mut Window, cx: &mut App) {
 
     // Rebuilds the keymap only when the user's changes differ from the
     // ones it was built with.
-    crate::app::apply_shortcuts(&settings.shortcuts, cx);
+    crate::app::apply_shortcuts(&settings.shortcuts, &settings.snippet_shortcuts, cx);
 
     if cx.try_global::<FileSizeFormat>() != Some(&settings.file_size_format) {
         cx.set_global(settings.file_size_format);

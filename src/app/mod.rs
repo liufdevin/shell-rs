@@ -8,6 +8,7 @@ mod paths;
 mod quit;
 mod rendering;
 mod shortcuts;
+mod snippet_shortcuts;
 mod system_hotkey;
 #[cfg(windows)]
 mod tray;
@@ -26,8 +27,9 @@ pub use quit::{quit_held_back, set_quit_guard};
 pub use rendering::{SOFTWARE_FRAME_INTERVAL, frame_due, note_renderer, software_rendering};
 pub use shortcuts::{
     Refusal, SHORTCUTS, Shortcut, ShortcutGroup, ShortcutOverrides, apply_shortcuts, check,
-    fixed_bindings, key_caps, key_text, listen_for_system_hotkey,
+    check_snippet, fixed_bindings, key_caps, key_text, listen_for_system_hotkey,
 };
+pub use snippet_shortcuts::{SnippetShortcut, SnippetShortcuts};
 pub use system_hotkey::{system_hotkey_available, take_system_hotkey_press};
 #[cfg(windows)]
 pub use tray::listen_for_tray;
@@ -37,6 +39,8 @@ pub use window_hiding::{MainWindow, bring_forward, hide_when_closed, restore_win
 
 use gpui_kit::component::Theme;
 use gpui_kit::*;
+
+pub const APP_NAME: &str = "ShellLF";
 
 use crate::host::{ErrorMessage, OpenError};
 use crate::i18n::t;
@@ -95,7 +99,11 @@ pub fn init(cx: &mut App) {
     // which `main` set before anything was built.
     crate::i18n::set_locale(crate::i18n::locale());
     // The defaults; the settings bring the user's changes once read.
-    apply_shortcuts(&ShortcutOverrides::default(), cx);
+    apply_shortcuts(
+        &ShortcutOverrides::default(),
+        &SnippetShortcuts::default(),
+        cx,
+    );
     cx.on_action(|_: &Quit, cx: &mut App| quit::quit(cx));
     cx.on_action(|_: &ShowApp, cx: &mut App| {
         if let Some(MainWindow(window)) = cx.try_global().copied() {

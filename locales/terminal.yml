@@ -132,6 +132,36 @@ terminal.link.open_hint:
 terminal.find.placeholder:
   zh-CN: 查找
   en: Find
+terminal.find.regex:
+  zh-CN: 正则
+  en: Regex
+terminal.find.loading:
+  zh-CN: 正在搜索…
+  en: Searching…
+terminal.find.case_sensitive:
+  zh-CN: 区分大小写
+  en: Match case
+terminal.find.matching_lines:
+  zh-CN: 仅匹配行
+  en: Matching lines only
+terminal.find.pause:
+  zh-CN: 暂停刷新
+  en: Pause
+terminal.find.resume:
+  zh-CN: 继续刷新
+  en: Resume
+terminal.find.copy_results:
+  zh-CN: 复制结果
+  en: Copy results
+terminal.find.invalid_regex:
+  zh-CN: 正则表达式无效，悬停查看原因
+  en: Invalid regular expression. Hover for details
+terminal.find.read_only:
+  zh-CN: 只读日志视图，不会向主机发送输入。关闭搜索可恢复完整终端。
+  en: Read-only log view. Input is not sent to the host. Close search to restore the terminal.
+terminal.find.result_limit:
+  zh-CN: 结果已达 10000 行或 16 MiB 上限，请缩小搜索范围。原始日志未被删除。
+  en: Results reached the 10,000-line or 16 MiB limit. Refine your search. Original output is unchanged.
 terminal.find.previous:
   zh-CN: 上一项（⇧↩）
   en: Previous (⇧↩)

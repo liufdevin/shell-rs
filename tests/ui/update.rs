@@ -263,6 +263,7 @@ fn serve_updates_as(
 }
 
 #[gpui_kit::test]
+#[ignore = "The About settings page is temporarily hidden until launch"]
 fn the_about_page_opens_the_website(cx: &mut TestAppContext) {
     let (handle, _) = open_workspace(cx);
     open_about_settings(cx, handle);
@@ -328,6 +329,7 @@ fn update_channel_label(cx: &mut TestAppContext, handle: WindowHandle<Root>) -> 
 }
 
 #[gpui_kit::test]
+#[ignore = "The About settings page is temporarily hidden until launch"]
 fn a_development_build_does_not_check(cx: &mut TestAppContext) {
     let (handle, _) = open_workspace(cx);
     open_about_settings(cx, handle);
@@ -346,6 +348,7 @@ fn a_development_build_does_not_check(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+#[ignore = "The About settings page is temporarily hidden until launch"]
 async fn checking_by_hand_says_when_shellrs_is_up_to_date(cx: &mut TestAppContext) {
     let (handle, workspace) = open_workspace(cx);
     let fixture = serve_updates(cx, &workspace, Ok(RUNNING_VERSION), installable());
@@ -364,6 +367,7 @@ async fn checking_by_hand_says_when_shellrs_is_up_to_date(cx: &mut TestAppContex
 }
 
 #[gpui_kit::test]
+#[ignore = "The About settings page is temporarily hidden until launch"]
 async fn a_found_update_downloads_by_itself_and_the_title_bar_offers_it(cx: &mut TestAppContext) {
     let (handle, workspace) = open_workspace(cx);
     let fixture = serve_updates(cx, &workspace, Ok("0.2.0"), installable());
@@ -385,7 +389,7 @@ async fn a_found_update_downloads_by_itself_and_the_title_bar_offers_it(cx: &mut
     );
     assert_eq!(
         update_status(cx, handle),
-        "新版本 0.2.0 已下载，重启 ShellRS 即可完成更新。"
+        "新版本 0.2.0 已下载，重启 ShellLF 即可完成更新。"
     );
     in_frame(cx, handle, |window, _| {
         // One button: restarting takes the place of 检查更新.
@@ -396,6 +400,7 @@ async fn a_found_update_downloads_by_itself_and_the_title_bar_offers_it(cx: &mut
 }
 
 #[gpui_kit::test]
+#[ignore = "The About settings page is temporarily hidden until launch"]
 async fn with_automatic_updates_off_a_found_update_waits_for_download(cx: &mut TestAppContext) {
     let (handle, workspace) = open_workspace(cx);
     set_automatic_updates(cx, &workspace, false);
@@ -544,6 +549,7 @@ async fn a_ready_update_is_installed_on_quit_once(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+#[ignore = "The About settings page is temporarily hidden until launch"]
 async fn an_unsupported_install_offers_the_download_page(cx: &mut TestAppContext) {
     let (handle, workspace) = open_workspace(cx);
     let fixture = serve_updates(
@@ -557,7 +563,7 @@ async fn an_unsupported_install_offers_the_download_page(cx: &mut TestAppContext
         window.click("check-for-updates", cx)
     });
     wait_for_update_status(cx, handle, |status| {
-        status == "发现新版本 0.2.0。这份 ShellRS 不是 AppImage，请用安装它的方式更新。"
+        status == "发现新版本 0.2.0。这份 ShellLF 不是 AppImage，请用安装它的方式更新。"
     })
     .await;
     assert_eq!(fixture.downloads(), 0);
@@ -572,6 +578,7 @@ async fn an_unsupported_install_offers_the_download_page(cx: &mut TestAppContext
 }
 
 #[gpui_kit::test]
+#[ignore = "The About settings page is temporarily hidden until launch"]
 async fn a_portable_copy_downloads_the_portable_zip(cx: &mut TestAppContext) {
     let (handle, workspace) = open_workspace(cx);
     let fixture = serve_updates_as(
@@ -597,6 +604,7 @@ async fn a_portable_copy_downloads_the_portable_zip(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+#[ignore = "The About settings page is temporarily hidden until launch"]
 async fn a_read_only_portable_copy_links_the_portable_zip(cx: &mut TestAppContext) {
     let (handle, workspace) = open_workspace(cx);
     let fixture = serve_updates_as(
@@ -625,6 +633,7 @@ async fn a_read_only_portable_copy_links_the_portable_zip(cx: &mut TestAppContex
 }
 
 #[gpui_kit::test]
+#[ignore = "The About settings page is temporarily hidden until launch"]
 async fn a_failed_check_says_why_on_the_about_page(cx: &mut TestAppContext) {
     let (handle, workspace) = open_workspace(cx);
     let fixture = serve_updates(cx, &workspace, Err(UpdateError::Http(503)), installable());
@@ -644,6 +653,7 @@ async fn a_failed_check_says_why_on_the_about_page(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+#[ignore = "The About settings page is temporarily hidden until launch"]
 async fn turning_automatic_updates_off_stops_the_schedule(cx: &mut TestAppContext) {
     let (handle, workspace) = open_workspace(cx);
     let fixture = serve_updates(cx, &workspace, Ok(RUNNING_VERSION), installable());
@@ -676,6 +686,7 @@ async fn turning_automatic_updates_off_stops_the_schedule(cx: &mut TestAppContex
 }
 
 #[gpui_kit::test]
+#[ignore = "The About settings page is temporarily hidden until launch"]
 async fn switching_the_update_channel_looks_at_that_channel(cx: &mut TestAppContext) {
     let (handle, workspace) = open_workspace(cx);
     let fixture = serve_updates(cx, &workspace, Ok(RUNNING_VERSION), installable());
@@ -690,7 +701,7 @@ async fn switching_the_update_channel_looks_at_that_channel(cx: &mut TestAppCont
     // With 自动升级 on, the other channel is looked at right away.
     set_update_channel(cx, &workspace, Channel::Beta);
     wait_for_update_status(cx, handle, |status| {
-        status == "新版本 0.2.0-beta.1 已下载，重启 ShellRS 即可完成更新。"
+        status == "新版本 0.2.0-beta.1 已下载，重启 ShellLF 即可完成更新。"
     })
     .await;
     assert_eq!(fixture.channels(), [Channel::Stable, Channel::Beta]);

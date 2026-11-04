@@ -170,7 +170,7 @@ pub fn open_update_dialog(
     window.open_dialog(cx, move |dialog, window, cx| {
         let snapshot = updater.read(cx).snapshot();
         let title = match snapshot.offered_version() {
-            Some(version) => SharedString::from(format!("ShellRS {version}")),
+            Some(version) => SharedString::from(format!("{} {version}", crate::app::APP_NAME)),
             None => t!("update.dialog.title"),
         };
         dialog

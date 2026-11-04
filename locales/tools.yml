@@ -261,8 +261,8 @@ tools.follow.title:
   zh-CN: 启用目录跟随？
   en: Turn on folder following?
 tools.follow.description:
-  zh-CN: ShellRS 没有在当前 %{shell} shell 使用的 %{file} 中检测到目录跟随配置（OSC 7）。是否现在自动配置？
-  en: ShellRS didn’t find folder reporting (OSC 7) in %{file}, which your %{shell} shell reads. Set it up now?
+  zh-CN: ShellLF 没有在当前 %{shell} shell 使用的 %{file} 中检测到目录跟随配置（OSC 7）。是否现在自动配置？
+  en: ShellLF didn’t find folder reporting (OSC 7) in %{file}, which your %{shell} shell reads. Set it up now?
 tools.follow.set_up:
   zh-CN: 自动配置
   en: Set up

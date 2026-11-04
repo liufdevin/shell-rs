@@ -8,6 +8,81 @@ use gpui_kit::component::{
 };
 use shellrs::app::Shortcut;
 
+#[gpui_kit::test]
+fn the_left_sidebar_width_survives_a_fresh_settings_load(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("settings.json");
+    let open = |cx: &mut TestAppContext| {
+        let (mut settings, problem) = SettingsStore::load(path.clone());
+        assert!(problem.is_none());
+        settings
+            .update_unnotified(|settings| settings.language = InterfaceLanguage::SimplifiedChinese);
+        open_workspace_with_settings_and_tester(
+            cx,
+            HostStore::empty(),
+            settings,
+            Arc::new(FakeConnectionTester::default()),
+        )
+    };
+    let (handle, _) = open(cx);
+    in_frame(cx, handle, |window, cx| {
+        let sidebar = window.find("workspace-sidebar").bounds();
+        let start = point(sidebar.right() - px(1.5), sidebar.center().y);
+        window.drag(start, point(sidebar.left() + px(196.), start.y), cx);
+    });
+    let (saved, problem) = SettingsStore::load(path.clone());
+    assert!(problem.is_none());
+    assert!(
+        saved
+            .settings()
+            .sidebar_width
+            .is_some_and(|width| (width - 196.).abs() <= 2.)
+    );
+    let (reopened, _) = open(cx);
+    in_frame(cx, reopened, |window, cx| {
+        assert!((window.find("workspace-sidebar").bounds().size.width - px(196.)).abs() <= px(2.));
+        window.click("toggle-hosts", cx);
+    });
+    let (hidden, _) = open(cx);
+    in_frame(cx, hidden, |window, cx| window.click("toggle-hosts", cx));
+    in_frame(cx, hidden, |window, _| {
+        assert!((window.find("workspace-sidebar").bounds().size.width - px(196.)).abs() <= px(2.));
+    });
+}
+
+#[gpui_kit::test]
+fn the_host_sidebar_can_shrink_below_its_initial_width_and_expand_again(cx: &mut TestAppContext) {
+    let (handle, workspace) = open_workspace(cx);
+    let area = cx.update(|cx| workspace.read(cx).dock_area().clone());
+    let narrowest = in_frame(cx, handle, |window, _| window.rem_size() * 10.);
+    for width in [px(200.), px(160.), narrowest, px(360.)] {
+        in_frame(cx, handle, |window, cx| {
+            let sidebar = window.find("workspace-sidebar").bounds();
+            let start = point(sidebar.right() - px(1.5), sidebar.center().y);
+            window.drag(start, point(sidebar.left() + width, start.y), cx);
+        });
+        in_frame(cx, handle, |window, cx| {
+            let actual = area.read(cx).dock_size(DockPlacement::Left).unwrap();
+            assert!((actual - width).abs() <= px(2.), "{actual:?}");
+            let sidebar = window.find("workspace-sidebar").bounds();
+            assert!((sidebar.size.width - width).abs() <= px(2.));
+            assert!(window.find("host-search").visible());
+            assert!(window.find("open-settings").visible());
+            assert!(
+                window.find("toggle-hosts").bounds().left()
+                    >= window.find("show-credentials").bounds().right()
+            );
+            assert!(
+                (window.find("toggle-hosts").bounds().left()
+                    - sidebar.right()
+                    - window.rem_size() * 0.5)
+                    .abs()
+                    <= px(1.)
+            );
+        });
+    }
+}
+
 /// Bind the close-tab shortcut to a key the terminal does not claim.
 ///
 /// Ctrl with a letter is the shell's in a terminal (see
@@ -1657,14 +1732,12 @@ fn the_sidebar_toggle_tracks_the_host_panel_edge(cx: &mut TestAppContext) {
     }
     cx.simulate_window_resize(handle.into(), size(px(1000.), px(700.)));
     aligned(cx);
-    // The panel can be made wider, then dragged back only as far as the
-    // width it opened at. The title-bar toggle follows the clamped edge.
     in_frame(cx, handle, |window, cx| {
         let wide = window.find("workspace-sidebar").bounds();
         let from = point(wide.right() - px(2.), wide.center().y);
         window.drag(from, point(panel.right() - px(100.), from.y), cx);
     });
     let (narrowed_button, narrowed_panel) = aligned(cx);
-    assert_eq!(narrowed_panel.size.width, panel.size.width);
-    assert_eq!(narrowed_button.left(), opened.left());
+    assert_eq!(narrowed_panel.size.width, panel.size.width - px(100.));
+    assert!(narrowed_button.left() < opened.left());
 }

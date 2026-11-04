@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="assets/logo/shellrs.svg" width="96" alt="ShellRS">
+  <img src="assets/logo/shelllf.png" width="96" alt="ShellLF">
 </p>
 
-<h1 align="center">ShellRS</h1>
+<h1 align="center">ShellLF</h1>
 
 <p align="center">
   用 Rust 编写、由 GPU 渲染界面的高性能原生跨平台 SSH 客户端：Xshell 式的主机管理、WinSCP 式 SFTP 和端口转发，都在一个窗口里。

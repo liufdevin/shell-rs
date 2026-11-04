@@ -1,6 +1,6 @@
 [Desktop Entry]
 Type=Application
-Name=ShellRS
+Name=ShellLF
 Comment=SSH host manager: terminal, SFTP and port forwarding
 Comment[zh_CN]=SSH 主机管理：终端、SFTP 与端口转发
 Exec=shellrs

@@ -131,8 +131,8 @@ jobs:
             -A -t cert -f pkcs12 -k "$keychain"
           security set-key-partition-list -S apple-tool:,apple: -k "$password" "$keychain"
           security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
-          codesign --force --timestamp --options runtime --sign "$IDENTITY" build/ShellRS.app
-          codesign --verify --deep --strict --verbose=2 build/ShellRS.app
+          codesign --force --timestamp --options runtime --sign "$IDENTITY" build/ShellLF.app
+          codesign --verify --deep --strict --verbose=2 build/ShellLF.app
       - name: Notarize and staple
         env:
           API_KEY: ${{ secrets.APPLE_API_KEY_P8 }}
@@ -153,15 +153,15 @@ jobs:
               exit 1
             fi
           }
-          ditto -c -k --keepParent build/ShellRS.app "$RUNNER_TEMP/notarize.zip"
+          ditto -c -k --keepParent build/ShellLF.app "$RUNNER_TEMP/notarize.zip"
           notarize "$RUNNER_TEMP/notarize.zip"
-          xcrun stapler staple build/ShellRS.app
+          xcrun stapler staple build/ShellLF.app
           # The update package: the stapled bundle, zipped the way the
           # updater unzips it (ditto keeps the signature intact).
-          ditto -c -k --keepParent build/ShellRS.app "dist/ShellRS-$VERSION-macos-$ARCH.app.zip"
+          ditto -c -k --keepParent build/ShellLF.app "dist/ShellRS-$VERSION-macos-$ARCH.app.zip"
           # The first-install disk image, with the Applications shortcut.
           mkdir -p "$RUNNER_TEMP/dmg"
-          cp -R build/ShellRS.app "$RUNNER_TEMP/dmg/"
+          cp -R build/ShellLF.app "$RUNNER_TEMP/dmg/"
           ln -s /Applications "$RUNNER_TEMP/dmg/Applications"
           dmg="dist/ShellRS-$VERSION-macos-$ARCH.dmg"
           # hdiutil's own estimate of the image size once came out too small
@@ -171,7 +171,7 @@ jobs:
           df -h "$RUNNER_TEMP" .
           size=$(( $(du -sm "$RUNNER_TEMP/dmg" | cut -f1) * 2 + 20 ))
           for attempt in 1 2 3; do
-            hdiutil create -volname ShellRS -srcfolder "$RUNNER_TEMP/dmg" -ov \
+            hdiutil create -volname ShellLF -srcfolder "$RUNNER_TEMP/dmg" -ov \
               -fs HFS+ -size "${size}m" -format UDZO "$dmg" && break
             [ "$attempt" = 3 ] && exit 1
             sleep 10
@@ -346,7 +346,7 @@ jobs:
         run: |
           prerelease=""
           [ "$CHANNEL" = beta ] && prerelease="--prerelease"
-          gh release create "v$VERSION" dist/* --title "ShellRS $VERSION" \
+          gh release create "v$VERSION" dist/* --title "ShellLF $VERSION" \
             --notes-file notes.md $prerelease
       - name: Manifests, last
         env:

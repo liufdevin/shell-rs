@@ -40,7 +40,7 @@ pub fn system_services() -> SyncServices {
     SyncServices::system(
         &format!("ShellRS/{version}"),
         DeviceInfo {
-            name: crate::app::computer_name().unwrap_or_else(|| "ShellRS".into()),
+            name: crate::app::computer_name().unwrap_or_else(|| crate::app::APP_NAME.into()),
             platform: std::env::consts::OS.into(),
             app_version: version.into(),
         },

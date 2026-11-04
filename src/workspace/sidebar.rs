@@ -14,19 +14,29 @@ use crate::forward::ForwardPanel;
 use crate::host::{HostPanel, import_menu_items};
 use crate::i18n::t;
 
-/// The left sidebar opens at this width and cannot be dragged narrower.
+/// The left sidebar's initial width.
 pub(super) const SIDEBAR_WIDTH: Pixels = px(280.);
 
 impl super::Workspace {
+    pub(super) fn save_sidebar_width(&self, cx: &mut Context<Self>) {
+        let Some(width) = self.dock_area.read(cx).dock_size(DockPlacement::Left) else {
+            return;
+        };
+        self.settings().update(cx, |store, cx| {
+            store.update(|settings| settings.sidebar_width = Some(width.as_f32()), cx);
+        });
+    }
+
     pub(super) fn hold_sidebar_width(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let minimum = rems(10.).to_pixels(window.rem_size());
         let narrower = self
             .dock_area
             .read(cx)
             .dock_size(DockPlacement::Left)
-            .is_some_and(|width| width < SIDEBAR_WIDTH);
+            .is_some_and(|width| width < minimum);
         if narrower {
             self.dock_area.update(cx, |area, cx| {
-                area.set_dock_size(DockPlacement::Left, SIDEBAR_WIDTH, window, cx);
+                area.set_dock_size(DockPlacement::Left, minimum, window, cx);
             });
         }
     }
@@ -187,9 +197,10 @@ impl Render for Sidebar {
             .id("workspace-sidebar")
             .test_support()
             .size_full()
+            .min_w_0()
             .bg(cx.theme().sidebar)
             .text_color(cx.theme().sidebar_foreground)
-            .child(div().flex_1().min_h_0().child(list))
+            .child(div().flex_1().min_h_0().min_w_0().child(list))
             .child(
                 // Pinned under the list, where desktop apps keep settings.
                 h_flex()

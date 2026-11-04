@@ -383,7 +383,7 @@ mod tests {
             gpui_kit::component::init(cx);
             apply(TerminalTheme::default_for(ThemeMode::Dark), cx);
             let app = cx.theme();
-            assert_eq!(app.theme_name().as_ref(), "ShellRS Dark");
+            assert_eq!(app.theme_name().as_ref(), "ShellLF Dark");
             // Bars a step lighter than the background, borders another.
             assert_close(app.background.to_rgb(), color(0x1e1e1f), "background");
             assert_close(app.title_bar.to_rgb(), color(0x2f2f30), "title bar");

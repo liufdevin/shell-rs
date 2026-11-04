@@ -977,7 +977,7 @@ fn a_change_nobody_takes_up_is_taken_back_and_one_dropped_says_so() {
     assert!(
         String::from_utf8(stderr)
             .unwrap()
-            .contains("ShellRS 在处理改动时关闭了")
+            .contains("ShellLF 在处理改动时关闭了")
     );
 }
 
@@ -1179,7 +1179,7 @@ fn an_app_that_does_not_know_the_command_is_said_to_be_older() {
     assert!(
         String::from_utf8(stderr)
             .unwrap()
-            .starts_with("shellrs: [version_mismatch] 正在运行的 ShellRS 不认识这个命令"),
+            .starts_with("shellrs: [version_mismatch] 正在运行的 ShellLF 不认识这个命令"),
     );
 }
 

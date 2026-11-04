@@ -31,6 +31,7 @@ impl Workspace {
         shown
             .into_iter()
             .filter_map(|panel| self.center_tab_for_panel(panel))
+            .chain(self.detached_windows.iter().map(|detached| detached.tab))
             .collect()
     }
 

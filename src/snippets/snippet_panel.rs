@@ -21,7 +21,6 @@ use crate::app::{
 };
 use crate::host::{HostStore, Snippet, SnippetCategoryId, SnippetId};
 use crate::i18n::{UiLocale, t, tn};
-use crate::shared::{command_tooltip, one_line};
 
 /// 命令片段: the commands kept for every host, in categories one level
 /// deep. A click puts one on the input line of the SSH terminal in front to
@@ -516,7 +515,6 @@ fn render_snippet(
     cx: &App,
 ) -> impl IntoElement {
     let id = snippet.id;
-    let line = one_line(&snippet.command);
     let runs = snippet.run_on_click;
     // A click runs it when the snippet says so, and only types it
     // otherwise.
@@ -528,21 +526,12 @@ fn render_snippet(
         command: snippet.command.clone(),
         run: true,
     };
-    let tooltip = command_tooltip(&snippet.command, cx);
     let card = SharedString::from(format!("snippet-card:{}", id.0));
     h_flex()
         .id(("snippet", id.0))
         .test_support()
         .group(card.clone())
-        .aria_label(if runs {
-            format!(
-                "{} · {line} · {}",
-                snippet.name,
-                t!("snippets.card.runs_on_click")
-            )
-        } else {
-            format!("{} · {line}", snippet.name)
-        })
+        .aria_label(snippet.name.clone())
         .gap_2()
         .py_2()
         .pl_3()
@@ -568,28 +557,14 @@ fn render_snippet(
             menu_hit.replace(Some(MenuHit::Snippet(id)));
             focus.focus(window, cx);
         })
-        // The whole of a command too long for its line.
-        .when_some(tooltip, |card, tooltip| card.tooltip(tooltip))
         .child(
-            v_flex()
+            div()
                 .flex_1()
                 .min_w_0()
-                .gap_0p5()
-                .child(
-                    div()
-                        .truncate()
-                        .text_sm()
-                        .font_weight(FontWeight::MEDIUM)
-                        .child(snippet.name.clone()),
-                )
-                .child(
-                    div()
-                        .truncate()
-                        .font_family(cx.theme().mono_font_family.clone())
-                        .text_xs()
-                        .text_color(cx.theme().muted_foreground)
-                        .child(line),
-                ),
+                .truncate()
+                .text_sm()
+                .font_weight(FontWeight::MEDIUM)
+                .child(snippet.name.clone()),
         )
         .child(
             div()
@@ -597,9 +572,9 @@ fn render_snippet(
                 .invisible()
                 .group_hover(card, |style| style.visible())
                 .child(
-                    // As tall as the card's two lines allow: an easy target.
                     Button::new(("snippet-run", id.0))
                         .ghost()
+                        .small()
                         .map(|button| {
                             if runs {
                                 button

@@ -368,12 +368,12 @@ mod tests {
         };
         assert_eq!(
             newer.message(),
-            "数据库来自更新版本的 ShellRS（结构版本 21，本版本支持到 20），请安装最新版本"
+            "数据库来自更新版本的 ShellLF（结构版本 21，本版本支持到 20），请安装最新版本"
         );
         let old = OpenError::TooOld { version: 12 };
         assert_eq!(
             old.message(),
-            "数据库来自 ShellRS 的早期开发版本（结构版本 12），无法升级"
+            "数据库来自 ShellLF 的早期开发版本（结构版本 12），无法升级"
         );
     }
 
@@ -400,7 +400,7 @@ mod tests {
         assert_eq!(ForwardKind::Local.label(), "Local");
         assert_eq!(
             OpenError::TooOld { version: 12 }.message(),
-            "The database is from an early development version of ShellRS (schema version 12) and can’t be upgraded."
+            "The database is from an early development version of ShellLF (schema version 12) and can’t be upgraded."
         );
         assert_eq!(FlowControl::RtsCts.label(), "RTS/CTS");
     }

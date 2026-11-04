@@ -158,7 +158,7 @@ impl TerminalColors {
 /// the same Tailwind palette, dark enough to read on white.
 const SHELLRS_LIGHT: TerminalTheme = TerminalTheme {
     key: "shellrs-light",
-    name: "ShellRS Light",
+    name: "ShellLF Light",
     mode: ThemeMode::Light,
     foreground: 0x0a0a0a,
     background: 0xffffff,
@@ -175,7 +175,7 @@ const SHELLRS_LIGHT: TerminalTheme = TerminalTheme {
 /// light enough to read on it; black is the app's borders.
 const SHELLRS_DARK: TerminalTheme = TerminalTheme {
     key: "shellrs-dark",
-    name: "ShellRS Dark",
+    name: "ShellLF Dark",
     mode: ThemeMode::Dark,
     foreground: 0xe0e0e4,
     background: 0x1e1e1f,

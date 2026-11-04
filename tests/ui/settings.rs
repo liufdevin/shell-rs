@@ -2,6 +2,31 @@
 
 use crate::support::*;
 
+#[gpui_kit::test]
+fn the_about_category_is_hidden_in_both_languages(cx: &mut TestAppContext) {
+    let (handle, workspace) = open_workspace(cx);
+    let settings = cx.update(|cx| workspace.read(cx).settings().clone());
+    in_frame(cx, handle, |window, cx| window.click("open-settings", cx));
+    for language in [
+        InterfaceLanguage::SimplifiedChinese,
+        InterfaceLanguage::English,
+    ] {
+        cx.update(|cx| {
+            settings.update(cx, |store, cx| {
+                store.update(|settings| settings.language = language, cx);
+            });
+        });
+        in_frame(cx, handle, |window, cx| {
+            assert!(window.within("settings").try_find("0-7").is_some());
+            assert!(window.within("settings").try_find("0-8").is_none());
+            window.within("settings").click("0-7", cx);
+            assert!(window.try_find("about-version").is_none());
+            assert!(window.try_find("check-for-updates").is_none());
+            assert!(window.try_find("open-website").is_none());
+        });
+    }
+}
+
 /// The app's list hover is in effect, not the theme's own (a 0.6 alpha):
 /// deepened, and dark halved to stay fainter than a selected row.
 fn app_list_hover(theme: &gpui_kit::component::Theme) -> bool {
@@ -384,7 +409,7 @@ fn terminal_themes_follow_the_appearance_and_a_card_chooses_one(cx: &mut TestApp
     let neutral = |cx: &mut TestAppContext| {
         cx.update(|cx| {
             let name = cx.theme().theme_name().clone();
-            name == "Default Light" || name == "ShellRS Dark"
+            name == "Default Light" || name == "ShellLF Dark"
         })
     };
     assert!(neutral(cx));
@@ -454,7 +479,6 @@ fn the_window_settings_are_on_until_turned_off(cx: &mut TestAppContext) {
         cx.update(|cx| workspace.read(cx).settings().read(cx).settings().window)
     };
     in_frame(cx, handle, |window, cx| window.click("open-settings", cx));
-    // 应用 comes right before 关于.
     in_frame(cx, handle, |window, cx| {
         window.within("settings").click("0-7", cx)
     });
@@ -587,7 +611,7 @@ fn terminal_cursor_settings_apply_to_open_and_restarted_terminals(cx: &mut TestA
         let mut group = page.within("group-1");
         assert_eq!(
             group
-                .within("item-2")
+                .within("item-3")
                 .within("terminal-cursor-style")
                 .find(0usize)
                 .checked(),
@@ -595,7 +619,7 @@ fn terminal_cursor_settings_apply_to_open_and_restarted_terminals(cx: &mut TestA
         );
         let bounds = [0usize, 1, 2].map(|ix| {
             let item = group
-                .within("item-2")
+                .within("item-3")
                 .within("terminal-cursor-style")
                 .find(ix);
             assert!(item.visible());
@@ -607,7 +631,7 @@ fn terminal_cursor_settings_apply_to_open_and_restarted_terminals(cx: &mut TestA
         }
         assert!(bounds[0].right() <= bounds[1].left());
         assert!(bounds[1].right() <= bounds[2].left());
-        let mut row = group.within("item-3");
+        let mut row = group.within("item-4");
         assert!(row.find("check").visible());
         assert_eq!(row.find("check").checked(), Some(true));
         row.click("check", cx);

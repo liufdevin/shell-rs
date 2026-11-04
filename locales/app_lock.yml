@@ -4,8 +4,8 @@ app_lock.title:
   zh-CN: 应用锁
   en: App lock
 app_lock.description:
-  zh-CN: 每次启动 ShellRS 时需要输入应用锁密码。
-  en: Require the app lock password each time ShellRS starts.
+  zh-CN: 每次启动 ShellLF 时需要输入应用锁密码。
+  en: Require the app lock password each time ShellLF starts.
 app_lock.enabled:
   zh-CN: 已启用应用锁
   en: App lock is on
@@ -55,8 +55,8 @@ app_lock.disable_commit:
   zh-CN: 关闭应用锁
   en: Turn off app lock
 app_lock.locked:
-  zh-CN: ShellRS 已锁定
-  en: ShellRS is locked
+  zh-CN: ShellLF 已锁定
+  en: ShellLF is locked
 app_lock.unlock_description:
   zh-CN: 输入应用锁密码以继续。
   en: Enter your app lock password to continue.
@@ -92,8 +92,8 @@ app_lock.keywords:
   en: app lock,password,security,startup,unlock,lock
 
 app_lock.start_failed:
-  zh-CN: 无法启动 ShellRS。请检查是否已有 ShellRS 正在运行，以及数据目录的访问权限，然后重新启动：%{error}
-  en: "Could not start ShellRS. Check whether another copy is running and whether the data folder is accessible, then restart: %{error}"
+  zh-CN: 无法启动 ShellLF。请检查是否已有 ShellLF 正在运行，以及数据目录的访问权限，然后重新启动：%{error}
+  en: "Could not start ShellLF. Check whether another copy is running and whether the data folder is accessible, then restart: %{error}"
 
 app_lock.idle_title:
   zh-CN: 多久未操作自动锁定

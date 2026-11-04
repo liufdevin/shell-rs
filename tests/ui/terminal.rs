@@ -2,8 +2,283 @@
 //! the font and the size, links, the mouse for programs and their copies.
 
 use crate::support::*;
+use shellrs::app::SnippetShortcut;
 use shellrs::app::{CopyTerminal, DuplicateTerminal, SelectAllTerminal, Shortcut};
-use shellrs::terminal::RightClick;
+use shellrs::host::SnippetDraft;
+use shellrs::terminal::{MiddleClick, RightClick};
+
+#[gpui_kit::test]
+async fn control_wheel_zooms_terminal_text_without_reporting_to_the_program(
+    cx: &mut TestAppContext,
+) {
+    let (handle, workspace, factory) =
+        terminal_printing(cx, "\x1b[?1000h\x1b[?1006hready", "ready").await;
+    let settings = cx.update(|cx| workspace.read(cx).settings().clone());
+    let sizes = |cx: &mut TestAppContext| {
+        cx.update(|cx| {
+            let saved = settings.read(cx).settings();
+            (saved.terminal_font.size, saved.interface.font_size)
+        })
+    };
+    let original = sizes(cx);
+    let wheel = |cx: &mut TestAppContext, amount: f32| {
+        in_frame(cx, handle, |window, cx| {
+            let position = window.find(("local-terminal", 1u64)).bounds().center();
+            window.dispatch_event(
+                gpui_kit::ScrollWheelEvent {
+                    position,
+                    delta: gpui_kit::ScrollDelta::Lines(point(0., amount)),
+                    modifiers: gpui_kit::Modifiers {
+                        control: true,
+                        ..Default::default()
+                    },
+                    touch_phase: gpui_kit::TouchPhase::Moved,
+                }
+                .to_platform_input(),
+                cx,
+            );
+        });
+    };
+    wheel(cx, 1.);
+    assert_eq!(sizes(cx), (original.0 + 1., original.1));
+    wheel(cx, -1.);
+    assert_eq!(sizes(cx), original);
+    cx.update(|cx| {
+        settings.update(cx, |store, cx| {
+            store.update(|settings| settings.terminal_font.size = 28., cx)
+        })
+    });
+    wheel(cx, 1.);
+    assert_eq!(sizes(cx).0, 28.);
+    cx.update(|cx| {
+        settings.update(cx, |store, cx| {
+            store.update(|settings| settings.terminal_font.size = 10., cx)
+        })
+    });
+    wheel(cx, -1.);
+    assert_eq!(sizes(cx).0, 10.);
+    assert!(factory.written_text().is_empty());
+}
+
+#[gpui_kit::test]
+async fn regex_log_filter_highlights_copies_and_restores_terminal_output(cx: &mut TestAppContext) {
+    let (handle, workspace, factory) = terminal_printing(
+        cx,
+        "INFO start\r\nERROR code=42\r\ninfo middle\r\nerror code=7\r\nINFO end",
+        "INFO end",
+    )
+    .await;
+    let before = cx.read(|cx| local_screen(&workspace, cx));
+    in_frame(cx, handle, |window, cx| {
+        window.press(
+            if cfg!(target_os = "macos") {
+                "cmd-f"
+            } else {
+                "ctrl-f"
+            },
+            cx,
+        );
+    });
+    in_frame(cx, handle, |window, cx| {
+        assert_eq!(window.find("terminal-find").focused(), Some(true));
+        window.click("terminal-find-regex", cx);
+        window.input(r"^error code=\d+$", cx);
+    });
+    wait_for_find_count(cx, handle, "1/2").await;
+    in_frame(cx, handle, |window, cx| {
+        window.click("terminal-find-lines", cx)
+    });
+    wait_for_find_count(cx, handle, "1/2").await;
+    in_frame(cx, handle, |window, cx| {
+        assert!(window.find("terminal-filtered-logs").visible());
+        let original_size = workspace
+            .read(cx)
+            .settings()
+            .read(cx)
+            .settings()
+            .terminal_font
+            .size;
+        let position = window.find("terminal-filter-results").bounds().center();
+        window.dispatch_event(
+            gpui_kit::ScrollWheelEvent {
+                position,
+                delta: gpui_kit::ScrollDelta::Lines(point(0., 1.)),
+                modifiers: gpui_kit::Modifiers {
+                    control: true,
+                    ..Default::default()
+                },
+                touch_phase: gpui_kit::TouchPhase::Moved,
+            }
+            .to_platform_input(),
+            cx,
+        );
+        window.render_frame(cx);
+        assert_eq!(
+            workspace
+                .read(cx)
+                .settings()
+                .read(cx)
+                .settings()
+                .terminal_font
+                .size,
+            original_size + 1.
+        );
+        window.click("terminal-find-copy-results", cx);
+    });
+    cx.update(|cx| {
+        assert_eq!(
+            cx.read_from_clipboard().unwrap().text().as_deref(),
+            Some("ERROR code=42\nerror code=7")
+        );
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.click("terminal-find-case", cx);
+    });
+    wait_for_find_count(cx, handle, "1/1").await;
+    in_frame(cx, handle, |window, cx| {
+        window.click("terminal-find-pause", cx);
+        window.input("[", cx);
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, _| {
+        window.try_find("terminal-find-error").is_some()
+    })
+    .await;
+    in_frame(cx, handle, |window, cx| {
+        window.press("secondary-a", cx);
+        window.input("error", cx);
+        window.click("terminal-find-pause", cx);
+    });
+    wait_for_find_count(cx, handle, "1/1").await;
+    in_frame(cx, handle, |window, cx| window.press("escape", cx));
+    in_frame(cx, handle, |window, _| {
+        assert!(window.try_find("terminal-filtered-logs").is_none());
+        assert_eq!(window.find(("local-terminal", 1u64)).focused(), Some(true));
+    });
+    assert!(factory.written_text().is_empty());
+    assert_eq!(
+        cx.read(|cx| local_screen(&workspace, cx)).trim_end(),
+        before.trim_end()
+    );
+}
+
+#[gpui_kit::test]
+async fn filtered_logs_refresh_can_pause_and_never_type_into_the_shell(cx: &mut TestAppContext) {
+    let (handle, workspace, factory) =
+        terminal_printing(cx, "ERROR one\r\nINFO ready", "INFO ready").await;
+    in_frame(cx, handle, |window, cx| {
+        window.dispatch_action(Box::new(FindInTerminal), cx)
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.input("ERROR", cx);
+        window.click("terminal-find-lines", cx);
+    });
+    wait_for_find_count(cx, handle, "1/1").await;
+    in_frame(cx, handle, |window, cx| {
+        window.click("terminal-filter-results", cx);
+        window.input("must-not-reach-the-shell", cx);
+    });
+    assert!(factory.written_text().is_empty());
+    let append = |cx: &mut TestAppContext, text: &str| {
+        let terminal = cx.update(|cx| {
+            workspace
+                .read(cx)
+                .local_terminal(LocalTerminalId(1))
+                .unwrap()
+                .read(cx)
+                .terminal()
+                .clone()
+        });
+        terminal.update(cx, |terminal, cx| {
+            terminal.enter_command(text, true, false, cx).unwrap()
+        });
+    };
+    append(cx, "\nERROR two");
+    wait_for_find_count(cx, handle, "1/2").await;
+    in_frame(cx, handle, |window, cx| {
+        window.click("terminal-find-pause", cx)
+    });
+    append(cx, "\nERROR three");
+    cx.wait_for(handle.into(), Duration::from_secs(2), |_, cx| {
+        local_screen(&workspace, cx).contains("ERROR three")
+    })
+    .await;
+    in_frame(cx, handle, |window, cx| {
+        assert_eq!(window.find("terminal-find-count").label(), Some("1/2"));
+        window.click("terminal-find-pause", cx);
+    });
+    wait_for_find_count(cx, handle, "1/3").await;
+    in_frame(cx, handle, |window, cx| {
+        window.click("terminal-find-next", cx);
+    });
+    wait_for_find_count(cx, handle, "2/3").await;
+    in_frame(cx, handle, |window, cx| window.press("escape", cx));
+}
+
+#[gpui_kit::test]
+async fn snippet_shortcuts_insert_and_execute_in_local_terminals(cx: &mut TestAppContext) {
+    let factory = Arc::new(FakeTerminalFactory::default());
+    let (handle, workspace) = open_running_local_terminal(cx, factory.clone()).await;
+    cx.update(|cx| {
+        let (store, settings) = {
+            let workspace = workspace.read(cx);
+            (workspace.store().clone(), workspace.settings().clone())
+        };
+        let public_id = store.update(cx, |store, cx| {
+            let id =
+                store.insert_snippet(SnippetDraft::new("长命令", "echo local shortcut", None), cx);
+            store.snippet(id).unwrap().sync_id.to_string()
+        });
+        settings.update(cx, |store, cx| {
+            store.update(
+                |settings| {
+                    settings
+                        .snippet_shortcuts
+                        .set(public_id, Some(SnippetShortcut::new("ctrl-1".into(), true)))
+                },
+                cx,
+            );
+        });
+    });
+    in_frame(cx, handle, |window, cx| window.press("ctrl-1", cx));
+    take_written(cx, handle, &factory, "echo local shortcut\r").await;
+}
+
+#[gpui_kit::test]
+async fn mouse_buttons_send_enter_and_paste_with_terminal_encoding(cx: &mut TestAppContext) {
+    let (handle, workspace, factory) =
+        terminal_printing(cx, "\x1b[?1000h\x1b[?1006h\x1b[?2004hready", "ready").await;
+    cx.update(|cx| {
+        let settings = workspace.read(cx).settings().clone();
+        settings.update(cx, |store, cx| {
+            store.update(
+                |settings| {
+                    settings.terminal_interaction.right_click = RightClick::Enter;
+                    settings.terminal_interaction.middle_click = MiddleClick::Paste;
+                },
+                cx,
+            );
+        });
+        cx.write_to_clipboard(ClipboardItem::new_string("echo pasted".into()));
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.right_click(("local-terminal", 1u64), cx);
+    });
+    take_written(cx, handle, &factory, "\r").await;
+    in_frame(cx, handle, |window, cx| {
+        let position = window.find(("local-terminal", 1u64)).bounds().center();
+        button_click_at(
+            window,
+            position,
+            MouseButton::Middle,
+            Default::default(),
+            cx,
+        );
+    });
+    take_written(cx, handle, &factory, "\x1b[200~echo pasted\x1b[201~").await;
+    in_frame(cx, handle, |window, _| {
+        assert!(window.try_find("popup-menu").is_none());
+    });
+}
 
 fn open_workspace_with_factory(
     cx: &mut TestAppContext,

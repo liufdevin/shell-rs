@@ -406,6 +406,8 @@ impl BasePanel for TerminalPanel {
         if !active {
             return;
         }
+        self.terminal
+            .update(cx, |terminal, cx| terminal.attach_window(window, cx));
         let focus = self.terminal.read(cx).focus_handle();
         window.focus(&focus, cx);
         cx.emit(TerminalPanelEvent::Activated(self.id, self.host_id));
@@ -417,6 +419,9 @@ impl BasePanel for TerminalPanel {
 
     fn on_removed(&mut self, _: &mut Window, cx: &mut Context<Self>) {
         self.tab_group = None;
+        if crate::shared::is_panel_transfer(cx.entity_id(), cx) {
+            return;
+        }
         self.terminal
             .update(cx, |terminal, cx| terminal.shutdown(cx));
         let id = self.host_id;

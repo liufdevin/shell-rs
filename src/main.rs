@@ -65,7 +65,7 @@ fn main() {
             let window = cx
                 .open_window(options, |window, cx| {
                     window.activate_window();
-                    window.set_window_title("ShellRS");
+                    window.set_window_title(shellrs::app::APP_NAME);
                     #[cfg(windows)]
                     shellrs::app::listen_for_tray(window, cx);
                     shellrs::app::hide_when_closed(window, cx);

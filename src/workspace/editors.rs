@@ -50,6 +50,9 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.show_detached_tab(CenterTab::Editor(editor.read(cx).id()), window, cx) {
+            return;
+        }
         let group = editor.read(cx).tab_group();
         self.activate_tab(group, editor.entity_id(), window, cx);
         let focus = editor.read(cx).state().read(cx).focus_handle(cx);
@@ -124,6 +127,7 @@ impl Workspace {
                 cx.notify();
             }
             EditorPanelEvent::Closed(id) => {
+                self.finish_detached_tab(CenterTab::Editor(*id), cx);
                 self.editors.remove(id);
                 if self.active_tab == Some(CenterTab::Editor(*id)) {
                     self.set_active_tab(None, window, cx);
@@ -215,8 +219,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         if let Some(editor) = self.editors.get(&id).cloned() {
-            self.dock_area
-                .update(cx, |area, cx| area.remove_panel(editor, window, cx));
+            self.remove_tab_panel(editor, window, cx);
         }
     }
 

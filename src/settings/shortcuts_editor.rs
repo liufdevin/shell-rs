@@ -99,10 +99,13 @@ impl ShortcutsEditor {
             self.finish(window, cx);
             return;
         }
-        let overrides = self.store.read(cx).settings().shortcuts;
+        let settings = self.store.read(cx).settings();
+        let overrides = settings.shortcuts;
         let checked =
             check(shortcut, keystroke, &overrides, &fixed_bindings(cx)).and_then(|keys| {
-                if !shortcut.is_system_wide() || system_hotkey_available(&keys, cx) {
+                if shortcut.conflicts_with_snippets(&keys, &settings.snippet_shortcuts) {
+                    Err(Refusal::SnippetUsed)
+                } else if !shortcut.is_system_wide() || system_hotkey_available(&keys, cx) {
                     Ok(keys)
                 } else {
                     Err(Refusal::Unavailable)

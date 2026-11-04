@@ -368,7 +368,7 @@ mod tests {
             })
             .status_line()
             .0,
-            "Downloading ShellRS 0.2.0… 45%"
+            "Downloading ShellLF 0.2.0… 45%"
         );
         let failed = snapshot(Phase::Failed {
             stage: Stage::Download,
@@ -376,7 +376,7 @@ mod tests {
         });
         assert_eq!(
             failed.status_line().0,
-            "Couldn’t download ShellRS 0.2.0: the update server answered HTTP 503"
+            "Couldn’t download ShellLF 0.2.0: the update server answered HTTP 503"
         );
         let mut off = snapshot(Phase::Off);
         off.unsupported = Some(Unsupported::DevelopmentBuild);
@@ -404,7 +404,7 @@ mod tests {
         );
         assert_eq!(
             snapshot(Phase::Ready).status_line().0,
-            "新版本 0.2.0 已下载，重启 ShellRS 即可完成更新。"
+            "新版本 0.2.0 已下载，重启 ShellLF 即可完成更新。"
         );
         let failed = snapshot(Phase::Failed {
             stage: Stage::Download,

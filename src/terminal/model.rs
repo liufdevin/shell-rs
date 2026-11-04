@@ -155,6 +155,7 @@ pub struct TerminalInteraction {
     pub copy_on_select: bool,
     /// 右键行为.
     pub right_click: RightClick,
+    pub middle_click: MiddleClick,
     /// The default shape; a terminal program can request its own.
     pub cursor_style: TerminalCursorStyle,
     /// Blink by default, unless a program chooses otherwise.
@@ -166,6 +167,7 @@ impl Default for TerminalInteraction {
         Self {
             copy_on_select: false,
             right_click: RightClick::default(),
+            middle_click: MiddleClick::default(),
             cursor_style: TerminalCursorStyle::default(),
             cursor_blinking: true,
         }
@@ -211,7 +213,18 @@ pub enum RightClick {
     Nothing,
     /// 粘贴: the clipboard, as ⌘V does.
     Paste,
+    Enter,
     /// 显示菜单: copy, paste, find, clear and the owner's commands.
     #[default]
     Menu,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MiddleClick {
+    #[default]
+    Application,
+    Nothing,
+    Paste,
+    Enter,
 }

@@ -35,7 +35,11 @@ pub fn hide_when_closed(window: &Window, cx: &App) {
         if super::tray::hide_on_close(window, cx) {
             return false;
         }
-        !super::quit::quit_held_back(window, cx)
+        if super::quit::quit_held_back(window, cx) {
+            return false;
+        }
+        cx.quit();
+        true
     });
 }
 

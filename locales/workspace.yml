@@ -1,4 +1,10 @@
 _version: 2
+workspace.detached.return:
+  zh-CN: 移回主窗口
+  en: Move to main window
+workspace.detached.failed:
+  zh-CN: 无法打开独立窗口：%{error}
+  en: "Could not open a separate window: %{error}"
 
 workspace.broadcast.title:
   zh-CN: 命令广播
@@ -238,8 +244,8 @@ workspace.files.several:
   zh-CN: “%{first}”等 %{count} 个文件
   en: "%{count} files including “%{first}”"
 workspace.unsaved.quit_title:
-  zh-CN: 退出 ShellRS？
-  en: Quit ShellRS?
+  zh-CN: 退出 ShellLF？
+  en: Quit ShellLF?
 workspace.unsaved.quit:
   zh-CN: "%{files}有未保存的修改，退出后会丢失。"
   en: Unsaved changes to %{files} will be lost.
@@ -319,14 +325,14 @@ workspace.update.done_title:
   zh-CN: 更新完成
   en: Update complete
 workspace.update.done:
-  zh-CN: ShellRS 已更新到 %{version}。
-  en: ShellRS is now %{version}.
+  zh-CN: ShellLF 已更新到 %{version}。
+  en: ShellLF is now %{version}.
 workspace.update.failed_title:
   zh-CN: 更新没有完成
   en: Update not completed
 workspace.update.failed:
-  zh-CN: 没有装上 %{to}，ShellRS 仍是 %{from}。可以到官网下载安装。
-  en: "%{to} wasn’t installed, so ShellRS is still %{from}. You can download it from the website."
+  zh-CN: 没有装上 %{to}，ShellLF 仍是 %{from}。可以到官网下载安装。
+  en: "%{to} wasn’t installed, so ShellLF is still %{from}. You can download it from the website."
 workspace.zmodem.choose_files:
   zh-CN: 上传
   en: Upload

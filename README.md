@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="assets/logo/shellrs.svg" width="96" alt="ShellRS">
+  <img src="assets/logo/shelllf.png" width="96" alt="ShellLF">
 </p>
 
-<h1 align="center">ShellRS</h1>
+<h1 align="center">ShellLF</h1>
 
 <p align="center">
   A high-performance, native, cross-platform SSH client written in Rust, with a GPU-rendered interface: Xshell-style host management, WinSCP-style SFTP and port forwarding, all in one window.

@@ -13,6 +13,7 @@ mod cli;
 mod compose;
 mod connection;
 mod credential;
+mod detached;
 mod docker;
 mod editor;
 mod file_sidebar;

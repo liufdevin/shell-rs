@@ -116,7 +116,11 @@ impl NativeTray {
                 ..Default::default()
             };
             data.Anonymous.uVersion = NOTIFYICON_VERSION_4;
-            for (slot, unit) in data.szTip.iter_mut().zip("ShellRS".encode_utf16()) {
+            for (slot, unit) in data
+                .szTip
+                .iter_mut()
+                .zip(crate::app::APP_NAME.encode_utf16())
+            {
                 *slot = unit;
             }
             let state = Rc::new(State {

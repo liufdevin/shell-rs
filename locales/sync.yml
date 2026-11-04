@@ -26,8 +26,8 @@ sync.error.vault_exists:
   zh-CN: 另一台设备刚在这个文件夹里开启了同步。重新开启同步，改为加入它。
   en: Another device just set up sync in this folder. Turn on sync again to join it.
 sync.error.vault_too_new:
-  zh-CN: 这个文件夹里的同步来自更新版本的 ShellRS，升级后才能使用。
-  en: The sync in this folder is from a newer ShellRS. Update to use it.
+  zh-CN: 这个文件夹里的同步来自更新版本的 ShellLF，升级后才能使用。
+  en: The sync in this folder is from a newer ShellLF. Update to use it.
 sync.error.bad_vault:
   zh-CN: 同步文件夹里的 vault.json 已损坏：%{reason}
   en: "The vault.json in the sync folder is damaged: %{reason}"
@@ -49,8 +49,8 @@ sync.error.mass_delete.other:
   zh-CN: 这次同步会删除 %{of} 条记录中的 %{count} 条。
   en: This sync would delete %{count} of %{of} records.
 sync.error.read_only:
-  zh-CN: 另一台设备的 ShellRS 更新，这台电脑升级后才能继续同步。
-  en: Another device runs a newer ShellRS. Update this computer to keep syncing.
+  zh-CN: 另一台设备的 ShellLF 更新，这台电脑升级后才能继续同步。
+  en: Another device runs a newer ShellLF. Update this computer to keep syncing.
 sync.error.random:
   zh-CN: 系统的随机数源出错了。
   en: The system’s random number source failed.

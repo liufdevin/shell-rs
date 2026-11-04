@@ -4,6 +4,7 @@
 //! (`host::Snippet`); this is their list and their dialogs.
 
 mod model;
+mod shortcut_editor;
 mod snippet_dialog;
 mod snippet_panel;
 

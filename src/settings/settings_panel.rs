@@ -185,6 +185,9 @@ impl BasePanel for SettingsPanel {
 
     fn on_removed(&mut self, _: &mut Window, cx: &mut Context<Self>) {
         self.tab_group = None;
+        if crate::shared::is_panel_transfer(cx.entity_id(), cx) {
+            return;
+        }
         cx.emit(SettingsPanelEvent::Closed);
     }
 }
@@ -239,6 +242,7 @@ impl Render for SettingsPanel {
                     .pages(
                         CATEGORIES
                             .iter()
+                            .filter(|category| category.title != "settings.category.about")
                             .enumerate()
                             .map(|(ix, category)| category.page(ix, self, cx)),
                     ),
@@ -521,6 +525,15 @@ fn interaction_group(store: &Entity<SettingsStore>) -> SettingGroup {
                 ),
             )
             .description(t!("settings.interaction.right_click_description")),
+            SettingItem::new(
+                t!("settings.interaction.middle_click"),
+                choice_field(
+                    store,
+                    |settings| settings.terminal_interaction.middle_click,
+                    |settings, action| settings.terminal_interaction.middle_click = action,
+                ),
+            )
+            .description(t!("settings.interaction.middle_click_description")),
             SettingItem::new(
                 t!("settings.interaction.cursor_style"),
                 cursor_style_field(store),
@@ -1158,7 +1171,7 @@ fn about_groups(panel: &SettingsPanel, cx: &App) -> Vec<SettingGroup> {
             )
             .description(t!("settings.about.analytics_description"))]),
         SettingGroup::new()
-            .title("ShellRS")
+            .title(crate::app::APP_NAME)
             .items([SettingItem::new(
                 t!("settings.about.website"),
                 SettingField::render(|options, _, _| {

@@ -9,10 +9,12 @@ use gpui_kit::component::{
 };
 use gpui_kit::*;
 
+use super::shortcut_editor::SnippetShortcutEditor;
 use crate::host::{
     ErrorMessage as _, HostStore, SnippetCategoryId, SnippetDraft, SnippetId, SnippetScope, by_name,
 };
 use crate::i18n::t;
+use crate::settings::SettingsStore;
 use crate::shared::{commit_footer, dismiss_form_error, form_error_notification};
 
 /// How wide the snippet dialog is: room for a command of a fair length on
@@ -31,6 +33,8 @@ pub enum SnippetDialog {
 /// store is only touched when that passes.
 pub struct SnippetForm {
     store: Entity<HostStore>,
+    settings: Entity<SettingsStore>,
+    shortcut: Entity<SnippetShortcutEditor>,
     editing: Option<SnippetId>,
     /// Kept as it is: nothing sets it yet.
     scope: SnippetScope,
@@ -46,6 +50,7 @@ impl SnippetForm {
     fn new(
         dialog: SnippetDialog,
         store: Entity<HostStore>,
+        settings: Entity<SettingsStore>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -95,8 +100,18 @@ impl SnippetForm {
                 .placeholder(t!("snippets.dialog.command_placeholder"))
                 .default_value(draft.command.clone())
         });
+        let public_id = editing.and_then(|id| {
+            store
+                .read(cx)
+                .snippet(id)
+                .map(|snippet| snippet.sync_id.to_string())
+        });
+        let shortcut =
+            cx.new(|cx| SnippetShortcutEditor::new(settings.clone(), public_id, window, cx));
         Self {
             store,
+            settings,
+            shortcut,
             editing,
             scope: draft.scope,
             name,
@@ -129,15 +144,27 @@ impl SnippetForm {
                 return false;
             }
         };
+        if let Err(error) = self.shortcut.read(cx).validate(cx) {
+            window.push_notification(form_error_notification(error), cx);
+            return false;
+        }
+        let shortcut = self.shortcut.read(cx).shortcut();
         let editing = self.editing;
-        self.store.update(cx, |store, cx| match editing {
-            Some(id) => {
-                store.update_snippet(id, draft, cx);
-            }
-            None => {
-                store.insert_snippet(draft, cx);
-            }
+        let public_id = self.store.update(cx, |store, cx| {
+            let id = match editing {
+                Some(id) => {
+                    store.update_snippet(id, draft, cx);
+                    id
+                }
+                None => store.insert_snippet(draft, cx),
+            };
+            store.snippet(id).map(|snippet| snippet.sync_id.to_string())
         });
+        if let Some(id) = public_id {
+            self.settings.update(cx, |store, cx| {
+                store.update(|settings| settings.snippet_shortcuts.set(id, shortcut), cx)
+            });
+        }
         true
     }
 }
@@ -174,6 +201,11 @@ impl Render for SnippetForm {
                     ),
             )
             .child(
+                Field::new()
+                    .label(t!("snippets.dialog.shortcut"))
+                    .child(self.shortcut.clone()),
+            )
+            .child(
                 Field::new().child(
                     Checkbox::new("snippet-run-on-click")
                         .label(t!("snippets.dialog.run_on_click"))
@@ -198,10 +230,11 @@ impl Render for SnippetForm {
 pub fn open_snippet_dialog(
     dialog: SnippetDialog,
     store: Entity<HostStore>,
+    settings: Entity<SettingsStore>,
     window: &mut Window,
     cx: &mut App,
 ) {
-    let form = cx.new(|cx| SnippetForm::new(dialog, store, window, cx));
+    let form = cx.new(|cx| SnippetForm::new(dialog, store, settings, window, cx));
     let editing = form.read(cx).editing.is_some();
     let (title, commit): (SharedString, SharedString) = if editing {
         (t!("snippets.dialog.edit_title"), t!("common.save"))

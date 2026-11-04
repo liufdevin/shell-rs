@@ -18,7 +18,7 @@ settings.store.unreadable:
   en: "Couldn’t read the settings, so this session uses the defaults: %{error}"
 settings.store.unsaved:
   zh-CN: 无法保存设置，本次运行的改动不会被保存：%{error}
-  en: "Settings can’t be saved, so changes last only until ShellRS quits: %{error}"
+  en: "Settings can’t be saved, so changes last only until ShellLF quits: %{error}"
 settings.store.save_failed:
   zh-CN: 无法保存设置：%{error}
   en: "Couldn’t save the settings: %{error}"
@@ -127,6 +127,18 @@ settings.interaction.right_click:
 settings.interaction.right_click_description:
   zh-CN: 设置鼠标右键在终端中的行为。
   en: What right-clicking in a terminal does.
+settings.interaction.middle_click:
+  zh-CN: 中键行为
+  en: Middle-click
+settings.interaction.middle_click_description:
+  zh-CN: 选择粘贴或回车时，优先使用此设置；交给终端程序时由程序处理。
+  en: Paste and Enter override the terminal program’s mouse handling. Choose Application to let the program handle it.
+settings.mouse.enter:
+  zh-CN: 回车
+  en: Enter
+settings.mouse.application:
+  zh-CN: 交给终端程序
+  en: Application
 settings.right_click.nothing:
   zh-CN: 无动作
   en: Do nothing
@@ -226,8 +238,8 @@ settings.notifications.title:
   zh-CN: 通知
   en: Notifications
 settings.notifications.description:
-  zh-CN: ShellRS 不在前台时发系统通知；在前台但终端在别的标签时，在窗口右上角提示，点一下切过去。
-  en: When ShellRS is in the background, you get a system notification. When it’s in front but the terminal is in another tab, a notice appears at the top right of the window; click it to go there.
+  zh-CN: ShellLF 不在前台时发系统通知；在前台但终端在别的标签时，在窗口右上角提示，点一下切过去。
+  en: When ShellLF is in the background, you get a system notification. When it’s in front but the terminal is in another tab, a notice appears at the top right of the window; click it to go there.
 settings.notifications.programs:
   zh-CN: 程序发送的通知
   en: Notifications from programs
@@ -276,8 +288,8 @@ settings.local_terminal.keep_output:
   zh-CN: 保留终端内容
   en: Keep terminal output
 settings.local_terminal.keep_output_description:
-  zh-CN: 「项目」里的本地终端关闭或退出 ShellRS 时，记下最后 1000 行输出，下次打开时先显示出来。内容以明文存在本机的数据目录里；关掉会同时删除已保留的内容。
-  en: When a local terminal in Projects closes, or ShellRS quits, its last 1,000 lines of output are kept and shown again when it next opens. They’re stored as plain text in the data folder on this computer; turning this off deletes them.
+  zh-CN: 「项目」里的本地终端关闭或退出 ShellLF 时，记下最后 1000 行输出，下次打开时先显示出来。内容以明文存在本机的数据目录里；关掉会同时删除已保留的内容。
+  en: When a local terminal in Projects closes, or ShellLF quits, its last 1,000 lines of output are kept and shown again when it next opens. They’re stored as plain text in the data folder on this computer; turning this off deletes them.
 settings.local_terminal.keep_output_keywords:
   zh-CN: 保留,内容,输出,回滚,历史,恢复,项目
   en: keep,output,scrollback,history,restore,projects
@@ -397,8 +409,8 @@ settings.cli.binary_description_windows:
   zh-CN: 把 shellrs 命令加入当前用户的 PATH，方便在终端和 Agent 中直接调用。重新打开的终端和 Agent 才能找到它。
   en: Puts the shellrs command on your user PATH so terminals and agents can call it directly. Terminals and agents find it once reopened.
 settings.cli.binary_description_portable:
-  zh-CN: 把 shellrs 命令复制到 ShellRS 文件夹里的 bin，并把它加入当前用户的 PATH，方便在终端和 Agent 中直接调用。重新打开的终端和 Agent 才能找到它。移动 ShellRS 文件夹或盘符变了以后，要再安装一次。
-  en: Copies the shellrs command into the bin folder inside the ShellRS folder and puts it on your user PATH so terminals and agents can call it directly. Terminals and agents find it once reopened. After moving the ShellRS folder or a change of drive letter, install it again.
+  zh-CN: 把 shellrs 命令复制到应用文件夹里的 bin，并把它加入当前用户的 PATH，方便在终端和 Agent 中直接调用。重新打开的终端和 Agent 才能找到它。移动应用文件夹或盘符变了以后，要再安装一次。
+  en: Copies the shellrs command into the bin folder inside the application folder and puts it on your user PATH so terminals and agents can call it directly. Terminals and agents find it once reopened. After moving the application folder or a change of drive letter, install it again.
 settings.cli.skills_description:
   zh-CN: 安装 shellrs skill，让外部 Agent 在连接服务器、执行远程命令和传输文件时使用 shellrs CLI。可安装到通用目录或指定 Agent 的专用目录。
   en: Install the shellrs skill so agents use the shellrs CLI to connect to servers, run remote commands and transfer files. Install it to the shared folder or to a particular agent’s own folder.
@@ -421,8 +433,8 @@ settings.cli.outdated:
   zh-CN: 已安装旧版本（%{path}）
   en: An older version is installed (%{path})
 settings.cli.binary_stale:
-  zh-CN: "%{path} 指向 %{target}，已失效或不是这个 ShellRS"
-  en: "%{path} points to %{target}, which is gone or isn’t this ShellRS"
+  zh-CN: "%{path} 指向 %{target}，已失效或不是这个 ShellLF"
+  en: "%{path} points to %{target}, which is gone or isn’t this ShellLF"
 settings.cli.binary_occupied_by:
   zh-CN: "%{path} 已被其他程序占用（指向 %{target}）"
   en: "%{path} is taken by another program (it points to %{target})"
@@ -433,8 +445,8 @@ settings.cli.binary_not_on_path:
   zh-CN: "%{path} 所在的文件夹不在 PATH 中"
   en: The folder of %{path} isn’t on the PATH
 settings.cli.binary_unavailable:
-  zh-CN: 找不到 shellrs-cli.exe：它应在 ShellRS 程序旁边（开发时请先 cargo build）
-  en: Can’t find shellrs-cli.exe. It belongs next to the ShellRS program (in development, run cargo build first).
+  zh-CN: 找不到 shellrs-cli.exe：它应在 ShellLF 程序旁边（开发时请先 cargo build）
+  en: Can’t find shellrs-cli.exe. It belongs next to the ShellLF program (in development, run cargo build first).
 settings.cli.installed_at:
   zh-CN: 已安装于
   en: Installed at
@@ -520,8 +532,8 @@ settings.about.analytics:
   zh-CN: 发送匿名使用统计
   en: Send anonymous usage statistics
 settings.about.analytics_description:
-  zh-CN: 发送应用版本、操作系统/架构，用于评估安装量、版本分布，用于改进 ShellRS。不会发送任何主机、凭据、命令或会话内容。
-  en: Sends the app version, operating system and architecture, to count installs and versions and to improve ShellRS. No host, credential, command or session content is ever sent.
+  zh-CN: 发送应用版本、操作系统/架构，用于评估安装量、版本分布，用于改进 ShellLF。不会发送任何主机、凭据、命令或会话内容。
+  en: Sends the app version, operating system and architecture, to count installs and versions and to improve ShellLF. No host, credential, command or session content is ever sent.
 settings.about.website:
   zh-CN: 官网
   en: Website
@@ -713,8 +725,8 @@ settings.sync.devices_description:
   zh-CN: 移除丢失的设备后，再更换同步密码。
   en: After removing a lost device, change the sync password.
 settings.sync.device_detail:
-  zh-CN: "%{platform} · ShellRS %{version} · 上次同步 %{time}"
-  en: "%{platform} · ShellRS %{version} · last synced %{time}"
+  zh-CN: "%{platform} · ShellLF %{version} · 上次同步 %{time}"
+  en: "%{platform} · ShellLF %{version} · last synced %{time}"
 settings.sync.remove:
   zh-CN: 移除…
   en: Remove…

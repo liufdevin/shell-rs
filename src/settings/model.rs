@@ -6,13 +6,14 @@ pub use crate::sync::SyncLocation;
 
 use std::collections::BTreeMap;
 
-use crate::app::{ShortcutOverrides, ToolKind};
+use crate::app::{ShortcutOverrides, SnippetShortcuts, ToolKind};
 use crate::explorer::{FileIconStyle, FileSizeFormat, ShowHiddenFiles};
 use crate::i18n::t;
 use crate::sftp::{DEFAULT_PARALLEL_TRANSFERS, PARALLEL_TRANSFERS_RANGE};
 use crate::terminal::{
     DEFAULT_FONT_SIZE, DEFAULT_LINE_HEIGHT, FONT_SIZE_RANGE, HighlightRule, LINE_HEIGHT_RANGE,
-    RightClick, TerminalCursorStyle, TerminalInteraction, TerminalTheme, default_rules,
+    MiddleClick, RightClick, TerminalCursorStyle, TerminalInteraction, TerminalTheme,
+    default_rules,
 };
 use crate::update::Channel;
 
@@ -35,6 +36,7 @@ pub struct AppSettings {
     pub sidebar_tools: SidebarTools,
     /// The left sidebar's visibility, restored on the next launch.
     pub sidebar_collapsed: bool,
+    pub sidebar_width: Option<f32>,
     /// The right sidebar beside local terminals, switched from its tool
     /// buttons: the tool it shows, `None` while hidden. One for every local
     /// terminal, as a host keeps its own for its terminals.
@@ -75,6 +77,7 @@ pub struct AppSettings {
     pub app_lock_allow_cli: bool,
     /// 键盘快捷键: what the user changed of them.
     pub shortcuts: ShortcutOverrides,
+    pub snippet_shortcuts: SnippetShortcuts,
 }
 
 /// What 界面字号 offers, in pixels.
@@ -486,12 +489,13 @@ impl Choice for TerminalCursorStyle {
 }
 
 impl Choice for RightClick {
-    const ALL: &'static [Self] = &[Self::Nothing, Self::Paste, Self::Menu];
+    const ALL: &'static [Self] = &[Self::Nothing, Self::Paste, Self::Enter, Self::Menu];
 
     fn key(self) -> &'static str {
         match self {
             Self::Nothing => "nothing",
             Self::Paste => "paste",
+            Self::Enter => "enter",
             Self::Menu => "menu",
         }
     }
@@ -500,7 +504,30 @@ impl Choice for RightClick {
         match self {
             Self::Nothing => t!("settings.right_click.nothing"),
             Self::Paste => t!("settings.right_click.paste"),
+            Self::Enter => t!("settings.mouse.enter"),
             Self::Menu => t!("settings.right_click.menu"),
+        }
+    }
+}
+
+impl Choice for MiddleClick {
+    const ALL: &'static [Self] = &[Self::Application, Self::Nothing, Self::Paste, Self::Enter];
+
+    fn key(self) -> &'static str {
+        match self {
+            Self::Application => "application",
+            Self::Nothing => "nothing",
+            Self::Paste => "paste",
+            Self::Enter => "enter",
+        }
+    }
+
+    fn label(self) -> SharedString {
+        match self {
+            Self::Application => t!("settings.mouse.application"),
+            Self::Nothing => t!("settings.right_click.nothing"),
+            Self::Paste => t!("settings.right_click.paste"),
+            Self::Enter => t!("settings.mouse.enter"),
         }
     }
 }
@@ -515,6 +542,9 @@ impl AppSettings {
     /// to what the file holds and to every change, so neither a hand-edited
     /// file nor a typed value can give the terminal a size of zero.
     pub fn normalized(mut self) -> Self {
+        self.sidebar_width = self
+            .sidebar_width
+            .filter(|width| width.is_finite() && *width > 0.);
         self.terminal_font = self.terminal_font.normalized();
         // Whole pixels in range; what is not a number gives the default.
         let size = self.interface.font_size;

@@ -7,20 +7,20 @@ _version: 2
 
 # The command could not reach the app.
 cli.client.not_running:
-  zh-CN: ShellRS 未运行：请先打开 ShellRS，并在 设置 → 外部 CLI 中打开「启用外部 CLI」
-  en: ShellRS isn't running. Open ShellRS and turn on Enable external CLI in Settings → External CLI.
+  zh-CN: ShellLF 未运行：请先打开 ShellLF，并在 设置 → 外部 CLI 中打开「启用外部 CLI」
+  en: ShellLF isn't running. Open ShellLF and turn on Enable external CLI in Settings → External CLI.
 cli.client.broken:
-  zh-CN: 与 ShellRS 的连接意外中断：%{error}
-  en: "The connection to ShellRS broke off: %{error}"
+  zh-CN: 与 ShellLF 的连接意外中断：%{error}
+  en: "The connection to ShellLF broke off: %{error}"
 cli.client.no_permission:
-  zh-CN: 没有权限连接 ShellRS：Agent 可能运行在沙箱中，需要允许它访问本机的进程间通信
-  en: No permission to connect to ShellRS. The agent may be running in a sandbox; allow it local interprocess communication.
+  zh-CN: 没有权限连接 ShellLF：Agent 可能运行在沙箱中，需要允许它访问本机的进程间通信
+  en: No permission to connect to ShellLF. The agent may be running in a sandbox; allow it local interprocess communication.
 cli.client.foreign_pipe:
   zh-CN: 外部 CLI 的管道不属于当前用户，已拒绝连接
   en: The external CLI's pipe belongs to another user, so the connection was refused.
 cli.client.older_app:
-  zh-CN: 正在运行的 ShellRS 不认识这个命令：请把 ShellRS 升级到最新版本，然后重新启动它
-  en: The running ShellRS doesn't know this command. Update ShellRS to the latest version, then restart it.
+  zh-CN: 正在运行的 ShellLF 不认识这个命令：请把 ShellLF 升级到最新版本，然后重新启动它
+  en: The running ShellLF doesn't know this command. Update ShellLF to the latest version, then restart it.
 # Also the app's notification when the server cannot start.
 cli.unsupported:
   zh-CN: 此系统暂不支持外部 CLI
@@ -199,8 +199,8 @@ cli.kind.agent:
   zh-CN: SSH Agent
   en: SSH Agent
 cli.credential.kept_key:
-  zh-CN: 由 ShellRS 保存
-  en: Kept by ShellRS
+  zh-CN: 由 ShellLF 保存
+  en: Kept by ShellLF
 cli.credential.passphrase_saved:
   zh-CN: 已保存
   en: Saved
@@ -267,30 +267,30 @@ cli.summary.failed:
 
 # What the app answers when it will not take the request.
 cli.server.version_mismatch:
-  zh-CN: shellrs 命令与正在运行的 ShellRS 版本不同：请重新启动 ShellRS，或在 设置 → 外部 CLI 中更新 CLI
-  en: The shellrs command and the running ShellRS are different versions. Restart ShellRS, or update the CLI in Settings → External CLI.
+  zh-CN: shellrs 命令与正在运行的 ShellLF 版本不同：请重新启动 ShellLF，或在 设置 → 外部 CLI 中更新 CLI
+  en: The shellrs command and the running ShellLF are different versions. Restart ShellLF, or update the CLI in Settings → External CLI.
 cli.server.not_enabled:
-  zh-CN: ShellRS 未启用外部 CLI：请在 ShellRS 的 设置 → 外部 CLI 中打开「启用外部 CLI」
-  en: The external CLI is turned off. Turn on Enable external CLI in ShellRS under Settings → External CLI.
+  zh-CN: ShellLF 未启用外部 CLI：请在 ShellLF 的 设置 → 外部 CLI 中打开「启用外部 CLI」
+  en: The external CLI is turned off. Turn on Enable external CLI in ShellLF under Settings → External CLI.
 cli.server.closed_during_change:
-  zh-CN: ShellRS 在处理改动时关闭了：请重新打开 ShellRS，用 shellrs hosts list 查看改动是否已完成
-  en: ShellRS closed while making the change. Open ShellRS again and check with shellrs hosts list whether it was made.
+  zh-CN: ShellLF 在处理改动时关闭了：请重新打开 ShellLF，用 shellrs hosts list 查看改动是否已完成
+  en: ShellLF closed while making the change. Open ShellLF again and check with shellrs hosts list whether it was made.
 cli.server.change_timed_out:
-  zh-CN: ShellRS 没有及时处理这项改动，改动没有做：请稍后再试
-  en: ShellRS didn't get to the change in time, so it wasn't made. Try again later.
+  zh-CN: ShellLF 没有及时处理这项改动，改动没有做：请稍后再试
+  en: ShellLF didn't get to the change in time, so it wasn't made. Try again later.
 cli.server.not_absolute:
   zh-CN: 本地路径必须是绝对路径：%{path}
   en: "The local path must be absolute: %{path}"
 cli.server.not_ssh:
-  zh-CN: "%{name} 是串口主机，没有 SSH 连接，只能在 ShellRS 的终端里用"
-  en: "%{name} is a serial host. It has no SSH connection and can only be used in a ShellRS terminal."
+  zh-CN: "%{name} 是串口主机，没有 SSH 连接，只能在 ShellLF 的终端里用"
+  en: "%{name} is a serial host. It has no SSH connection and can only be used in a ShellLF terminal."
 cli.server.not_ssh_telnet:
-  zh-CN: "%{name} 是 Telnet 主机，没有 SSH 连接，只能在 ShellRS 的终端里用"
-  en: "%{name} is a Telnet host. It has no SSH connection and can only be used in a ShellRS terminal."
+  zh-CN: "%{name} 是 Telnet 主机，没有 SSH 连接，只能在 ShellLF 的终端里用"
+  en: "%{name} is a Telnet host. It has no SSH connection and can only be used in a ShellLF terminal."
 # The app's notification when a second ShellRS starts.
 cli.server.another_app:
-  zh-CN: 另一个 ShellRS 已在提供外部 CLI
-  en: Another ShellRS is already serving the external CLI.
+  zh-CN: 另一个 ShellLF 已在提供外部 CLI
+  en: Another ShellLF is already serving the external CLI.
 cli.error.host_not_found:
   zh-CN: 没有 ID 为 %{id} 的主机：请用 shellrs hosts list 查看
   en: No host has the ID %{id}. List the hosts with shellrs hosts list.
@@ -364,8 +364,8 @@ cli.group.empty_level:
   zh-CN: 分组路径「%{path}」里有空的一级
   en: 'The group path "%{path}" has an empty level.'
 cli.group.ambiguous:
-  zh-CN: 有 %{count} 个分组的路径都是「%{path}」：请先在 ShellRS 里给它们改名
-  en: '%{count} groups have the path "%{path}". Rename them in ShellRS first.'
+  zh-CN: 有 %{count} 个分组的路径都是「%{path}」：请先在 ShellLF 里给它们改名
+  en: '%{count} groups have the path "%{path}". Rename them in ShellLF first.'
 
 # Checking what `credentials create` / `update` ask for.
 cli.credential.key_without_kind:
@@ -404,8 +404,8 @@ cli.change.key_not_saved:
   zh-CN: 私钥未能保存：%{error}
   en: "Couldn't save the private key: %{error}"
 cli.change.key_not_copied:
-  zh-CN: 私钥文件未能复制到 ShellRS 保存私钥的目录：%{error}
-  en: "Couldn’t copy the key file to the folder ShellRS keeps keys in: %{error}"
+  zh-CN: 私钥文件未能复制到 ShellLF 保存私钥的目录：%{error}
+  en: "Couldn’t copy the key file to the folder ShellLF keeps keys in: %{error}"
 # One failure after another.
 cli.change.failures:
   zh-CN: "%{before}；%{next}"
@@ -413,20 +413,20 @@ cli.change.failures:
 
 # Running commands and moving files.
 cli.exec.try_terminal:
-  zh-CN: "%{message}（堡垒机可能只允许登录一次：改用 shellrs exec --terminal，在 ShellRS 已打开的终端里执行）"
-  en: "%{message} (The bastion host may allow one login only: use shellrs exec --terminal to run the command in the terminal open in ShellRS.)"
+  zh-CN: "%{message}（堡垒机可能只允许登录一次：改用 shellrs exec --terminal，在 ShellLF 已打开的终端里执行）"
+  en: "%{message} (The bastion host may allow one login only: use shellrs exec --terminal to run the command in the terminal open in ShellLF.)"
 
 # `exec --terminal`: why the command could not be typed into the terminal,
 # or did not finish there.
 cli.terminal.timed_out:
-  zh-CN: ShellRS 没有及时处理这条命令，命令没有执行：请稍后再试
-  en: ShellRS didn't get to the command in time, so it didn't run. Try again later.
+  zh-CN: ShellLF 没有及时处理这条命令，命令没有执行：请稍后再试
+  en: ShellLF didn't get to the command in time, so it didn't run. Try again later.
 cli.terminal.no_terminal:
-  zh-CN: 这台主机在 ShellRS 里没有打开的终端：请先在 ShellRS 里打开它的终端
-  en: This host has no terminal open in ShellRS. Open its terminal in ShellRS first.
+  zh-CN: 这台主机在 ShellLF 里没有打开的终端：请先在 ShellLF 里打开它的终端
+  en: This host has no terminal open in ShellLF. Open its terminal in ShellLF first.
 cli.terminal.not_connected:
-  zh-CN: 这台主机在 ShellRS 里的终端没有连接：请先在 ShellRS 里重新连接
-  en: This host's terminal in ShellRS isn't connected. Reconnect it in ShellRS first.
+  zh-CN: 这台主机在 ShellLF 里的终端没有连接：请先在 ShellLF 里重新连接
+  en: This host's terminal in ShellLF isn't connected. Reconnect it in ShellLF first.
 cli.terminal.unknown_shell:
   zh-CN: 认不出终端里的 shell：只支持 Linux 上的 bash、dash 和 busybox ash
   en: Couldn't tell which shell the terminal runs. Only bash, dash and busybox ash on Linux are supported.
@@ -437,8 +437,8 @@ cli.terminal.too_long:
   zh-CN: 命令太长：这个终端里，编码后的命令行最多 %{limit} 字节。请拆成几条
   en: The command is too long. In this terminal the encoded command line takes %{limit} bytes at most; split it up.
 cli.terminal.full_screen:
-  zh-CN: 终端里正在运行全屏程序（如 vim、less、top、tmux）：请先在 ShellRS 里退出它
-  en: A full-screen program (such as vim, less, top or tmux) has the terminal. Quit it in ShellRS first.
+  zh-CN: 终端里正在运行全屏程序（如 vim、less、top、tmux）：请先在 ShellLF 里退出它
+  en: A full-screen program (such as vim, less, top or tmux) has the terminal. Quit it in ShellLF first.
 cli.terminal.another_run:
   zh-CN: 这个终端里上一条 shellrs exec --terminal 命令还在执行
   en: The previous shellrs exec --terminal command is still running in this terminal.
@@ -465,14 +465,14 @@ cli.transfer.no_local_folder:
   zh-CN: 本地目录不存在：%{path}
   en: "The local folder doesn't exist: %{path}"
 cli.transfer.host_key_unknown:
-  zh-CN: 尚未信任这台主机的密钥：请先在 ShellRS 中连接一次这台主机
-  en: This host's key isn't trusted yet. Connect to the host once in ShellRS first.
+  zh-CN: 尚未信任这台主机的密钥：请先在 ShellLF 中连接一次这台主机
+  en: This host's key isn't trusted yet. Connect to the host once in ShellLF first.
 cli.transfer.host_key_changed:
   zh-CN: 主机密钥与已保存的不一致，已拒绝连接。请先核实服务器身份
   en: The host key doesn't match the saved one, so the connection was refused. Check the server's identity first.
 cli.transfer.missing_credential:
-  zh-CN: 这台主机没有保存可用的密码或口令：请先在 ShellRS 中连接一次这台主机并保存密码
-  en: No usable password or passphrase is saved for this host. Connect to it once in ShellRS and save the password.
+  zh-CN: 这台主机没有保存可用的密码或口令：请先在 ShellLF 中连接一次这台主机并保存密码
+  en: No usable password or passphrase is saved for this host. Connect to it once in ShellLF and save the password.
 cli.transfer.unfinished:
   zh-CN: 传输未完成
   en: The transfer didn't finish.
@@ -492,8 +492,8 @@ cli.install.unsupported:
   zh-CN: 此系统暂不支持安装 shellrs 命令
   en: Installing the shellrs command isn’t supported on this system.
 cli.install.occupied:
-  zh-CN: "%{path} 已被其他程序占用，ShellRS 不会改动它"
-  en: "%{path} belongs to another program, so ShellRS leaves it alone"
+  zh-CN: "%{path} 已被其他程序占用，ShellLF 不会改动它"
+  en: "%{path} belongs to another program, so ShellLF leaves it alone"
 cli.install.cancelled:
   zh-CN: 已取消
   en: Cancelled

@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Put a built `shellrs` binary into ShellRS.app.
+# Put a built `shellrs` binary into ShellLF.app.
 #
 #   packaging/macos/bundle.sh <binary> <version> <build-number> <out-dir>
 #
-# The icon is assets/logo/shellrs.icns, or made from assets/logo/shellrs.png
+# The icon is assets/logo/shelllf.icns, or made from assets/logo/shelllf.png
 # (1024×1024) when only that is there. Signing, notarizing and zipping are
 # the release workflow's steps.
 set -euo pipefail
@@ -15,7 +15,7 @@ out=$4
 
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../.." && pwd)
-app="$out/ShellRS.app"
+app="$out/ShellLF.app"
 
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
@@ -30,20 +30,20 @@ for lproj in "$here"/*.lproj; do
     plutil -lint "$app/Contents/Resources/$(basename "$lproj")/InfoPlist.strings" >/dev/null
 done
 
-icns="$root/assets/logo/shellrs.icns"
-icon="$root/assets/logo/shellrs.png"
+icns="$root/assets/logo/shelllf.icns"
+icon="$root/assets/logo/shelllf.png"
 if [ -f "$icns" ]; then
-    cp "$icns" "$app/Contents/Resources/ShellRS.icns"
+    cp "$icns" "$app/Contents/Resources/ShellLF.icns"
 elif [ -f "$icon" ]; then
     work=$(mktemp -d)
-    iconset="$work/ShellRS.iconset"
+    iconset="$work/ShellLF.iconset"
     mkdir -p "$iconset"
     for size in 16 32 128 256 512; do
         sips -z "$size" "$size" "$icon" --out "$iconset/icon_${size}x${size}.png" >/dev/null
         double=$((size * 2))
         sips -z "$double" "$double" "$icon" --out "$iconset/icon_${size}x${size}@2x.png" >/dev/null
     done
-    iconutil -c icns "$iconset" -o "$app/Contents/Resources/ShellRS.icns"
+    iconutil -c icns "$iconset" -o "$app/Contents/Resources/ShellLF.icns"
     rm -rf "$work"
 else
     echo "warning: no icon in assets/logo; the bundle has none" >&2

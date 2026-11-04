@@ -9,6 +9,7 @@ mod cli_changes;
 mod compose;
 mod compose_pane;
 mod credentials;
+mod detached;
 mod dock_skin;
 mod editors;
 mod follow;

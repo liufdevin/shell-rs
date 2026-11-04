@@ -20,17 +20,17 @@
 		<string>zh-Hans</string>
 	</array>
 	<key>CFBundleDisplayName</key>
-	<string>ShellRS</string>
+	<string>ShellLF</string>
 	<key>CFBundleExecutable</key>
 	<string>shellrs</string>
 	<key>CFBundleIconFile</key>
-	<string>ShellRS</string>
+	<string>ShellLF</string>
 	<key>CFBundleIdentifier</key>
 	<string>com.shellrs.ShellRS</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
-	<string>ShellRS</string>
+	<string>ShellLF</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
