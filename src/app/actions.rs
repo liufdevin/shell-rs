@@ -299,6 +299,13 @@ id_actions! {
     DuplicateTerminal(RemoteTerminalId);
     /// Hold a serial host's line in the break condition for a moment.
     SendBreak(RemoteTerminalId);
+    SendSerialHex(RemoteTerminalId);
+    ToggleSerialReceiveHex(RemoteTerminalId);
+    ToggleSerialSendHex(RemoteTerminalId);
+    StartTerminalRecording(RemoteTerminalId);
+    StopTerminalRecording(RemoteTerminalId);
+    ClearTerminalLog(RemoteTerminalId);
+    DeleteTerminalLog(RemoteTerminalId);
 
     /// Close a local terminal tab and terminate its child process.
     CloseLocalTerminal(LocalTerminalId);

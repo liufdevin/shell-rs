@@ -260,6 +260,9 @@ pub struct HostForm {
     /// The proxy's password.
     proxy_secret: Entity<SecretFields>,
     notes: Entity<TextareaState>,
+    /// This computer's automatic connection log, in the host's own
+    /// configuration. `None` turns automatic logging off.
+    log_file: Option<PathBuf>,
     /// A Telnet host's 自动登录: whether it is on, where it takes the
     /// user name and password from, and the prompts it waits for.
     telnet_auto_login: bool,
@@ -607,6 +610,10 @@ impl HostForm {
                 .auto_grow(2, 6)
                 .default_value(draft.notes.clone())
         });
+        let log_file = draft
+            .log_file
+            .as_ref()
+            .map(|path| PathBuf::from(path.as_ref()));
 
         let subscriptions = vec![
             cx.observe(&credential, |_, _, cx| cx.notify()),
@@ -687,6 +694,7 @@ impl HostForm {
             proxy_user,
             proxy_secret,
             notes,
+            log_file,
             device,
             baud,
             data_bits,
@@ -838,7 +846,101 @@ impl HostForm {
             name
         };
         let notes = self.notes.read(cx).value().trim().to_string();
-        Ok(HostDraft::serial(name, device, settings, group).with_notes(notes))
+        Ok(self.with_log_file(HostDraft::serial(name, device, settings, group).with_notes(notes)))
+    }
+
+    fn with_log_file(&self, draft: HostDraft) -> HostDraft {
+        match &self.log_file {
+            Some(path) => draft.with_log_file(path.to_string_lossy().to_string()),
+            None => draft,
+        }
+    }
+
+    fn choose_log_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let directory = self
+            .log_file
+            .as_ref()
+            .and_then(|path| path.parent())
+            .map(Path::to_path_buf)
+            .or_else(dirs::document_dir)
+            .or_else(dirs::home_dir)
+            .unwrap_or_else(|| PathBuf::from("."));
+        let chosen = cx.prompt_for_new_path(&directory, Some("terminal.log"));
+        cx.spawn_in(window, async move |this, cx| {
+            let path = match chosen.await {
+                Ok(Ok(Some(path))) => Some(path),
+                _ => None,
+            };
+            if let Some(path) = path {
+                this.update_in(cx, |this, _, cx| {
+                    this.log_file = Some(path);
+                    cx.notify();
+                })
+                .ok();
+            }
+        })
+        .detach();
+    }
+
+    fn log_file_field(&self, cx: &mut Context<Self>) -> Field {
+        let path = self
+            .log_file
+            .as_ref()
+            .map(|path| path.display().to_string());
+        Field::new()
+            .label(t!("host.dialog.log_file"))
+            .col_span(4)
+            .child(
+                v_flex()
+                    .w_full()
+                    .gap_2()
+                    .child(
+                        h_flex()
+                            .w_full()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .id("host-log-file")
+                                    .test_support()
+                                    .aria_label(path.clone().unwrap_or_default())
+                                    .flex_1()
+                                    .min_w_0()
+                                    .truncate()
+                                    .text_sm()
+                                    .when(path.is_none(), |text| {
+                                        text.text_color(cx.theme().muted_foreground)
+                                            .child(t!("host.dialog.log_file_none"))
+                                    })
+                                    .when_some(path, |text, path| text.child(path)),
+                            )
+                            .child(
+                                Button::new("host-log-choose")
+                                    .small()
+                                    .label(t!("host.dialog.log_file_choose"))
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.choose_log_file(window, cx)
+                                    })),
+                            )
+                            .when(self.log_file.is_some(), |row| {
+                                row.child(
+                                    Button::new("host-log-clear")
+                                        .small()
+                                        .ghost()
+                                        .label(t!("host.dialog.log_file_clear"))
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.log_file = None;
+                                            cx.notify();
+                                        })),
+                                )
+                            }),
+                    )
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(t!("host.dialog.log_file_description")),
+                    ),
+            )
     }
 
     /// The group the form has selected; `None` is the root of the tree.
@@ -1311,7 +1413,7 @@ impl HostForm {
         // The proxy's password goes the same way, under the proxy's entry.
         let proxy_change = self.proxy_change(&route, cx);
         let notes = self.notes.read(cx).value().trim().to_string();
-        let draft = draft.with_route(route).with_notes(notes);
+        let draft = self.with_log_file(draft.with_route(route).with_notes(notes));
 
         let editing = self.editing;
         self.store.update(cx, |store, cx| {
@@ -1348,7 +1450,7 @@ impl HostForm {
         };
         let proxy_change = self.proxy_change(&route, cx);
         let notes = self.notes.read(cx).value().trim().to_string();
-        let draft = draft.with_route(route).with_notes(notes);
+        let draft = self.with_log_file(draft.with_route(route).with_notes(notes));
         let password_change = self
             .telnet_password_typed()
             .then(|| self.telnet_fields.read(cx).password_change(cx))
@@ -2016,6 +2118,7 @@ impl Render for HostForm {
                     .child(Select::new(&self.group).small()),
             )
             .when(!serial, |form| form.child(self.route_field(cx)))
+            .child(self.log_file_field(cx))
             .child(
                 Field::new()
                     .label(t!("host.dialog.notes"))

@@ -283,6 +283,21 @@ host.dialog.no_group:
 host.dialog.notes:
   zh-CN: 备注
   en: Notes
+host.dialog.log_file:
+  zh-CN: 自动保存连接日志
+  en: Automatically save connection log
+host.dialog.log_file_none:
+  zh-CN: 未选择文件；连接时不会自动保存日志
+  en: No file selected; connections won’t save a log automatically
+host.dialog.log_file_choose:
+  zh-CN: 选择日志文件…
+  en: Choose log file…
+host.dialog.log_file_clear:
+  zh-CN: 清除设置
+  en: Clear setting
+host.dialog.log_file_description:
+  zh-CN: 选定文件即启用。每次连接、重连以及重启后再次连接，都会在后台继续追加收到的数据，直到在终端里停止保存。文件只在这台电脑上使用，不随同步复制。
+  en: Choosing a file enables automatic logging. Every connection, reconnection and connection after a restart keeps appending received data in the background until logging is stopped in the terminal. The file is local to this computer and is not synced.
 host.dialog.optional:
   zh-CN: 可选
   en: Optional

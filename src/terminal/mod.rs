@@ -22,6 +22,7 @@ mod notices;
 mod run;
 mod scrollbar;
 mod search;
+mod session_io;
 mod terminal_panel;
 mod terminal_view;
 mod theme;
@@ -60,6 +61,7 @@ pub use run::{
     TerminalRun,
 };
 pub use search::{SearchDirection, SearchMark, SearchPosition, TerminalFindOption};
+pub use session_io::{SerialDataModes, SerialPreferences, TerminalConnectionSettings};
 pub(crate) use terminal_panel::TerminalCopy;
 pub use terminal_panel::{TerminalPanel, TerminalPanelEvent};
 pub(crate) use terminal_view::terminal_key_bindings;

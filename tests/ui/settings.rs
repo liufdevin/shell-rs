@@ -3,6 +3,50 @@
 use crate::support::*;
 
 #[gpui_kit::test]
+fn terminal_reconnection_can_be_changed_in_settings(cx: &mut TestAppContext) {
+    let (handle, workspace) = open_workspace(cx);
+    in_frame(cx, handle, |window, cx| window.click("open-settings", cx));
+    in_frame(cx, handle, |window, cx| {
+        window.within("settings").click("0-1", cx)
+    });
+    let position = in_frame(cx, handle, |window, _| {
+        window.find("terminal-font-preview").bounds().center()
+    });
+    for _ in 0..8 {
+        in_frame(cx, handle, |window, cx| {
+            window.dispatch_event(
+                gpui_kit::ScrollWheelEvent {
+                    position,
+                    delta: gpui_kit::ScrollDelta::Pixels(point(px(0.), px(-500.))),
+                    modifiers: gpui_kit::Modifiers::default(),
+                    touch_phase: gpui_kit::TouchPhase::Moved,
+                }
+                .to_platform_input(),
+                cx,
+            );
+        });
+    }
+    in_frame(cx, handle, |window, cx| {
+        let mut page = window.within("settings");
+        page.within("group-5").within("item-0").click("check", cx);
+    });
+    cx.update(|cx| {
+        let settings = workspace
+            .read(cx)
+            .settings()
+            .read(cx)
+            .settings()
+            .terminal_connection;
+        assert!(settings.auto_reconnect);
+        assert_eq!(settings.reconnect_delay_secs, 5);
+        assert_eq!(
+            shellrs::terminal::TerminalConnectionSettings::current(cx),
+            settings
+        );
+    });
+}
+
+#[gpui_kit::test]
 fn the_about_category_is_hidden_in_both_languages(cx: &mut TestAppContext) {
     let (handle, workspace) = open_workspace(cx);
     let settings = cx.update(|cx| workspace.read(cx).settings().clone());

@@ -2,23 +2,31 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use gpui_kit::component::{
-    Icon, IconName, Sizable as _, WindowExt as _,
-    button::Button,
+    ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, WindowExt as _,
+    button::{Button, ButtonVariants as _},
+    checkbox::Checkbox,
     dock::{BasePanel, Panel, PanelEvent, TabGroup},
+    h_flex,
+    input::{Input, InputEvent, InputState},
     menu::PopupMenu,
     notification::Notification,
+    v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::app::{
-    CatalogIcon, CenterTab, CloseTerminal, CopyHostAddress, CopyHostId, DisconnectTerminal,
-    DuplicateTerminal, EditHost, OpenExplorer, ReconnectTerminal, RenameTerminal, SendBreak,
+    CatalogIcon, CenterTab, ClearTerminalLog, CloseTerminal, CopyHostAddress, CopyHostId,
+    DeleteTerminalLog, DisconnectTerminal, DuplicateTerminal, EditHost, OpenExplorer,
+    ReconnectTerminal, RenameTerminal, SendBreak, SendSerialHex, StartTerminalRecording,
+    StopTerminalRecording, ToggleSerialReceiveHex, ToggleSerialSendHex,
 };
 use crate::connection::{ConnectionPrompt, ConnectionPromptReply};
 use crate::host::{ConnectionState, Host, HostConnection, HostId, HostOs, HostStore, ProtocolKind};
 use crate::i18n::t;
-use crate::shared::{ClosableTabTitle, HostMark, LatencyLabel, RenamableTab, close_tab_items};
+use crate::shared::{
+    ClosableTabTitle, HostMark, LatencyLabel, RenamableTab, close_tab_items, confirm_danger,
+};
 
 use super::{
     HostTerminalTransports, RemoteTerminalId, ReportedDirectory, TerminalEvent, TerminalLifecycle,
@@ -70,6 +78,10 @@ pub struct TerminalPanel {
     custom_title: Option<SharedString>,
     /// Applied once, after this copy's first successful connection.
     initial_directory: Option<ReportedDirectory>,
+    hex_input: Entity<InputState>,
+    recording_path: Option<PathBuf>,
+    recording_opening: bool,
+    recording_task: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -80,6 +92,7 @@ pub(crate) struct TerminalCopy {
     external: bool,
     title: Option<SharedString>,
     directory: Option<ReportedDirectory>,
+    serial_modes: Option<super::SerialDataModes>,
 }
 
 impl TerminalPanel {
@@ -108,6 +121,7 @@ impl TerminalPanel {
                 external,
                 title: None,
                 directory: None,
+                serial_modes: None,
             },
             store,
             transports,
@@ -122,6 +136,7 @@ impl TerminalPanel {
             connection: self.connection.clone(),
             external: self.external,
             title: self.custom_title.clone(),
+            serial_modes: Some(self.serial_modes(cx)),
             directory: self
                 .host
                 .is_ssh()
@@ -144,15 +159,20 @@ impl TerminalPanel {
             external,
             title,
             directory,
+            serial_modes,
         } = copy;
         let host_id = host.id;
         let protocol = host.kind();
+        let serial_modes = serial_modes
+            .unwrap_or_else(|| super::SerialPreferences::current(host.public_id.as_str(), cx));
         let terminal = cx.new(|cx| {
             let name = host.name.clone();
-            let mut terminal = TerminalView::new(
+            let mut terminal = TerminalView::new_connection(
                 ("terminal", id.0),
                 move |_| t!("terminal.remote.label", host = name),
                 transports.factory_for(&connection),
+                true,
+                (protocol == ProtocolKind::Serial).then(|| (host.name.to_string(), serial_modes)),
                 window,
                 cx,
             );
@@ -167,7 +187,14 @@ impl TerminalPanel {
             terminal.take_dropped_files();
             terminal
         });
+        let hex_input = cx.new(|cx| InputState::new(window, cx).placeholder("00 FF 0D 0A"));
         let subscriptions = vec![
+            cx.observe_global::<super::TerminalConnectionSettings>(|_, cx| cx.notify()),
+            cx.subscribe_in(&hex_input, window, move |_, _, event, window, cx| {
+                if matches!(event, InputEvent::PressEnter { .. }) {
+                    window.dispatch_action(Box::new(SendSerialHex(id)), cx);
+                }
+            }),
             cx.observe(&store, |_, _, cx| cx.notify()),
             cx.observe(&terminal, |this, _, cx| {
                 cx.emit(TerminalPanelEvent::StatusChanged(this.id, this.host_id));
@@ -177,10 +204,18 @@ impl TerminalPanel {
                 &terminal,
                 window,
                 |this, _, event: &TerminalEvent, window, cx| match event {
+                    TerminalEvent::RecordingFailed(error) => {
+                        window.push_notification(
+                            Notification::error(t!("terminal.recording.failed", error = error)),
+                            cx,
+                        );
+                        cx.notify();
+                    }
                     TerminalEvent::Input(input) => {
                         cx.emit(TerminalPanelEvent::Input(this.id, input.clone()));
                     }
                     TerminalEvent::Started => {
+                        this.start_configured_recording(window, cx);
                         if let Some(command) = this
                             .initial_directory
                             .take()
@@ -247,6 +282,10 @@ impl TerminalPanel {
             broadcast: None,
             custom_title: title,
             initial_directory: directory,
+            hex_input,
+            recording_path: None,
+            recording_opening: false,
+            recording_task: None,
             _subscriptions: subscriptions,
         }
     }
@@ -345,6 +384,235 @@ impl TerminalPanel {
         });
     }
 
+    pub fn send_hex(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.host.kind() != ProtocolKind::Serial || !self.serial_modes(cx).send_hex {
+            return;
+        }
+        let text = self.hex_input.read(cx).value();
+        if let Err(error) = self.terminal.read(cx).send_hex(&text, cx) {
+            window.push_notification(Notification::error(error), cx);
+        }
+    }
+
+    pub fn serial_modes(&self, cx: &App) -> super::SerialDataModes {
+        self.terminal.read(cx).serial_modes(cx)
+    }
+
+    pub fn set_serial_modes(&mut self, modes: super::SerialDataModes, cx: &mut Context<Self>) {
+        if self.host.kind() != ProtocolKind::Serial {
+            return;
+        }
+        self.terminal
+            .update(cx, |terminal, cx| terminal.set_serial_modes(modes, cx));
+        cx.notify();
+    }
+
+    pub fn start_recording(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.recording_opening || self.terminal.read(cx).is_recording(cx) {
+            return;
+        }
+        let directory = self
+            .recording_path
+            .as_ref()
+            .and_then(|path| path.parent())
+            .map(PathBuf::from)
+            .or_else(dirs::document_dir)
+            .or_else(dirs::home_dir)
+            .unwrap_or_else(|| PathBuf::from("."));
+        let chosen = cx.prompt_for_new_path(&directory, Some("terminal.log"));
+        self.recording_opening = true;
+        cx.notify();
+        self.recording_task = Some(cx.spawn_in(window, async move |this, cx| {
+            let path = match chosen.await {
+                Ok(Ok(Some(path))) => Some(path),
+                Ok(Ok(None)) => None,
+                Ok(Err(error)) => {
+                    this.update_in(cx, |this, window, cx| {
+                        this.recording_opening = false;
+                        window.push_notification(
+                            Notification::error(t!("terminal.recording.failed", error = error)),
+                            cx,
+                        );
+                        cx.notify();
+                    })
+                    .ok();
+                    return;
+                }
+                Err(error) => {
+                    this.update_in(cx, |this, window, cx| {
+                        this.recording_opening = false;
+                        window.push_notification(
+                            Notification::error(t!("terminal.recording.failed", error = error)),
+                            cx,
+                        );
+                        cx.notify();
+                    })
+                    .ok();
+                    return;
+                }
+            };
+            let Some(path) = path else {
+                this.update_in(cx, |this, _, cx| {
+                    this.recording_opening = false;
+                    cx.notify();
+                })
+                .ok();
+                return;
+            };
+            this.update_in(cx, |this, window, cx| {
+                this.begin_recording(path, window, cx);
+            })
+            .ok();
+        }));
+    }
+
+    fn start_configured_recording(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.recording_opening || self.terminal.read(cx).is_recording(cx) {
+            return;
+        }
+        let Some(path) = self.host.log_file.as_ref() else {
+            return;
+        };
+        self.begin_recording(PathBuf::from(path.as_ref()), window, cx);
+    }
+
+    fn begin_recording(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        let hex = self.serial_modes(cx).receive_hex;
+        let file = path.clone();
+        self.recording_opening = true;
+        cx.notify();
+        self.recording_task = Some(cx.spawn_in(window, async move |this, cx| {
+            let result = cx
+                .background_spawn(async move { super::session_io::Recording::open(&file, hex) })
+                .await;
+            this.update_in(cx, |this, window, cx| {
+                this.recording_opening = false;
+                if this.lifecycle(cx) == TerminalLifecycle::Closing {
+                    return;
+                }
+                match result {
+                    Ok(recording) => {
+                        this.recording_path = Some(path);
+                        this.terminal
+                            .update(cx, |terminal, cx| terminal.set_recording(recording, cx));
+                    }
+                    Err(error) => window.push_notification(
+                        Notification::error(t!("terminal.recording.failed", error = error)),
+                        cx,
+                    ),
+                }
+                cx.notify();
+            })
+            .ok();
+        }));
+    }
+
+    pub fn stop_recording(&mut self, cx: &mut Context<Self>) {
+        self.recording_task = None;
+        self.recording_opening = false;
+        self.terminal
+            .update(cx, |terminal, cx| terminal.stop_recording(cx));
+        cx.notify();
+    }
+
+    pub fn clear_log(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(path) = self.recording_path.clone() else {
+            return;
+        };
+        let this = cx.entity();
+        let shown = path.display().to_string();
+        confirm_danger(
+            t!("terminal.recording.clear_title"),
+            Some(t!("terminal.recording.clear_description", path = shown)),
+            t!("terminal.recording.clear"),
+            Rc::new(move |window, cx| {
+                this.update(cx, |this, cx| this.clear_log_now(path.clone(), window, cx));
+            }),
+            window,
+            cx,
+        );
+    }
+
+    fn clear_log_now(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        let previous = self.terminal.read(cx).take_recording(cx);
+        let hex = self.serial_modes(cx).receive_hex;
+        let file = path.clone();
+        self.recording_opening = true;
+        cx.notify();
+        self.recording_task = Some(cx.spawn_in(window, async move |this, cx| {
+            let result = cx
+                .background_spawn(async move { super::session_io::clear_log(&file, previous, hex) })
+                .await;
+            this.update_in(cx, |this, window, cx| {
+                this.recording_opening = false;
+                match result {
+                    Ok(recording) => {
+                        this.recording_path = Some(path);
+                        this.terminal
+                            .update(cx, |terminal, cx| terminal.set_recording(recording, cx));
+                    }
+                    Err(error) => window.push_notification(
+                        Notification::error(t!("terminal.recording.failed", error = error)),
+                        cx,
+                    ),
+                }
+                cx.notify();
+            })
+            .ok();
+        }));
+    }
+
+    pub fn delete_log(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(path) = self.recording_path.clone() else {
+            return;
+        };
+        let this = cx.entity();
+        let shown = path.display().to_string();
+        confirm_danger(
+            t!("terminal.recording.delete_title"),
+            Some(t!("terminal.recording.delete_description", path = shown)),
+            t!("terminal.recording.delete"),
+            Rc::new(move |window, cx| {
+                this.update(cx, |this, cx| this.delete_log_now(path.clone(), window, cx));
+            }),
+            window,
+            cx,
+        );
+    }
+
+    fn delete_log_now(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        let previous = self.terminal.read(cx).take_recording(cx);
+        self.recording_path = None;
+        self.recording_opening = true;
+        cx.notify();
+        self.recording_task = Some(cx.spawn_in(window, async move |this, cx| {
+            let result = cx
+                .background_spawn(async move { super::session_io::delete_log(&path, previous) })
+                .await;
+            this.update_in(cx, |this, window, cx| {
+                this.recording_opening = false;
+                match result {
+                    Ok(()) => {
+                        let mut draft = this.host.draft();
+                        draft.log_file = None;
+                        this.host.log_file = None;
+                        let store = this.store.clone();
+                        let host_id = this.host_id;
+                        store.update(cx, |store, cx| {
+                            store.update(host_id, draft, cx);
+                        });
+                    }
+                    Err(error) => window.push_notification(
+                        Notification::error(t!("terminal.recording.failed", error = error)),
+                        cx,
+                    ),
+                }
+                cx.notify();
+            })
+            .ok();
+        }));
+    }
+
     /// What the user chose for the transfer `rz` or `sz` started.
     pub fn zmodem_reply(&self, reply: ZmodemReply, cx: &App) {
         self.terminal.read(cx).zmodem_reply(reply, cx);
@@ -422,6 +690,7 @@ impl BasePanel for TerminalPanel {
         if crate::shared::is_panel_transfer(cx.entity_id(), cx) {
             return;
         }
+        self.recording_task = None;
         self.terminal
             .update(cx, |terminal, cx| terminal.shutdown(cx));
         let id = self.host_id;
@@ -492,7 +761,29 @@ impl Panel for TerminalPanel {
             .on_click(move |_, window, cx| {
                 reconnect_dispatch.dispatch_action(&ReconnectTerminal(terminal_id), window, cx)
             });
-        Some(sftp.into_iter().chain([reconnect]).collect())
+        let recording = self.terminal.read(cx).is_recording(cx);
+        let dispatch = self.focus_handle(cx);
+        let record = Button::new(("terminal-recording", terminal_id.0))
+            .tooltip(t!("terminal.recording.description"))
+            .icon(Icon::new(if recording {
+                CatalogIcon::Square
+            } else {
+                CatalogIcon::Download
+            }))
+            .label(if recording {
+                t!("terminal.recording.stop")
+            } else {
+                t!("terminal.recording.start")
+            })
+            .disabled(self.recording_opening)
+            .on_click(move |_, window, cx| {
+                if recording {
+                    dispatch.dispatch_action(&StopTerminalRecording(terminal_id), window, cx);
+                } else {
+                    dispatch.dispatch_action(&StartTerminalRecording(terminal_id), window, cx);
+                }
+            });
+        Some(sftp.into_iter().chain([record, reconnect]).collect())
     }
 
     fn dropdown_menu(
@@ -681,7 +972,158 @@ impl TabMenu {
 }
 
 impl Render for TerminalPanel {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        div().size_full().child(self.terminal.clone())
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let serial = self.host.kind() == ProtocolKind::Serial;
+        let modes = self.serial_modes(cx);
+        let hex = serial && modes.send_hex;
+        let recording = self.terminal.read(cx).is_recording(cx);
+        let dispatch = self.focus_handle(cx);
+        let id = self.id;
+        v_flex()
+            .size_full()
+            .child(div().flex_1().min_h_0().child(self.terminal.clone()))
+            .when(recording, |view| {
+                view.child(
+                    h_flex()
+                        .id(("terminal-recording-path", id.0))
+                        .test_support()
+                        .text_sm()
+                        .w_full()
+                        .items_center()
+                        .justify_between()
+                        .gap_3()
+                        .px_2()
+                        .py_1()
+                        .text_color(cx.theme().muted_foreground)
+                        .aria_label(
+                            self.recording_path
+                                .as_ref()
+                                .map(|path| path.display().to_string())
+                                .unwrap_or_default(),
+                        )
+                        .child(div().flex_1().min_w_0().truncate().child(t!(
+                                    "terminal.recording.path",
+                                    path = self
+                                        .recording_path
+                                        .as_ref()
+                                        .map(|path| path.display().to_string())
+                                        .unwrap_or_default()
+                                )))
+                        .child(
+                            h_flex()
+                                .gap_1()
+                                .child(
+                                    Button::new(("terminal-log-clear", id.0))
+                                        .xsmall()
+                                        .ghost()
+                                        .label(t!("terminal.recording.clear"))
+                                        .on_click({
+                                            let dispatch = dispatch.clone();
+                                            move |_, window, cx| {
+                                                dispatch.dispatch_action(
+                                                    &ClearTerminalLog(id),
+                                                    window,
+                                                    cx,
+                                                )
+                                            }
+                                        }),
+                                )
+                                .child(
+                                    Button::new(("terminal-log-delete", id.0))
+                                        .xsmall()
+                                        .ghost()
+                                        .label(t!("terminal.recording.delete"))
+                                        .on_click({
+                                            let dispatch = dispatch.clone();
+                                            move |_, window, cx| {
+                                                dispatch.dispatch_action(
+                                                    &DeleteTerminalLog(id),
+                                                    window,
+                                                    cx,
+                                                )
+                                            }
+                                        }),
+                                ),
+                        ),
+                )
+            })
+            .when(serial, |view| {
+                view.child(
+                    h_flex()
+                        .p_2()
+                        .gap_3()
+                        .border_t_1()
+                        .border_color(cx.theme().border)
+                        .child(
+                            Checkbox::new(("serial-hex-receive", id.0))
+                                .small()
+                                .label(t!("serial.mode.receive_hex"))
+                                .checked(modes.receive_hex)
+                                .tooltip(t!("serial.mode.scope"))
+                                .on_click({
+                                    let dispatch = dispatch.clone();
+                                    move |_, window, cx| {
+                                        dispatch.dispatch_action(
+                                            &ToggleSerialReceiveHex(id),
+                                            window,
+                                            cx,
+                                        )
+                                    }
+                                }),
+                        )
+                        .child(
+                            Checkbox::new(("serial-hex-transmit", id.0))
+                                .small()
+                                .label(t!("serial.mode.send_hex"))
+                                .checked(modes.send_hex)
+                                .tooltip(t!("serial.mode.scope"))
+                                .on_click({
+                                    let dispatch = dispatch.clone();
+                                    move |_, window, cx| {
+                                        dispatch.dispatch_action(
+                                            &ToggleSerialSendHex(id),
+                                            window,
+                                            cx,
+                                        )
+                                    }
+                                }),
+                        ),
+                )
+            })
+            .when(hex, |view| {
+                view.child(
+                    v_flex()
+                        .p_2()
+                        .gap_1()
+                        .border_t_1()
+                        .border_color(cx.theme().border)
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(t!("serial.hex.hint")),
+                        )
+                        .child(
+                            h_flex()
+                                .gap_2()
+                                .child(
+                                    div().flex_1().min_w_0().child(
+                                        Input::new(&self.hex_input)
+                                            .id(("serial-hex-input", id.0))
+                                            .small(),
+                                    ),
+                                )
+                                .child(
+                                    Button::new(("serial-hex-send", id.0))
+                                        .small()
+                                        .label(t!("serial.hex.send"))
+                                        .disabled(self.lifecycle(cx) != TerminalLifecycle::Running)
+                                        .on_click(move |_, window, cx| {
+                                            dispatch.dispatch_action(&SendSerialHex(id), window, cx)
+                                        }),
+                                ),
+                        ),
+                )
+            })
     }
 }

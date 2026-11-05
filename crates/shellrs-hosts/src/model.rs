@@ -358,6 +358,9 @@ pub struct Host {
     pub group: Option<GroupId>,
     /// Whatever the user wants to remember about it; empty for none.
     pub notes: SharedString,
+    /// This computer's file to append received data to whenever the host
+    /// connects. A path is machine-specific, so it stays out of sync.
+    pub log_file: Option<SharedString>,
     /// Order among hosts in the same group.
     pub sort_order: i64,
     /// Detected on every successful connection and persisted, so the tree can
@@ -393,6 +396,7 @@ impl Host {
             route: draft.route,
             group: draft.group,
             notes: draft.notes,
+            log_file: draft.log_file,
             sort_order: 0,
             os: None,
             sidebar_tool: None,
@@ -449,6 +453,7 @@ impl Host {
             route: self.route.clone(),
             group: self.group,
             notes: self.notes.clone(),
+            log_file: self.log_file.clone(),
         }
     }
 }
@@ -519,6 +524,7 @@ pub struct HostDraft {
     pub route: Route,
     pub group: Option<GroupId>,
     pub notes: SharedString,
+    pub log_file: Option<SharedString>,
 }
 
 impl HostDraft {
@@ -541,6 +547,7 @@ impl HostDraft {
             route: Route::Direct,
             group,
             notes: SharedString::default(),
+            log_file: None,
         }
     }
 
@@ -586,6 +593,11 @@ impl HostDraft {
 
     pub fn with_notes(mut self, notes: impl Into<SharedString>) -> Self {
         self.notes = notes.into();
+        self
+    }
+
+    pub fn with_log_file(mut self, path: impl Into<SharedString>) -> Self {
+        self.log_file = Some(path.into());
         self
     }
 

@@ -1,4 +1,46 @@
 _version: 2
+terminal.reconnect.waiting:
+  zh-CN: "%{seconds} 秒后自动重连。手动断开或关闭标签可停止重试。"
+  en: "Reconnecting in %{seconds} seconds. Disconnect or close the tab to stop retries."
+terminal.recording.start:
+  zh-CN: 保存日志…
+  en: Save log…
+terminal.recording.description:
+  zh-CN: 选择文件后追加保存之后收到的数据。文本模式保留原始字节；串口十六进制接收模式保存 HEX 文本。不包含本地发送及连接提示，重连期间保持保存。
+  en: Choose a file to append new received data. Text mode keeps raw bytes; serial hex receive saves hex text. Local sends and connection notices are excluded. Logging continues across reconnections.
+terminal.recording.stop:
+  zh-CN: 停止保存
+  en: Stop logging
+terminal.recording.path:
+  zh-CN: "正在追加接收日志：%{path}"
+  en: "Appending received data to %{path}"
+terminal.recording.failed:
+  zh-CN: "日志保存已停止：%{error}"
+  en: "Logging stopped: %{error}"
+terminal.recording.clear:
+  zh-CN: 清空
+  en: Clear
+terminal.recording.clear_title:
+  zh-CN: 清空当前日志？
+  en: Clear the current log?
+terminal.recording.clear_description:
+  zh-CN: "会先停止写入，清空 %{path}，然后继续保存之后收到的数据。此操作不能撤销。"
+  en: "Writing stops, %{path} is emptied, then new received data is saved again. This can’t be undone."
+terminal.recording.delete:
+  zh-CN: 删除
+  en: Delete
+terminal.recording.delete_title:
+  zh-CN: 删除当前日志？
+  en: Delete the current log?
+terminal.recording.delete_description:
+  zh-CN: "会停止保存并删除 %{path}，同时清除这台主机的自动保存设置。此操作不能撤销。"
+  en: "Logging stops, %{path} is deleted, and this host’s automatic logging setting is cleared. This can’t be undone."
+terminal.recording.overloaded:
+  zh-CN: 磁盘写入跟不上接收速度，日志缓冲区已满，请检查磁盘后重新开始保存。
+  en: The log buffer is full because the disk cannot keep up. Check the disk and start logging again.
+terminal.recording.writer_stopped:
+  zh-CN: 日志写入线程已停止，请重新选择文件。
+  en: The log writer stopped. Choose a file again.
 
 # Remote terminal tab
 terminal.remote.label:

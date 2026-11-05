@@ -32,6 +32,8 @@ pub struct AppSettings {
     pub terminal_font: TerminalFontSettings,
     /// 终端 → 终端交互.
     pub terminal_interaction: TerminalInteraction,
+    pub terminal_connection: crate::terminal::TerminalConnectionSettings,
+    pub serial_preferences: crate::terminal::SerialPreferences,
     /// 终端 → 侧栏功能: which tools the right sidebar offers.
     pub sidebar_tools: SidebarTools,
     /// The left sidebar's visibility, restored on the next launch.
@@ -546,6 +548,8 @@ impl AppSettings {
             .sidebar_width
             .filter(|width| width.is_finite() && *width > 0.);
         self.terminal_font = self.terminal_font.normalized();
+        self.terminal_connection.reconnect_delay_secs =
+            self.terminal_connection.reconnect_delay_secs.clamp(1, 3600);
         // Whole pixels in range; what is not a number gives the default.
         let size = self.interface.font_size;
         self.interface.font_size = if size.is_finite() {

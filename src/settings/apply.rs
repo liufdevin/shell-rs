@@ -83,6 +83,14 @@ pub fn apply(settings: AppSettings, window: &mut Window, cx: &mut App) {
     if cx.try_global::<TerminalInteraction>() != Some(&settings.terminal_interaction) {
         cx.set_global(settings.terminal_interaction);
     }
+    if cx.try_global::<crate::terminal::TerminalConnectionSettings>()
+        != Some(&settings.terminal_connection)
+    {
+        cx.set_global(settings.terminal_connection);
+    }
+    if cx.try_global::<crate::terminal::SerialPreferences>() != Some(&settings.serial_preferences) {
+        cx.set_global(settings.serial_preferences);
+    }
 
     // Compiled once here for every terminal, which observe it; only when
     // the rules change, not on every change of the system appearance.

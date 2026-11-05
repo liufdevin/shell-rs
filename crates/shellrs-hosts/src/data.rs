@@ -2312,6 +2312,10 @@ impl HostData {
 /// credential that is not there logs in on its own. A Telnet host is kept
 /// as an SSH one: its credential is its 自动登录's.
 fn normalized(credentials: &[Credential], mut draft: HostDraft) -> HostDraft {
+    draft.log_file = draft
+        .log_file
+        .map(|path| path.trim().to_string().into())
+        .filter(|path: &SharedString| !path.is_empty());
     if draft.protocol.is_serial() {
         // Nothing of a login: no credential to count it as a user of, no
         // jump hosts to keep alive.

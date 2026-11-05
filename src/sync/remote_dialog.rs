@@ -3,9 +3,9 @@
 //! service's address, region, bucket, folder and keys). It sets sync up
 //! there, or signs in again once the place refused the login.
 //!
-//! Setting up, it looks whether the place has sync already and goes on to
-//! the sync password's dialog (create or join), handing it the login: the
-//! keychain keeps the password or secret key only once sync is set up.
+//! WebDAV uses its login password to create or join sync; older vaults
+//! with a separate password still ask for it. S3 opens the sync password
+//! dialog. The keychain keeps the login only once sync is set up.
 
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Sizable as _, WindowExt as _,
@@ -248,6 +248,39 @@ impl RemoteForm {
                 Job::Inspect(inspect) => inspect.await.map(Some),
                 Job::Login(change) => change.await.map(|()| None),
             };
+            let result = match result {
+                Ok(Some(present)) if matches!(location, SyncLocation::WebDav { .. }) => {
+                    let setup = this.update_in(cx, |this, _, cx| {
+                        this.service.update(cx, |service, cx| {
+                            if present {
+                                service.join(
+                                    location.clone(),
+                                    Some(login.clone()),
+                                    login.clone(),
+                                    true,
+                                    cx,
+                                )
+                            } else {
+                                service.create(
+                                    location.clone(),
+                                    Some(login.clone()),
+                                    login.clone(),
+                                    cx,
+                                )
+                            }
+                        })
+                    });
+                    let Ok(setup) = setup else { return };
+                    match setup.await {
+                        Ok(()) => Ok(None),
+                        Err(JobError::Sync(shellrs_sync::SyncError::WrongPassword)) if present => {
+                            Ok(Some(true))
+                        }
+                        Err(error) => Err(error),
+                    }
+                }
+                result => result,
+            };
             this.update_in(cx, |this, window, cx| {
                 this.working = false;
                 cx.notify();
@@ -392,6 +425,7 @@ impl Render for RemoteForm {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let muted = cx.theme().muted_foreground;
         let note = match self.fields {
+            Fields::WebDav { .. } if !self.signing_in() => t!("sync.webdav.setup_note"),
             Fields::WebDav { .. } => t!("sync.webdav.app_password"),
             Fields::S3 { .. } => t!("sync.s3.note"),
         };
@@ -458,7 +492,7 @@ pub fn open_remote_dialog(
     };
     let (title, commit_label) = match (&dialog, kind) {
         (RemoteDialog::SetUp(_), RemoteKind::WebDav) => {
-            (t!("sync.webdav.set_up_title"), t!("sync.webdav.next"))
+            (t!("sync.webdav.set_up_title"), t!("sync.webdav.connect"))
         }
         (RemoteDialog::SetUp(_), RemoteKind::S3) => {
             (t!("sync.s3.set_up_title"), t!("sync.webdav.next"))

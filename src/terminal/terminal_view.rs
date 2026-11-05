@@ -338,7 +338,19 @@ impl TerminalView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let engine = cx.new(|cx| TerminalEngine::new(factory, cx));
+        Self::new_connection(element_id, label, factory, false, None, window, cx)
+    }
+
+    pub(super) fn new_connection(
+        element_id: impl Into<ElementId>,
+        label: impl Fn(&App) -> SharedString + 'static,
+        factory: SharedTerminalTransportFactory,
+        remote: bool,
+        serial: Option<(String, super::SerialDataModes)>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let engine = cx.new(|cx| TerminalEngine::new_connection(factory, remote, serial, cx));
         let focus_handle = cx.focus_handle();
         let subscriptions = vec![
             cx.observe(&engine, |this, _, cx| {
@@ -521,6 +533,41 @@ impl TerminalView {
 
     pub fn send_break(&self, cx: &App) {
         self.engine.read(cx).send_break();
+    }
+
+    pub(super) fn send_hex(&self, text: &str, cx: &App) -> Result<(), SharedString> {
+        self.engine.read(cx).send_hex(text)
+    }
+
+    pub(super) fn serial_modes(&self, cx: &App) -> super::SerialDataModes {
+        self.engine.read(cx).serial_modes()
+    }
+
+    pub(super) fn set_serial_modes(&self, modes: super::SerialDataModes, cx: &mut Context<Self>) {
+        self.engine.read(cx).set_serial_modes(modes);
+        cx.notify();
+    }
+
+    pub(super) fn set_recording(
+        &self,
+        recording: super::session_io::Recording,
+        cx: &mut Context<Self>,
+    ) {
+        self.engine.read(cx).set_recording(recording);
+        cx.notify();
+    }
+
+    pub fn stop_recording(&self, cx: &mut Context<Self>) {
+        self.engine.read(cx).stop_recording();
+        cx.notify();
+    }
+
+    pub(super) fn take_recording(&self, cx: &App) -> Option<super::session_io::Recording> {
+        self.engine.read(cx).take_recording()
+    }
+
+    pub fn is_recording(&self, cx: &App) -> bool {
+        self.engine.read(cx).is_recording()
     }
 
     /// Forget everything in progress on the screen that is going away: IME
@@ -1215,7 +1262,7 @@ impl TerminalView {
     /// Apply broadcast input without emitting it again. Each terminal encodes
     /// keys and bracketed paste using its own mode; no focus is transferred.
     pub(crate) fn receive_input(&mut self, input: &TerminalInput, cx: &mut Context<Self>) -> bool {
-        if !self.lifecycle(cx).accepts_input() {
+        if !self.lifecycle(cx).accepts_input() || self.engine.read(cx).sends_hex() {
             return false;
         }
         let engine = self.engine.read(cx);

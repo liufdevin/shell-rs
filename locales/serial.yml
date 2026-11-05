@@ -1,4 +1,34 @@
 _version: 2
+serial.connected:
+  zh-CN: "%{name} connected successfully"
+  en: "%{name} connected successfully"
+serial.mode.receive_hex:
+  zh-CN: HEX 接收
+  en: HEX receive
+serial.mode.send_hex:
+  zh-CN: HEX 发送
+  en: HEX send
+serial.mode.scope:
+  zh-CN: 仅修改当前串口标签，其他已打开的标签不变。保存的主机会记住此选择，重新打开时恢复。
+  en: Changes only this serial tab, not other open tabs. Saved hosts remember these choices for the next connection.
+serial.hex.send:
+  zh-CN: 发送
+  en: Send
+serial.hex.hint:
+  zh-CN: 十六进制发送（Enter 发送），支持 00 FF 或 00FF；不会自动附加回车。终端直接键入已禁用。
+  en: Hex send (Enter to send). Use 00 FF or 00FF; no trailing Enter is added. Direct terminal typing is disabled.
+serial.hex.use_input:
+  zh-CN: 当前为十六进制发送模式，请使用终端下方的发送框。
+  en: Hex send is enabled. Use the send field below the terminal.
+serial.hex.invalid:
+  zh-CN: 十六进制数据格式不正确，请输入成对的字符，例如 00 FF 0D 0A。
+  en: Invalid hex data. Enter pairs of hex digits, such as 00 FF 0D 0A.
+serial.hex.empty:
+  zh-CN: 请输入要发送的十六进制数据。
+  en: Enter the hex data to send.
+serial.hex.too_large:
+  zh-CN: 单次发送的十六进制文本不能超过 256 KB。
+  en: Hex input is limited to 256 KB per send.
 
 # Opening the device of a serial host's terminal
 serial.open.not_found:

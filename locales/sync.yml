@@ -186,6 +186,12 @@ sync.webdav.password:
 sync.webdav.app_password:
   zh-CN: 地址是服务器上放同步数据的文件夹，不存在会自动建。Nextcloud 要用「设置 › 安全」里生成的应用密码。
   en: The address is the server folder sync goes in; it’s made if missing. For Nextcloud, use an app password from “Settings › Security”.
+sync.webdav.setup_note:
+  zh-CN: 地址是存放同步数据的文件夹，不存在会自动建。Nextcloud 请使用应用密码。此密码也用于加密同步数据，无需另设同步密码；知晓此密码的服务提供方也可能解密数据。旧同步若使用独立密码，加入时仍需输入原同步密码。
+  en: The address is the sync folder; it’s made if missing. For Nextcloud, use an app password. This password also encrypts sync data, so no separate sync password is needed; a provider that knows it may also decrypt the data. Older syncs with a separate password still need that original password to join.
+sync.webdav.connect:
+  zh-CN: 连接
+  en: Connect
 sync.webdav.test:
   zh-CN: 测试连接
   en: Test connection

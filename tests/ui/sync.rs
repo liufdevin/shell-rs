@@ -688,18 +688,9 @@ async fn set_up_on_the_server(cx: &mut TestAppContext, desk: &Desk, server: &Ser
         window.click("remote-commit", cx);
     });
     cx.wait_for(handle.into(), Duration::from_secs(2), |window, _| {
-        window.try_find("sync-password-repeat").is_some()
-    })
-    .await;
-    in_frame(cx, handle, |window, cx| {
-        window.click("sync-password", cx);
-        window.input(PASSWORD, cx);
-        window.click("sync-password-repeat", cx);
-        window.input(PASSWORD, cx);
-        window.click("sync-commit", cx);
-    });
-    cx.wait_for(handle.into(), Duration::from_secs(2), |window, _| {
-        window.try_find("sync-commit").is_none()
+        assert!(window.try_find("sync-password").is_none());
+        assert!(window.try_find("sync-password-repeat").is_none());
+        window.try_find("remote-commit").is_none()
     })
     .await;
     cx.run_until_parked();
@@ -756,24 +747,16 @@ async fn sync_is_set_up_on_a_webdav_server(cx: &mut TestAppContext) {
 
     in_frame(cx, handle, |window, cx| window.click("remote-commit", cx));
     cx.wait_for(handle.into(), Duration::from_secs(2), |window, _| {
-        window.try_find("sync-password-repeat").is_some()
-    })
-    .await;
-    in_frame(cx, handle, |window, cx| {
-        window.click("sync-password", cx);
-        window.input(PASSWORD, cx);
-        window.click("sync-password-repeat", cx);
-        window.input(PASSWORD, cx);
-        window.click("sync-commit", cx);
-    });
-    cx.wait_for(handle.into(), Duration::from_secs(2), |window, _| {
-        window.try_find("sync-commit").is_none()
+        assert!(window.try_find("sync-password").is_none());
+        assert!(window.try_find("sync-password-repeat").is_none());
+        window.try_find("remote-commit").is_none()
     })
     .await;
     cx.run_until_parked();
 
     assert_eq!(desk.location_setting(cx), Some(at_dav()));
     assert!(server.folder.raw(layout::VAULT).is_some());
+    assert!(shellrs_sync::unlock_vault(&*server.folder, &server.password()).is_ok());
     let kept = desk.secrets.get(&SecretRef::SyncLogin).unwrap();
     assert_eq!(kept.as_deref().map(String::as_str), Some("app-password"));
     // Rounds sign in with what the keychain keeps.
@@ -787,6 +770,117 @@ async fn sync_is_set_up_on_a_webdav_server(cx: &mut TestAppContext) {
         assert_eq!(window.find("sync-webdav-url").label(), Some(DAV));
         assert!(window.try_find("change-sync-login").is_some());
     });
+}
+
+#[gpui_kit::test]
+async fn webdav_joins_with_its_login_password(cx: &mut TestAppContext) {
+    let server = Server::new();
+    let first = desk_with(cx, server.services("first"));
+    set_up_on_the_server(cx, &first, &server).await;
+    let vault = server.folder.raw(layout::VAULT).unwrap();
+
+    let second = desk_with(cx, server.services("second"));
+    set_up_on_the_server(cx, &second, &server).await;
+
+    assert_eq!(second.location_setting(cx), Some(at_dav()));
+    assert_eq!(server.folder.raw(layout::VAULT).unwrap(), vault);
+    assert_eq!(
+        second
+            .secrets
+            .get(&SecretRef::SyncLogin)
+            .unwrap()
+            .as_deref()
+            .map(String::as_str),
+        Some(server.password().as_str())
+    );
+    let snapshot = second.sync(cx).read_with(cx, |sync, cx| sync.snapshot(cx));
+    assert!(matches!(snapshot.phase, SyncPhase::Synced { .. }));
+    assert_eq!(snapshot.attention, None);
+}
+
+#[gpui_kit::test]
+async fn webdav_can_join_an_older_sync_with_a_separate_password(cx: &mut TestAppContext) {
+    let server = Server::new();
+    let first = desk_with(cx, server.services("first"));
+    let create = first.sync(cx).update(cx, |sync, cx| {
+        sync.create(
+            at_dav(),
+            Some(Zeroizing::new(server.password())),
+            Zeroizing::new(PASSWORD.into()),
+            cx,
+        )
+    });
+    create.await.unwrap();
+    cx.run_until_parked();
+    let vault = server.folder.raw(layout::VAULT).unwrap();
+
+    let second = desk_with(cx, server.services("second"));
+    let handle = second.handle;
+    open_sync_settings(cx, handle);
+    in_frame(cx, handle, |window, cx| {
+        window.click("sync-set-up-webdav", cx)
+    });
+    in_frame(cx, handle, |window, cx| {
+        fill_webdav(window, &server.password(), cx);
+        window.click("remote-commit", cx);
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, _| {
+        window.try_find("sync-password").is_some()
+    })
+    .await;
+    assert_eq!(second.location_setting(cx), None);
+    assert!(second.secrets.get(&SecretRef::SyncLogin).unwrap().is_none());
+    in_frame(cx, handle, |window, cx| {
+        assert!(window.try_find("sync-password-repeat").is_none());
+        window.click("sync-password", cx);
+        window.input(PASSWORD, cx);
+        window.click("sync-commit", cx);
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, _| {
+        window.try_find("sync-commit").is_none()
+    })
+    .await;
+    cx.run_until_parked();
+    assert_eq!(second.location_setting(cx), Some(at_dav()));
+    assert_eq!(server.folder.raw(layout::VAULT).unwrap(), vault);
+    let snapshot = second.sync(cx).read_with(cx, |sync, cx| sync.snapshot(cx));
+    assert!(matches!(snapshot.phase, SyncPhase::Synced { .. }));
+}
+
+#[gpui_kit::test]
+async fn webdav_setup_keeps_the_form_after_a_write_failure(cx: &mut TestAppContext) {
+    let server = Server::new();
+    let desk = desk_with(cx, server.services("desk"));
+    let handle = desk.handle;
+    open_sync_settings(cx, handle);
+    in_frame(cx, handle, |window, cx| {
+        window.click("sync-set-up-webdav", cx)
+    });
+    server
+        .folder
+        .fail_next(|op| matches!(op, Op::Put(_)), StoreError::Timeout);
+    in_frame(cx, handle, |window, cx| {
+        fill_webdav(window, &server.password(), cx);
+        window.click("remote-commit", cx);
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, _| {
+        window.try_find("form-error").is_some()
+    })
+    .await;
+    assert_eq!(desk.location_setting(cx), None);
+    assert!(desk.secrets.get(&SecretRef::SyncLogin).unwrap().is_none());
+    in_frame(cx, handle, |window, cx| {
+        assert!(window.try_find("sync-password").is_none());
+        assert_eq!(window.find("webdav-url").value(), Some(DAV));
+        window.click("remote-commit", cx);
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, _| {
+        assert!(window.try_find("sync-password-repeat").is_none());
+        window.try_find("remote-commit").is_none()
+    })
+    .await;
+    cx.run_until_parked();
+    assert_eq!(desk.location_setting(cx), Some(at_dav()));
 }
 
 #[gpui_kit::test]

@@ -35,9 +35,13 @@ use crate::app::{
     NewHost, NewHostInGroup, NewLocalTerminal, NewTemporaryConnection, OpenExplorer, OpenSettings,
     PasteTerminal, QuickConnect, ReconnectTerminal, RefreshCliIntegration, RemoveAgentSkill,
     RemoveCliCommand, RenameExplorer, RenameGroup, RenameTerminal, RestartLocalTerminal,
-    RestoreWindow, ReturnDetachedTab, SelectAllTerminal, SendBreak, SetFileSizeFormat,
-    ShowOrHideApp, ToggleHiddenFiles, ToggleHostPanel, ToggleTerminalFindOption, ToggleTheme,
-    ToolKind, ZoomIn, ZoomOut, ZoomReset, ZoomTerminalIn, ZoomTerminalOut, ZoomTerminalReset,
+    RestoreWindow, ReturnDetachedTab, SelectAllTerminal, SendBreak, SendSerialHex,
+    SetFileSizeFormat, ShowOrHideApp, StartTerminalRecording, StopTerminalRecording,
+    ToggleHiddenFiles, ToggleHostPanel, ToggleTerminalFindOption, ToggleTheme, ToolKind, ZoomIn,
+    ZoomOut, ZoomReset, ZoomTerminalIn, ZoomTerminalOut, ZoomTerminalReset,
+};
+use crate::app::{
+    ClearTerminalLog, DeleteTerminalLog, ToggleSerialReceiveHex, ToggleSerialSendHex,
 };
 use crate::cli::{CliIntegration, CliServer, IntegrationPaths, SshCliBackend};
 use crate::connection::{
@@ -2282,6 +2286,109 @@ impl Workspace {
         }
     }
 
+    fn on_send_serial_hex(
+        &mut self,
+        action: &SendSerialHex,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(terminal) = self.terminals.get(&action.0).cloned() {
+            terminal.update(cx, |terminal, cx| terminal.send_hex(window, cx));
+        }
+    }
+
+    fn toggle_serial_mode(&mut self, id: RemoteTerminalId, receive: bool, cx: &mut Context<Self>) {
+        let Some(panel) = self.terminals.get(&id).cloned() else {
+            return;
+        };
+        let host = panel.read(cx).host();
+        if host.kind() != crate::host::ProtocolKind::Serial {
+            return;
+        }
+        let host_id = host.id;
+        let public_id = host.public_id.as_str().to_owned();
+        let modes = panel.update(cx, |panel, cx| {
+            let mut modes = panel.serial_modes(cx);
+            if receive {
+                modes.receive_hex = !modes.receive_hex;
+            } else {
+                modes.send_hex = !modes.send_hex;
+            }
+            panel.set_serial_modes(modes, cx);
+            modes
+        });
+        if !self.store.read(cx).is_temporary(host_id) {
+            self.settings.update(cx, |store, cx| {
+                store.update(
+                    |settings| settings.serial_preferences.set(public_id, modes),
+                    cx,
+                )
+            });
+        }
+    }
+
+    fn on_toggle_serial_receive_hex(
+        &mut self,
+        action: &ToggleSerialReceiveHex,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.toggle_serial_mode(action.0, true, cx);
+    }
+
+    fn on_toggle_serial_send_hex(
+        &mut self,
+        action: &ToggleSerialSendHex,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.toggle_serial_mode(action.0, false, cx);
+    }
+
+    fn on_start_terminal_recording(
+        &mut self,
+        action: &StartTerminalRecording,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(terminal) = self.terminals.get(&action.0).cloned() {
+            terminal.update(cx, |terminal, cx| terminal.start_recording(window, cx));
+        }
+    }
+
+    fn on_stop_terminal_recording(
+        &mut self,
+        action: &StopTerminalRecording,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(terminal) = self.terminals.get(&action.0).cloned() {
+            terminal.update(cx, |terminal, cx| terminal.stop_recording(cx));
+        }
+    }
+
+    fn on_clear_terminal_log(
+        &mut self,
+        action: &ClearTerminalLog,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(terminal) = self.terminals.get(&action.0).cloned() {
+            terminal.update(cx, |terminal, cx| terminal.clear_log(window, cx));
+        }
+    }
+
+    fn on_delete_terminal_log(
+        &mut self,
+        action: &DeleteTerminalLog,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(terminal) = self.terminals.get(&action.0).cloned() {
+            terminal.update(cx, |terminal, cx| terminal.delete_log(window, cx));
+        }
+    }
+
     fn on_disconnect_terminal(
         &mut self,
         action: &DisconnectTerminal,
@@ -3114,6 +3221,13 @@ impl Workspace {
             .on_action(cx.listener(Self::on_reconnect_terminal))
             .on_action(cx.listener(Self::on_disconnect_terminal))
             .on_action(cx.listener(Self::on_send_break))
+            .on_action(cx.listener(Self::on_send_serial_hex))
+            .on_action(cx.listener(Self::on_toggle_serial_receive_hex))
+            .on_action(cx.listener(Self::on_toggle_serial_send_hex))
+            .on_action(cx.listener(Self::on_start_terminal_recording))
+            .on_action(cx.listener(Self::on_stop_terminal_recording))
+            .on_action(cx.listener(Self::on_clear_terminal_log))
+            .on_action(cx.listener(Self::on_delete_terminal_log))
             .on_action(cx.listener(Self::on_open_explorer))
             .on_action(cx.listener(Self::on_explorer_action))
             .on_action(cx.listener(Self::on_explorer_shortcut))

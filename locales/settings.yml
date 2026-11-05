@@ -1,5 +1,19 @@
 _version: 2
-
+settings.connection.title:
+  zh-CN: 自动重连
+  en: Automatic reconnection
+settings.connection.auto_reconnect:
+  zh-CN: 掉线后自动重连
+  en: Reconnect after disconnection
+settings.connection.description:
+  zh-CN: 适用于 SSH、Telnet 和串口。连接失败后按间隔持续重试；手动断开、取消连接或关闭标签后停止重试。
+  en: Applies to SSH, Telnet and serial terminals. Failed connections retry at this interval; disconnecting, canceling or closing the tab stops retries.
+settings.connection.delay:
+  zh-CN: 重连间隔（秒）
+  en: Retry interval (seconds)
+settings.connection.delay_description:
+  zh-CN: 掉线或连接失败后等待的时间，范围为 1–3600 秒，默认 5 秒。
+  en: Wait after disconnection or a failed attempt. Between 1 and 3600 seconds; 5 by default.
 settings.choice.system:
   zh-CN: 跟随系统
   en: System

@@ -40,8 +40,8 @@ fn from_sql(id: i64) -> u64 {
 /// to 12 were development builds, and their files are refused. 14 adds the
 /// command snippets, 15 the serial hosts, 16 the Telnet hosts, 17 each
 /// host's right sidebar, 18 the saved local terminals, 19 their titles, 20
-/// what sync needs.
-const SCHEMA_VERSION: i64 = 20;
+/// what sync needs, 21 each host's local connection log.
+const SCHEMA_VERSION: i64 = 21;
 
 /// The whole schema, as a new database gets it.
 ///
@@ -170,6 +170,7 @@ CREATE TABLE hosts (
         CHECK (protocol = 'telnet' OR telnet_pass_prompt IS NULL),
     sidebar_tool      TEXT,
     edited_ms         INTEGER NOT NULL DEFAULT 0,
+    log_file          TEXT CHECK (log_file <> ''),
     CHECK ((auth = 'credential') = (credential_id IS NOT NULL)),
     CHECK ((auth = 'credential') = (username IS NULL)),
     CHECK ((route = 'proxy') = (proxy_kind IS NOT NULL)),
@@ -290,7 +291,7 @@ enum Step {
 ///
 /// A step is history: it says what that version's change was, and stays as
 /// written when `SCHEMA` changes again.
-const STEPS: [(i64, Step); 7] = [
+const STEPS: [(i64, Step); 8] = [
     (
     13,
     // The command snippets.
@@ -391,6 +392,16 @@ COMMIT;",
     ),
     // What sync needs.
     (19, Step::Code(add_sync)),
+    (
+        20,
+        // Each host's local connection log.
+        Step::Sql(
+            "BEGIN;
+ALTER TABLE hosts ADD COLUMN log_file TEXT CHECK (log_file <> '');
+PRAGMA user_version = 21;
+COMMIT;",
+        ),
+    ),
 ];
 
 /// Version 16, the Telnet hosts: `protocol` takes `telnet`, and the two
@@ -766,7 +777,7 @@ impl HostDatabase {
                  credential_id, route, proxy_kind, proxy_host, proxy_port, proxy_username, \
                  notes, os, protocol, serial_baud, serial_data_bits, serial_parity, \
                  serial_stop_bits, serial_flow, telnet_user_prompt, telnet_pass_prompt, \
-                 sidebar_tool, edited_ms \
+                 sidebar_tool, edited_ms, log_file \
                  FROM hosts ORDER BY id",
             )?
             .query_map([], |row| {
@@ -832,6 +843,7 @@ impl HostDatabase {
                 host.os = os.as_deref().and_then(HostOs::from_stored);
                 host.sidebar_tool = sidebar_tool.map(SharedString::from);
                 host.edited_ms = from_sql(row.get(26)?);
+                host.log_file = row.get::<_, Option<String>>(27)?.map(SharedString::from);
                 match protocol.as_str() {
                     "serial" => host.protocol = Protocol::Serial(serial.settings()),
                     "telnet" => host.protocol = Protocol::Telnet(telnet),
@@ -1237,9 +1249,9 @@ impl HostDatabase {
              username, credential_id, route, proxy_kind, proxy_host, proxy_port, \
              proxy_username, notes, os, protocol, serial_baud, serial_data_bits, \
              serial_parity, serial_stop_bits, serial_flow, telnet_user_prompt, \
-             telnet_pass_prompt, sidebar_tool, edited_ms) \
+             telnet_pass_prompt, sidebar_tool, log_file, edited_ms) \
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, \
-             ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27)",
+             ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28)",
             params![
                 to_sql(host.id.0),
                 host.public_id.as_str(),
@@ -1267,6 +1279,7 @@ impl HostDatabase {
                 row.telnet_user_prompt,
                 row.telnet_password_prompt,
                 host.sidebar_tool.as_deref(),
+                host.log_file.as_deref(),
                 to_sql(host.edited_ms),
             ],
         )?;
@@ -1288,7 +1301,8 @@ impl HostDatabase {
              proxy_kind = ?11, proxy_host = ?12, proxy_port = ?13, proxy_username = ?14, \
              notes = ?15, serial_baud = ?16, serial_data_bits = ?17, serial_parity = ?18, \
              serial_stop_bits = ?19, serial_flow = ?20, telnet_user_prompt = ?21, \
-             telnet_pass_prompt = ?22, protocol = ?23, edited_ms = ?24 WHERE id = ?1",
+             telnet_pass_prompt = ?22, protocol = ?23, log_file = ?24, edited_ms = ?25 \
+             WHERE id = ?1",
                 params![
                     to_sql(host.id.0),
                     host.group.map(|group| to_sql(group.0)),
@@ -1313,6 +1327,7 @@ impl HostDatabase {
                     row.telnet_user_prompt,
                     row.telnet_password_prompt,
                     host.protocol.as_str(),
+                    host.log_file.as_deref(),
                     to_sql(host.edited_ms),
                 ],
             )?;
@@ -3213,6 +3228,24 @@ INSERT INTO snippets (id, category_id, name, command) VALUES (1, 1, 'ps', 'docke
 
         db.update_host(&host(1, "web", None)).unwrap();
         assert_eq!(notes(&db), [String::new(), String::new()]);
+    }
+
+    #[test]
+    fn a_hosts_automatic_log_file_round_trips() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("shellrs.db");
+        {
+            let mut logged = host(1, "console", None);
+            logged.log_file = Some("/tmp/console.log".into());
+            let db = HostDatabase::open(&path).unwrap();
+            db.insert_host(&logged).unwrap();
+        }
+        let db = HostDatabase::open(&path).unwrap();
+        let loaded = db.load().unwrap();
+        assert_eq!(
+            loaded.hosts[0].log_file.as_deref(),
+            Some("/tmp/console.log")
+        );
     }
 
     fn routed(mut host: Host, route: Route) -> Host {

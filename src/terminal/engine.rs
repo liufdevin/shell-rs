@@ -37,6 +37,9 @@ use super::run::{BusyReason, RunFailure, RunHandle};
 use super::search::{
     MatchMarker, SearchDirection, SearchMark, SearchOptions, SearchPosition, TerminalSearch,
 };
+use super::session_io::{
+    Recording, SerialDataModes, SessionIo, TerminalConnectionSettings, format_hex,
+};
 use super::zmodem::{Fed, Shown, Zmodem, ZmodemControl, ZmodemDirection, ZmodemReply};
 use super::{
     ExecRequest, ExecResult, SharedTerminalTransportFactory, TerminalChannels, TerminalColors,
@@ -126,10 +129,25 @@ pub struct TerminalEngine {
     size: TerminalSize,
     event_sender: mpsc::Sender<TerminalUiEvent>,
     event_task: Option<gpui_kit::Task<()>>,
+    io: Arc<SessionIo>,
+    remote: bool,
+    serial_name: Option<String>,
+    reconnect_allowed: bool,
+    reconnect_task: Option<gpui_kit::Task<()>>,
+    _connection_observer: gpui_kit::Subscription,
 }
 
 impl TerminalEngine {
     pub fn new(factory: SharedTerminalTransportFactory, cx: &mut gpui_kit::Context<Self>) -> Self {
+        Self::new_connection(factory, false, None, cx)
+    }
+
+    pub(super) fn new_connection(
+        factory: SharedTerminalTransportFactory,
+        remote: bool,
+        serial: Option<(String, SerialDataModes)>,
+        cx: &mut gpui_kit::Context<Self>,
+    ) -> Self {
         let size = TerminalSize::DEFAULT;
         let generation = 1;
         // A timer drains this standard channel on the UI thread. Parser
@@ -138,14 +156,23 @@ impl TerminalEngine {
         let (event_sender, event_receiver) = mpsc::channel();
         let highlights = Arc::new(Mutex::new(TerminalHighlights::current(cx)));
         let theme = Arc::new(Mutex::new(TerminalColors::current(cx)));
+        let io = Arc::new(SessionIo::default());
+        let (serial_name, modes) = serial
+            .map(|(name, modes)| (Some(name), modes))
+            .unwrap_or_default();
+        io.receive_hex.store(modes.receive_hex, Ordering::Release);
+        io.send_hex.store(modes.send_hex, Ordering::Release);
         let runtime = TerminalRuntime::start(
             generation,
             size,
             factory.create(),
             event_sender.clone(),
-            highlights.clone(),
-            theme.clone(),
-            TerminalInteraction::current(cx),
+            RuntimeOptions {
+                highlights: highlights.clone(),
+                theme: theme.clone(),
+                interaction: TerminalInteraction::current(cx),
+                io: io.clone(),
+            },
         );
         let channels = TerminalChannels::default();
         channels.attach(runtime.commands.clone());
@@ -165,6 +192,11 @@ impl TerminalEngine {
                 .term
                 .lock()
                 .set_options(terminal_config(TerminalInteraction::current(cx)));
+            cx.notify();
+        });
+        let connection_observer = cx.observe_global::<TerminalConnectionSettings>(|this, cx| {
+            this.reconnect_task = None;
+            this.schedule_reconnect(cx);
             cx.notify();
         });
         let mut this = Self {
@@ -188,13 +220,24 @@ impl TerminalEngine {
             size,
             event_sender,
             event_task: None,
+            io,
+            remote,
+            serial_name: serial_name.map(|name| {
+                name.chars()
+                    .filter(|character| !character.is_control())
+                    .collect()
+            }),
+            reconnect_allowed: true,
+            reconnect_task: None,
+            _connection_observer: connection_observer,
         };
-        this.event_task = Some(Self::listen(event_receiver, cx));
+        this.event_task = Some(Self::listen(event_receiver, this.io.clone(), cx));
         this
     }
 
     fn listen(
         events: mpsc::Receiver<TerminalUiEvent>,
+        io: Arc<SessionIo>,
         cx: &mut gpui_kit::Context<Self>,
     ) -> gpui_kit::Task<()> {
         cx.spawn(async move |this, cx| {
@@ -208,13 +251,17 @@ impl TerminalEngine {
                     .timer(Duration::from_millis(16))
                     .await;
                 let batch: Vec<_> = events.try_iter().collect();
-                if batch.is_empty() && !undrawn {
+                let recording_error = io.take_error();
+                if batch.is_empty() && !undrawn && recording_error.is_none() {
                     continue;
                 }
                 let now = Instant::now();
                 let draw = crate::app::frame_due(drawn, now);
                 if this
                     .update(cx, |this, cx| {
+                        if let Some(error) = recording_error {
+                            cx.emit(TerminalEvent::RecordingFailed(error));
+                        }
                         for event in batch {
                             if let Some(event) = this.handle_event(event, cx) {
                                 cx.emit(event);
@@ -241,7 +288,7 @@ impl TerminalEngine {
     fn handle_event(
         &mut self,
         event: TerminalUiEvent,
-        cx: &mut gpui_kit::App,
+        cx: &mut gpui_kit::Context<Self>,
     ) -> Option<TerminalEvent> {
         if event.generation != self.generation {
             return None;
@@ -250,6 +297,11 @@ impl TerminalEngine {
         match event.kind {
             TerminalUiEventKind::Started => {
                 self.lifecycle = TerminalLifecycle::Running;
+                self.reconnect_task = None;
+                if let Some(name) = &self.serial_name {
+                    append_message(&self.runtime.term, &t!("serial.connected", name = name));
+                    self.output_revision = self.output_revision.wrapping_add(1);
+                }
                 return Some(TerminalEvent::Started);
             }
             TerminalUiEventKind::Wakeup => {
@@ -263,12 +315,14 @@ impl TerminalEngine {
                 self.lifecycle = TerminalLifecycle::Exited { code, signal };
                 self.latency = None;
                 self.directory = None;
+                self.schedule_reconnect(cx);
             }
             TerminalUiEventKind::Failed(error) => {
                 self.append_reconnect_hint();
                 self.lifecycle = TerminalLifecycle::Failed(error);
                 self.latency = None;
                 self.directory = None;
+                self.schedule_reconnect(cx);
             }
             // Each prompt reports the folder again: only a change is news.
             TerminalUiEventKind::Directory(directory) => {
@@ -313,6 +367,97 @@ impl TerminalEngine {
         self.reconnect_on_enter = true;
     }
 
+    pub(super) fn set_serial_modes(&self, modes: SerialDataModes) {
+        self.io.receive_hex.store(
+            self.serial_name.is_some() && modes.receive_hex,
+            Ordering::Release,
+        );
+        self.io.send_hex.store(
+            self.serial_name.is_some() && modes.send_hex,
+            Ordering::Release,
+        );
+    }
+
+    pub(super) fn serial_modes(&self) -> SerialDataModes {
+        SerialDataModes {
+            receive_hex: self.io.displays_hex(),
+            send_hex: self.sends_hex(),
+        }
+    }
+
+    pub(super) fn sends_hex(&self) -> bool {
+        self.io.send_hex.load(Ordering::Acquire)
+    }
+
+    fn schedule_reconnect(&mut self, cx: &mut gpui_kit::Context<Self>) {
+        let settings = TerminalConnectionSettings::current(cx);
+        if !self.remote
+            || !self.reconnect_allowed
+            || !settings.auto_reconnect
+            || self.reconnect_task.is_some()
+            || !matches!(
+                self.lifecycle,
+                TerminalLifecycle::Exited { .. } | TerminalLifecycle::Failed(_)
+            )
+        {
+            return;
+        }
+        let generation = self.generation;
+        append_message(
+            &self.runtime.term,
+            &t!(
+                "terminal.reconnect.waiting",
+                seconds = settings.reconnect_delay_secs
+            ),
+        );
+        self.reconnect_task = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(Duration::from_secs(u64::from(
+                    settings.reconnect_delay_secs,
+                )))
+                .await;
+            this.update(cx, |this, cx| {
+                this.reconnect_task = None;
+                if this.generation == generation
+                    && this.reconnect_allowed
+                    && TerminalConnectionSettings::current(cx).auto_reconnect
+                    && matches!(
+                        this.lifecycle,
+                        TerminalLifecycle::Exited { .. } | TerminalLifecycle::Failed(_)
+                    )
+                {
+                    this.restart(cx);
+                }
+            })
+            .ok();
+        }));
+    }
+
+    pub(super) fn set_recording(&self, recording: Recording) {
+        self.io.set_recording(recording);
+    }
+
+    pub(super) fn stop_recording(&self) {
+        self.io.stop_recording();
+    }
+
+    pub(super) fn take_recording(&self) -> Option<Recording> {
+        self.io.take_recording()
+    }
+
+    pub fn is_recording(&self) -> bool {
+        self.io.is_recording()
+    }
+
+    pub(super) fn send_hex(&self, text: &str) -> Result<(), SharedString> {
+        if !self.lifecycle.accepts_input() {
+            return Err(t!("terminal.command.not_connected"));
+        }
+        let bytes = super::session_io::decode_hex(text)?;
+        self.runtime.write(bytes);
+        Ok(())
+    }
+
     fn append_reconnect_hint(&self) {
         if self.reconnect_on_enter {
             append_message(
@@ -323,6 +468,8 @@ impl TerminalEngine {
     }
 
     pub fn restart(&mut self, cx: &mut gpui_kit::Context<Self>) {
+        self.reconnect_task = None;
+        self.reconnect_allowed = true;
         self.output_revision = self.output_revision.wrapping_add(1);
         self.generation = self.generation.saturating_add(1);
         self.runtime.shutdown();
@@ -337,9 +484,12 @@ impl TerminalEngine {
             self.size,
             self.factory.create(),
             self.event_sender.clone(),
-            self.highlights.clone(),
-            self.theme.clone(),
-            TerminalInteraction::current(cx),
+            RuntimeOptions {
+                highlights: self.highlights.clone(),
+                theme: self.theme.clone(),
+                interaction: TerminalInteraction::current(cx),
+                io: self.io.clone(),
+            },
         );
         self.channels.attach(self.runtime.commands.clone());
         cx.notify();
@@ -367,6 +517,9 @@ impl TerminalEngine {
     }
 
     pub fn shutdown(&mut self, cx: &mut gpui_kit::Context<Self>) {
+        self.reconnect_task = None;
+        self.reconnect_allowed = false;
+        self.io.stop_recording();
         self.generation = self.generation.saturating_add(1);
         self.lifecycle = TerminalLifecycle::Closing;
         self.runtime.shutdown();
@@ -376,6 +529,8 @@ impl TerminalEngine {
     }
 
     pub fn stop(&mut self, message: &str, cx: &mut gpui_kit::Context<Self>) {
+        self.reconnect_task = None;
+        self.reconnect_allowed = false;
         self.generation = self.generation.saturating_add(1);
         self.runtime.shutdown();
         self.channels.detach();
@@ -399,7 +554,7 @@ impl TerminalEngine {
     /// terminal query responses and focus reports, interactive input returns
     /// to the live screen and retires the previous selection first.
     pub fn send_user_input(&self, bytes: impl Into<Vec<u8>>) {
-        if !self.lifecycle.accepts_input() {
+        if !self.lifecycle.accepts_input() || self.sends_hex() {
             return;
         }
 
@@ -434,6 +589,9 @@ impl TerminalEngine {
     ) -> Result<(), SharedString> {
         if !self.lifecycle.accepts_input() {
             return Err(t!("terminal.command.not_connected"));
+        }
+        if self.sends_hex() {
+            return Err(t!("serial.hex.use_input"));
         }
         self.send_user_input(encode_command(command, run, replace, self.mode())?);
         Ok(())
@@ -877,12 +1035,14 @@ impl gpui_kit::EventEmitter<TerminalEvent> for TerminalEngine {}
 
 impl Drop for TerminalEngine {
     fn drop(&mut self) {
+        self.io.stop_recording();
         self.runtime.shutdown();
     }
 }
 
 #[derive(Clone, Debug)]
 pub enum TerminalEvent {
+    RecordingFailed(String),
     /// Emitted only by TerminalView for direct user input, never by the engine.
     Input(super::TerminalInputEvent),
     /// The shell is there: connected, for a remote terminal, again after
@@ -921,16 +1081,27 @@ struct TerminalRuntime {
     transferring: Arc<AtomicBool>,
 }
 
+struct RuntimeOptions {
+    highlights: SharedHighlights,
+    theme: SharedTheme,
+    interaction: TerminalInteraction,
+    io: Arc<SessionIo>,
+}
+
 impl TerminalRuntime {
     fn start(
         generation: u64,
         size: TerminalSize,
         transport: Box<dyn super::TerminalTransport>,
         ui_events: mpsc::Sender<TerminalUiEvent>,
-        highlights: SharedHighlights,
-        theme: SharedTheme,
-        interaction: TerminalInteraction,
+        options: RuntimeOptions,
     ) -> Self {
+        let RuntimeOptions {
+            highlights,
+            theme,
+            interaction,
+            io,
+        } = options;
         let (commands, command_receiver) = mpsc::channel();
         let (transport_events, transport_receiver) = async_channel::unbounded();
         let shared_size = Arc::new(Mutex::new(size));
@@ -1002,6 +1173,15 @@ impl TerminalRuntime {
                             parser.proxy.send(TerminalUiEventKind::Started);
                         }
                         TerminalTransportEvent::Output(bytes) => {
+                            io.record(&bytes);
+                            if io.displays_hex() {
+                                let text = format!("{}\r\n", format_hex(&bytes));
+                                parser
+                                    .processor
+                                    .advance(&mut *parser.term.lock(), text.as_bytes());
+                                parser.proxy.wakeup();
+                                continue;
+                            }
                             // Files dropped on the terminal come as a control
                             // sent before the `rz` typed for them, but its
                             // answer may be here with the control still
@@ -2366,11 +2546,14 @@ mod tests {
             TerminalSize::new(40, 4, 8, 16),
             Box::new(ScriptedTransport(script)),
             ui_events,
-            Arc::default(),
-            Arc::new(Mutex::new(TerminalTheme::default_for(
-                gpui_kit::component::ThemeMode::Light,
-            ))),
-            TerminalInteraction::default(),
+            RuntimeOptions {
+                highlights: Arc::default(),
+                theme: Arc::new(Mutex::new(TerminalTheme::default_for(
+                    gpui_kit::component::ThemeMode::Light,
+                ))),
+                interaction: TerminalInteraction::default(),
+                io: Arc::default(),
+            },
         )
     }
 
@@ -2516,11 +2699,14 @@ mod tests {
                 commands: commands_out,
             }),
             ui_events,
-            Arc::default(),
-            Arc::new(Mutex::new(TerminalTheme::default_for(
-                gpui_kit::component::ThemeMode::Light,
-            ))),
-            TerminalInteraction::default(),
+            RuntimeOptions {
+                highlights: Arc::default(),
+                theme: Arc::new(Mutex::new(TerminalTheme::default_for(
+                    gpui_kit::component::ThemeMode::Light,
+                ))),
+                interaction: TerminalInteraction::default(),
+                io: Arc::default(),
+            },
         );
         events.send(TerminalTransportEvent::Started).unwrap();
         (runtime, events, commands, ui)

@@ -234,6 +234,62 @@ mod tests {
     }
 
     #[test]
+    fn terminal_connection_preferences_survive_a_restart_and_clamp_retry_delays() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let (mut store, _) = SettingsStore::load(path.clone());
+        assert!(!store.settings().terminal_connection.auto_reconnect);
+        assert_eq!(store.settings().terminal_connection.reconnect_delay_secs, 5);
+        store
+            .update_unnotified(|settings| {
+                settings.terminal_connection.auto_reconnect = true;
+                settings.terminal_connection.reconnect_delay_secs = 12;
+                let modes = crate::terminal::SerialDataModes {
+                    receive_hex: true,
+                    ..Default::default()
+                };
+                settings
+                    .serial_preferences
+                    .set("serial-host-1".into(), modes);
+            })
+            .unwrap()
+            .unwrap();
+        let (mut reloaded, problem) = SettingsStore::load(path);
+        assert!(problem.is_none());
+        assert_eq!(
+            reloaded.settings().terminal_connection,
+            store.settings().terminal_connection
+        );
+        assert_eq!(
+            reloaded.settings().serial_preferences,
+            store.settings().serial_preferences
+        );
+        assert!(
+            reloaded
+                .settings()
+                .serial_preferences
+                .get("serial-host-1")
+                .receive_hex
+        );
+        assert_eq!(
+            reloaded.settings().serial_preferences.get("serial-host-2"),
+            crate::terminal::SerialDataModes::default()
+        );
+        for (delay, expected) in [(0, 1), (u32::MAX, 3600)] {
+            reloaded
+                .update_unnotified(|settings| {
+                    settings.terminal_connection.reconnect_delay_secs = delay
+                })
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                reloaded.settings().terminal_connection.reconnect_delay_secs,
+                expected
+            );
+        }
+    }
+
+    #[test]
     fn an_unreadable_file_falls_back_to_the_defaults_and_says_so() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("settings.json");
