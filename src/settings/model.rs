@@ -32,7 +32,6 @@ pub struct AppSettings {
     pub terminal_font: TerminalFontSettings,
     /// 终端 → 终端交互.
     pub terminal_interaction: TerminalInteraction,
-    pub terminal_connection: crate::terminal::TerminalConnectionSettings,
     pub serial_preferences: crate::terminal::SerialPreferences,
     /// 终端 → 侧栏功能: which tools the right sidebar offers.
     pub sidebar_tools: SidebarTools,
@@ -249,6 +248,8 @@ pub struct TerminalThemeSettings {
     /// 界面跟随主题. Off until the user turns it on: the app keeps
     /// gpui-kit's own neutral light or dark colors.
     pub app_follows: bool,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub imported: Vec<TerminalTheme>,
 }
 
 impl Default for TerminalThemeSettings {
@@ -257,6 +258,7 @@ impl Default for TerminalThemeSettings {
             light: TerminalTheme::default_for(ThemeMode::Light).key().into(),
             dark: TerminalTheme::default_for(ThemeMode::Dark).key().into(),
             app_follows: false,
+            imported: Vec::new(),
         }
     }
 }
@@ -264,7 +266,7 @@ impl Default for TerminalThemeSettings {
 impl TerminalThemeSettings {
     /// The theme the app's colors come from for `mode`: the chosen one, or
     /// the default, ShellRS Light or Dark, when the app does not follow.
-    pub fn app_theme(&self, mode: ThemeMode) -> &'static TerminalTheme {
+    pub fn app_theme(&self, mode: ThemeMode) -> &TerminalTheme {
         if self.app_follows {
             self.theme(mode)
         } else {
@@ -288,12 +290,15 @@ impl TerminalThemeSettings {
     /// The theme for `mode`. A key this version does not know (from a newer
     /// one, or a typo), or one of a theme for the other appearance, gives
     /// way to the default rather than failing the file.
-    pub fn theme(&self, mode: ThemeMode) -> &'static TerminalTheme {
+    pub fn theme(&self, mode: ThemeMode) -> &TerminalTheme {
         let key = match mode {
             ThemeMode::Light => &self.light,
             ThemeMode::Dark => &self.dark,
         };
-        TerminalTheme::find(key)
+        self.imported
+            .iter()
+            .find(|theme| theme.key() == key)
+            .or_else(|| TerminalTheme::find(key))
             .filter(|theme| theme.mode() == mode)
             .unwrap_or_else(|| TerminalTheme::default_for(mode))
     }
@@ -304,6 +309,28 @@ impl TerminalThemeSettings {
         match theme.mode() {
             ThemeMode::Light => self.light = key,
             ThemeMode::Dark => self.dark = key,
+        }
+    }
+
+    pub fn import(&mut self, themes: Vec<TerminalTheme>) {
+        for theme in themes {
+            self.imported
+                .retain(|existing| existing.key() != theme.key());
+            self.imported.push(theme);
+        }
+    }
+
+    pub fn remove_imported(&mut self, key: &str) {
+        if !self.imported.iter().any(|theme| theme.key() == key) {
+            return;
+        }
+        self.imported.retain(|theme| theme.key() != key);
+        let default = Self::default();
+        if self.light == key {
+            self.light = default.light;
+        }
+        if self.dark == key {
+            self.dark = default.dark;
         }
     }
 }
@@ -548,8 +575,6 @@ impl AppSettings {
             .sidebar_width
             .filter(|width| width.is_finite() && *width > 0.);
         self.terminal_font = self.terminal_font.normalized();
-        self.terminal_connection.reconnect_delay_secs =
-            self.terminal_connection.reconnect_delay_secs.clamp(1, 3600);
         // Whole pixels in range; what is not a number gives the default.
         let size = self.interface.font_size;
         self.interface.font_size = if size.is_finite() {
@@ -1073,6 +1098,36 @@ mod tests {
     }
 
     #[test]
+    fn imported_themes_persist_update_and_restore_defaults_when_removed() {
+        let bytes = include_bytes!("../../tests/fixtures/xshell/3024 Day.xcs");
+        let theme = crate::terminal::import_xshell_schemes(bytes)
+            .unwrap()
+            .remove(0);
+        let mut themes = TerminalThemeSettings::default();
+        themes.import(vec![theme.clone()]);
+        themes.choose(&theme);
+        let mut themes: TerminalThemeSettings =
+            serde_json::from_slice(&serde_json::to_vec(&themes).unwrap()).unwrap();
+        assert_eq!(themes.theme(ThemeMode::Light), &theme);
+        assert_eq!(themes.imported.len(), 1);
+        let changed = String::from_utf8(bytes.to_vec())
+            .unwrap()
+            .replace("text=4a4543", "text=123456");
+        let changed = crate::terminal::import_xshell_schemes(changed.as_bytes())
+            .unwrap()
+            .remove(0);
+        themes.import(vec![changed.clone()]);
+        assert_eq!(themes.imported.len(), 1);
+        assert_eq!(themes.theme(ThemeMode::Light), &changed);
+        themes.remove_imported(theme.key());
+        assert!(themes.is_default_choice());
+        assert!(themes.imported.is_empty());
+        themes.choose(TerminalTheme::find("nord").unwrap());
+        themes.remove_imported("nord");
+        assert_eq!(themes.dark, "nord");
+    }
+
+    #[test]
     fn the_window_is_remembered_unless_the_file_says_otherwise() {
         let settings: AppSettings = serde_json::from_str("{}").unwrap();
         assert!(settings.window.remember_size && settings.window.remember_position);
@@ -1097,6 +1152,7 @@ mod tests {
     fn terminals_show_the_menu_and_copy_only_on_command_unless_the_file_says_otherwise() {
         let settings: AppSettings = serde_json::from_str("{}").unwrap();
         assert!(!settings.terminal_interaction.copy_on_select);
+        assert!(!settings.terminal_interaction.hide_ai_citations);
         assert_eq!(settings.terminal_interaction.right_click, RightClick::Menu);
         let settings: AppSettings =
             serde_json::from_str(r#"{"terminal_interaction":{"right_click":"paste"}}"#).unwrap();

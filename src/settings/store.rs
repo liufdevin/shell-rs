@@ -172,6 +172,7 @@ mod tests {
             settings.language = InterfaceLanguage::English;
             settings.terminal_interaction.cursor_style = crate::terminal::TerminalCursorStyle::Beam;
             settings.terminal_interaction.cursor_blinking = false;
+            settings.terminal_interaction.hide_ai_citations = true;
             settings.terminal_interaction.right_click = crate::terminal::RightClick::Enter;
             settings.terminal_interaction.middle_click = crate::terminal::MiddleClick::Paste;
             settings.snippet_shortcuts.set(
@@ -197,6 +198,7 @@ mod tests {
             crate::terminal::TerminalCursorStyle::Beam
         );
         assert!(!reloaded.settings().terminal_interaction.cursor_blinking);
+        assert!(reloaded.settings().terminal_interaction.hide_ai_citations);
         assert_eq!(
             reloaded.settings().terminal_interaction.right_click,
             crate::terminal::RightClick::Enter
@@ -222,6 +224,32 @@ mod tests {
     }
 
     #[test]
+    fn imported_xshell_palette_and_selection_survive_a_settings_reload() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let (mut store, _) = SettingsStore::load(path.clone());
+        let theme = crate::terminal::import_xshell_schemes(include_bytes!(
+            "../../tests/fixtures/xshell/3024 Day.xcs"
+        ))
+        .unwrap()
+        .remove(0);
+        let saved = store.update_unnotified(|settings| {
+            settings.terminal_theme.import(vec![theme.clone()]);
+            settings.terminal_theme.choose(&theme);
+        });
+        assert!(matches!(saved, Some(Ok(()))));
+        let (loaded, problem) = SettingsStore::load(path);
+        assert!(problem.is_none());
+        assert_eq!(
+            loaded
+                .settings()
+                .terminal_theme
+                .theme(gpui_kit::component::ThemeMode::Light),
+            &theme
+        );
+    }
+
+    #[test]
     fn kubernetes_is_hidden_until_turned_on() {
         for json in [r#"{}"#, r#"{"sidebar_tools":{}}"#] {
             let settings: AppSettings = serde_json::from_str(json).unwrap();
@@ -234,16 +262,12 @@ mod tests {
     }
 
     #[test]
-    fn terminal_connection_preferences_survive_a_restart_and_clamp_retry_delays() {
+    fn serial_preferences_survive_a_restart() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("settings.json");
         let (mut store, _) = SettingsStore::load(path.clone());
-        assert!(!store.settings().terminal_connection.auto_reconnect);
-        assert_eq!(store.settings().terminal_connection.reconnect_delay_secs, 5);
         store
             .update_unnotified(|settings| {
-                settings.terminal_connection.auto_reconnect = true;
-                settings.terminal_connection.reconnect_delay_secs = 12;
                 let modes = crate::terminal::SerialDataModes {
                     receive_hex: true,
                     ..Default::default()
@@ -254,12 +278,8 @@ mod tests {
             })
             .unwrap()
             .unwrap();
-        let (mut reloaded, problem) = SettingsStore::load(path);
+        let (reloaded, problem) = SettingsStore::load(path);
         assert!(problem.is_none());
-        assert_eq!(
-            reloaded.settings().terminal_connection,
-            store.settings().terminal_connection
-        );
         assert_eq!(
             reloaded.settings().serial_preferences,
             store.settings().serial_preferences
@@ -275,18 +295,6 @@ mod tests {
             reloaded.settings().serial_preferences.get("serial-host-2"),
             crate::terminal::SerialDataModes::default()
         );
-        for (delay, expected) in [(0, 1), (u32::MAX, 3600)] {
-            reloaded
-                .update_unnotified(|settings| {
-                    settings.terminal_connection.reconnect_delay_secs = delay
-                })
-                .unwrap()
-                .unwrap();
-            assert_eq!(
-                reloaded.settings().terminal_connection.reconnect_delay_secs,
-                expected
-            );
-        }
     }
 
     #[test]

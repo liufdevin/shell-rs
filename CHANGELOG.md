@@ -4,6 +4,21 @@
 
 One section per version, titled `## [version]`, optionally followed by a date. Each section is written in English here and in Chinese in [CHANGELOG.zh.md](CHANGELOG.zh.md), in the same change. The release workflow (`.github/workflows/release.yml`) takes the section with the tag’s version, as it is, for the GitHub release. The website’s changelog shows this file in English and Japanese and CHANGELOG.zh.md in Chinese (ShellRS’s update dialog opens it with What’s new). Written in Markdown, for users.
 
+## [0.1.18]
+
+### Added
+
+- Import Xshell `.xcs` color schemes under Settings → Appearance → Theme. A file may contain several schemes, including bold text, background and ANSI 16 colors. Imported schemes persist across launches, update when reimported under the same name, and can be removed.
+- Configure automatic reconnection per host. Serial, SSH and Telnet terminals retry a dropped connection at a chosen interval, from 1 to 3600 seconds; disabling it, disconnecting or closing the tab stops retrying.
+- Save connection logs per host without choosing a file. An optional folder can be selected, otherwise logs go to the app data folder. Files use the host name and date, rotate at midnight, and can still be cleared or deleted from the terminal.
+- Show HEX receive and HEX send for serial terminals in the right sidebar. Each tab keeps its own modes, and saved hosts remember them for new tabs.
+- Optionally hide complete AI citation markers in the terminal grid under Settings → Terminal → Interaction. Ordinary spaces and unrelated symbols are left alone; copying, search and saved logs keep the original text.
+
+### Improved
+
+- Ctrl+T opens a local terminal while the terminal has focus. Other Ctrl-letter shortcuts still reach the shell.
+- Serial terminals show `COM3 connected successfully` after opening and after a successful automatic reconnection.
+
 ## [0.1.17]
 
 ### Shared core for mobile

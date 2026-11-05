@@ -160,6 +160,7 @@ pub struct TerminalInteraction {
     pub cursor_style: TerminalCursorStyle,
     /// Blink by default, unless a program chooses otherwise.
     pub cursor_blinking: bool,
+    pub hide_ai_citations: bool,
 }
 
 impl Default for TerminalInteraction {
@@ -170,6 +171,7 @@ impl Default for TerminalInteraction {
             middle_click: MiddleClick::default(),
             cursor_style: TerminalCursorStyle::default(),
             cursor_blinking: true,
+            hide_ai_citations: false,
         }
     }
 }

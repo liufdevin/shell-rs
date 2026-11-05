@@ -15,16 +15,16 @@ use crate::terminal::TerminalTheme;
 
 /// The name the app's theme has while `theme` is chosen, to tell whether it
 /// is already in effect without building it again.
-pub(super) fn ui_theme_name(theme: &'static TerminalTheme, cx: &App) -> SharedString {
+pub(super) fn ui_theme_name(theme: &TerminalTheme, cx: &App) -> SharedString {
     if is_gpui_kits(theme) {
         default_config(theme.mode(), cx).name.clone()
     } else {
-        theme.name().into()
+        theme.name().to_owned().into()
     }
 }
 
 /// The app's theme while `theme` is chosen.
-pub(super) fn ui_theme(theme: &'static TerminalTheme, cx: &App) -> Rc<ThemeConfig> {
+pub(super) fn ui_theme(theme: &TerminalTheme, cx: &App) -> Rc<ThemeConfig> {
     let default = default_config(theme.mode(), cx);
     if is_gpui_kits(theme) {
         default.clone()
@@ -36,7 +36,7 @@ pub(super) fn ui_theme(theme: &'static TerminalTheme, cx: &App) -> Rc<ThemeConfi
 }
 
 /// ShellRS Light: the app is gpui-kit's light theme as it is.
-fn is_gpui_kits(theme: &'static TerminalTheme) -> bool {
+fn is_gpui_kits(theme: &TerminalTheme) -> bool {
     theme == TerminalTheme::default_for(ThemeMode::Light)
 }
 

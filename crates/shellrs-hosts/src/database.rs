@@ -41,7 +41,7 @@ fn from_sql(id: i64) -> u64 {
 /// command snippets, 15 the serial hosts, 16 the Telnet hosts, 17 each
 /// host's right sidebar, 18 the saved local terminals, 19 their titles, 20
 /// what sync needs, 21 each host's local connection log.
-const SCHEMA_VERSION: i64 = 21;
+const SCHEMA_VERSION: i64 = 22;
 
 /// The whole schema, as a new database gets it.
 ///
@@ -170,7 +170,10 @@ CREATE TABLE hosts (
         CHECK (protocol = 'telnet' OR telnet_pass_prompt IS NULL),
     sidebar_tool      TEXT,
     edited_ms         INTEGER NOT NULL DEFAULT 0,
-    log_file          TEXT CHECK (log_file <> ''),
+    log_directory     TEXT CHECK (log_directory <> ''),
+    log_enabled       INTEGER NOT NULL DEFAULT 0 CHECK (log_enabled IN (0, 1)),
+    auto_reconnect    INTEGER NOT NULL DEFAULT 0 CHECK (auto_reconnect IN (0, 1)),
+    reconnect_delay_secs INTEGER NOT NULL DEFAULT 5 CHECK (reconnect_delay_secs BETWEEN 1 AND 3600),
     CHECK ((auth = 'credential') = (credential_id IS NOT NULL)),
     CHECK ((auth = 'credential') = (username IS NULL)),
     CHECK ((route = 'proxy') = (proxy_kind IS NOT NULL)),
@@ -291,7 +294,7 @@ enum Step {
 ///
 /// A step is history: it says what that version's change was, and stays as
 /// written when `SCHEMA` changes again.
-const STEPS: [(i64, Step); 8] = [
+const STEPS: [(i64, Step); 9] = [
     (
     13,
     // The command snippets.
@@ -402,7 +405,41 @@ PRAGMA user_version = 21;
 COMMIT;",
         ),
     ),
+    (21, Step::Code(add_daily_logs)),
 ];
+
+fn add_daily_logs(connection: &Connection) -> rusqlite::Result<()> {
+    connection.execute_batch(
+        "BEGIN;
+ALTER TABLE hosts RENAME COLUMN log_file TO log_directory;
+ALTER TABLE hosts ADD COLUMN log_enabled INTEGER NOT NULL DEFAULT 0 CHECK (log_enabled IN (0, 1));
+ALTER TABLE hosts ADD COLUMN auto_reconnect INTEGER NOT NULL DEFAULT 0 CHECK (auto_reconnect IN (0, 1));
+ALTER TABLE hosts ADD COLUMN reconnect_delay_secs INTEGER NOT NULL DEFAULT 5 CHECK (reconnect_delay_secs BETWEEN 1 AND 3600);",
+    )?;
+    let result = (|| {
+        let paths = connection
+            .prepare("SELECT id, log_directory FROM hosts WHERE log_directory IS NOT NULL")?
+            .query_map([], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        for (id, path) in paths {
+            let directory = Path::new(&path)
+                .parent()
+                .filter(|parent| !parent.as_os_str().is_empty())
+                .map(|parent| parent.to_string_lossy().into_owned());
+            connection.execute(
+                "UPDATE hosts SET log_enabled = 1, log_directory = ?2 WHERE id = ?1",
+                params![id, directory],
+            )?;
+        }
+        connection.execute_batch("PRAGMA user_version = 22; COMMIT;")
+    })();
+    if result.is_err() {
+        let _ = connection.execute_batch("ROLLBACK");
+    }
+    result
+}
 
 /// Version 16, the Telnet hosts: `protocol` takes `telnet`, and the two
 /// `telnet_*` columns come after the serial ones. SQLite cannot change the
@@ -777,7 +814,7 @@ impl HostDatabase {
                  credential_id, route, proxy_kind, proxy_host, proxy_port, proxy_username, \
                  notes, os, protocol, serial_baud, serial_data_bits, serial_parity, \
                  serial_stop_bits, serial_flow, telnet_user_prompt, telnet_pass_prompt, \
-                 sidebar_tool, edited_ms, log_file \
+                 sidebar_tool, edited_ms, log_directory, log_enabled, auto_reconnect, reconnect_delay_secs \
                  FROM hosts ORDER BY id",
             )?
             .query_map([], |row| {
@@ -843,7 +880,10 @@ impl HostDatabase {
                 host.os = os.as_deref().and_then(HostOs::from_stored);
                 host.sidebar_tool = sidebar_tool.map(SharedString::from);
                 host.edited_ms = from_sql(row.get(26)?);
-                host.log_file = row.get::<_, Option<String>>(27)?.map(SharedString::from);
+                host.log_directory = row.get::<_, Option<String>>(27)?.map(SharedString::from);
+                host.log_enabled = row.get(28)?;
+                host.auto_reconnect = row.get(29)?;
+                host.reconnect_delay_secs = row.get(30)?;
                 match protocol.as_str() {
                     "serial" => host.protocol = Protocol::Serial(serial.settings()),
                     "telnet" => host.protocol = Protocol::Telnet(telnet),
@@ -1249,9 +1289,9 @@ impl HostDatabase {
              username, credential_id, route, proxy_kind, proxy_host, proxy_port, \
              proxy_username, notes, os, protocol, serial_baud, serial_data_bits, \
              serial_parity, serial_stop_bits, serial_flow, telnet_user_prompt, \
-             telnet_pass_prompt, sidebar_tool, log_file, edited_ms) \
+             telnet_pass_prompt, sidebar_tool, log_directory, edited_ms, log_enabled, auto_reconnect, reconnect_delay_secs) \
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, \
-             ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28)",
+             ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31)",
             params![
                 to_sql(host.id.0),
                 host.public_id.as_str(),
@@ -1279,8 +1319,11 @@ impl HostDatabase {
                 row.telnet_user_prompt,
                 row.telnet_password_prompt,
                 host.sidebar_tool.as_deref(),
-                host.log_file.as_deref(),
+                host.log_directory.as_deref(),
                 to_sql(host.edited_ms),
+                host.log_enabled,
+                host.auto_reconnect,
+                host.reconnect_delay_secs,
             ],
         )?;
             write_jumps(connection, host)
@@ -1301,7 +1344,7 @@ impl HostDatabase {
              proxy_kind = ?11, proxy_host = ?12, proxy_port = ?13, proxy_username = ?14, \
              notes = ?15, serial_baud = ?16, serial_data_bits = ?17, serial_parity = ?18, \
              serial_stop_bits = ?19, serial_flow = ?20, telnet_user_prompt = ?21, \
-             telnet_pass_prompt = ?22, protocol = ?23, log_file = ?24, edited_ms = ?25 \
+             telnet_pass_prompt = ?22, protocol = ?23, log_directory = ?24, edited_ms = ?25, log_enabled = ?26, auto_reconnect = ?27, reconnect_delay_secs = ?28 \
              WHERE id = ?1",
                 params![
                     to_sql(host.id.0),
@@ -1327,8 +1370,11 @@ impl HostDatabase {
                     row.telnet_user_prompt,
                     row.telnet_password_prompt,
                     host.protocol.as_str(),
-                    host.log_file.as_deref(),
+                    host.log_directory.as_deref(),
                     to_sql(host.edited_ms),
+                    host.log_enabled,
+                    host.auto_reconnect,
+                    host.reconnect_delay_secs,
                 ],
             )?;
             write_jumps(connection, host)
@@ -3236,15 +3282,76 @@ INSERT INTO snippets (id, category_id, name, command) VALUES (1, 1, 'ps', 'docke
         let path = dir.path().join("shellrs.db");
         {
             let mut logged = host(1, "console", None);
-            logged.log_file = Some("/tmp/console.log".into());
+            logged.log_enabled = true;
+            logged.log_directory = Some("/tmp/logs".into());
             let db = HostDatabase::open(&path).unwrap();
             db.insert_host(&logged).unwrap();
         }
         let db = HostDatabase::open(&path).unwrap();
         let loaded = db.load().unwrap();
+        assert_eq!(loaded.hosts[0].log_directory.as_deref(), Some("/tmp/logs"));
+        assert!(loaded.hosts[0].log_enabled);
+    }
+
+    #[test]
+    fn reconnect_and_daily_log_preferences_are_kept_per_host() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("shellrs.db");
+        {
+            let db = HostDatabase::open(&path).unwrap();
+            let mut first = host(1, "COM3", None);
+            first.log_enabled = true;
+            first.auto_reconnect = true;
+            first.reconnect_delay_secs = 12;
+            db.insert_host(&first).unwrap();
+            db.insert_host(&host(2, "COM4", None)).unwrap();
+        }
+        let loaded = HostDatabase::open(&path).unwrap().load().unwrap();
+        assert!(loaded.hosts[0].log_enabled);
+        assert!(loaded.hosts[0].log_directory.is_none());
+        assert!(loaded.hosts[0].auto_reconnect);
+        assert_eq!(loaded.hosts[0].reconnect_delay_secs, 12);
+        assert!(!loaded.hosts[1].log_enabled);
+        assert!(!loaded.hosts[1].auto_reconnect);
+        assert_eq!(loaded.hosts[1].reconnect_delay_secs, 5);
+    }
+
+    #[test]
+    fn version_21_log_files_become_enabled_daily_log_directories_without_touching_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("shellrs.db");
+        let old_log = dir.path().join("old.log");
+        std::fs::write(&old_log, "old log").unwrap();
+        {
+            let db = HostDatabase::open(&path).unwrap();
+            db.insert_host(&host(1, "COM3", None)).unwrap();
+            db.connection
+                .execute_batch(
+                    "ALTER TABLE hosts DROP COLUMN auto_reconnect;
+ALTER TABLE hosts DROP COLUMN reconnect_delay_secs;
+ALTER TABLE hosts DROP COLUMN log_enabled;
+ALTER TABLE hosts RENAME COLUMN log_directory TO log_file;
+PRAGMA user_version = 21;",
+                )
+                .unwrap();
+            db.connection
+                .execute(
+                    "UPDATE hosts SET log_file = ?1",
+                    params![old_log.to_string_lossy()],
+                )
+                .unwrap();
+        }
+        let db = HostDatabase::open(&path).unwrap();
+        let loaded = db.load().unwrap();
+        assert!(loaded.hosts[0].log_enabled);
         assert_eq!(
-            loaded.hosts[0].log_file.as_deref(),
-            Some("/tmp/console.log")
+            loaded.hosts[0].log_directory.as_deref(),
+            Some(dir.path().to_string_lossy().as_ref())
+        );
+        assert_eq!(std::fs::read_to_string(old_log).unwrap(), "old log");
+        assert_eq!(
+            schema_of(&db.connection),
+            schema_of(&HostDatabase::in_memory().unwrap().connection)
         );
     }
 

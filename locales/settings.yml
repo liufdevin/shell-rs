@@ -1,4 +1,7 @@
 _version: 2
+settings.sidebar_tools.serial:
+  zh-CN: 串口的 HEX 接收和 HEX 发送，按标签独立配置。
+  en: Configure hex receive and send independently for each serial tab.
 settings.connection.title:
   zh-CN: 自动重连
   en: Automatic reconnection
@@ -97,6 +100,21 @@ settings.appearance.font_size_keywords:
 settings.appearance.theme:
   zh-CN: 主题
   en: Theme
+settings.theme.import:
+  zh-CN: 导入 Xshell 配色方案…
+  en: Import Xshell color schemes…
+settings.theme.import_description:
+  zh-CN: 支持 .xcs 文件，一个文件可包含多个方案。导入后按背景明暗分栏，点击方案立即应用；同名方案再次导入会更新。
+  en: Import .xcs files containing one or more schemes. Schemes are grouped by background brightness; choose one to apply it immediately. Importing the same name updates it.
+settings.theme.remove:
+  zh-CN: 删除导入的配色方案
+  en: Delete imported color scheme
+settings.theme.imported:
+  zh-CN: 已导入 %{count} 个配色方案
+  en: Imported %{count} color schemes
+settings.theme.import_failed:
+  zh-CN: "无法导入配色方案：%{error}"
+  en: "Could not import color schemes: %{error}"
 settings.appearance.theme_description:
   zh-CN: 浅色外观时用左栏选中的主题，深色外观时用右栏的。
   en: The light appearance uses the theme chosen on the left, the dark appearance the one on the right.
@@ -129,6 +147,15 @@ settings.terminal.preview_keywords:
 settings.interaction.title:
   zh-CN: 终端交互
   en: Interaction
+settings.interaction.hide_ai_citations:
+  zh-CN: 隐藏 AI 引用标记
+  en: Hide AI citation markers
+settings.interaction.hide_ai_citations_description:
+  zh-CN: 仅在终端网格中隐藏完整的 cite 引用串，保留列宽。复制、搜索和日志仍使用原文；关闭可恢复原始显示。默认关闭。
+  en: Hide complete cite markers in the terminal grid without moving columns. Copying, search and logs still use the original text. Turn off to restore raw display. Off by default.
+settings.interaction.hide_ai_citations_keywords:
+  zh-CN: Codex,AI,引用,cite,空格,乱码
+  en: Codex,AI,citation,cite,space,glyph
 settings.interaction.copy_on_select:
   zh-CN: 选中复制
   en: Copy on select
@@ -606,8 +633,8 @@ settings.shortcuts.reset:
   en: Restore default
 
 settings.theme.keywords:
-  zh-CN: 主题,终端主题,配色,颜色,浅色,深色
-  en: theme,terminal theme,color scheme,color,light,dark
+  zh-CN: 主题,终端主题,配色,颜色,浅色,深色,Xshell,xcs,导入
+  en: theme,terminal theme,color scheme,color,light,dark,Xshell,xcs,import
 settings.theme.app_follows:
   zh-CN: 界面跟随主题
   en: Match interface to theme

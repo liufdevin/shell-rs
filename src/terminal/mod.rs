@@ -61,6 +61,7 @@ pub use run::{
     TerminalRun,
 };
 pub use search::{SearchDirection, SearchMark, SearchPosition, TerminalFindOption};
+pub use session_io::default_log_directory;
 pub use session_io::{SerialDataModes, SerialPreferences, TerminalConnectionSettings};
 pub(crate) use terminal_panel::TerminalCopy;
 pub use terminal_panel::{TerminalPanel, TerminalPanelEvent};
@@ -69,7 +70,7 @@ pub use terminal_view::{
     ComposePaneShown, TERMINAL_FIND_KEY_CONTEXT, TERMINAL_KEY_CONTEXT, TerminalMenuItems,
     TerminalView,
 };
-pub use theme::{TerminalColors, TerminalTheme};
+pub use theme::{TerminalColors, TerminalTheme, import_xshell_schemes};
 pub(crate) use transport::send_event;
 pub use transport::{
     ChannelStream, ExecRequest, ExecResult, FixedLocalTerminalTransportProvider,

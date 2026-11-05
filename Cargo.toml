@@ -1,6 +1,6 @@
 [package]
 name = "shellrs"
-version = "0.1.17"
+version = "0.1.18"
 edition = "2024"
 publish = false
 description = "SSH client and host manager: terminal, SFTP, port forwarding"
@@ -58,6 +58,7 @@ gpui-kit = { version = "0.6.1", features = [
 ] }
 alacritty_terminal = "0.26"
 anyhow = "1"
+encoding_rs = "0.8"
 argon2 = { version = "0.6", default-features = false, features = ["alloc", "zeroize"] }
 subtle = "2"
 async-channel = "2"

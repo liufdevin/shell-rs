@@ -4,7 +4,6 @@ use std::rc::Rc;
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, WindowExt as _,
     button::{Button, ButtonVariants as _},
-    checkbox::Checkbox,
     dock::{BasePanel, Panel, PanelEvent, TabGroup},
     h_flex,
     input::{Input, InputEvent, InputState},
@@ -18,8 +17,7 @@ use gpui_kit::*;
 use crate::app::{
     CatalogIcon, CenterTab, ClearTerminalLog, CloseTerminal, CopyHostAddress, CopyHostId,
     DeleteTerminalLog, DisconnectTerminal, DuplicateTerminal, EditHost, OpenExplorer,
-    ReconnectTerminal, RenameTerminal, SendBreak, SendSerialHex, StartTerminalRecording,
-    StopTerminalRecording, ToggleSerialReceiveHex, ToggleSerialSendHex,
+    ReconnectTerminal, RenameTerminal, SendBreak, SendSerialHex,
 };
 use crate::connection::{ConnectionPrompt, ConnectionPromptReply};
 use crate::host::{ConnectionState, Host, HostConnection, HostId, HostOs, HostStore, ProtocolKind};
@@ -28,6 +26,7 @@ use crate::shared::{
     ClosableTabTitle, HostMark, LatencyLabel, RenamableTab, close_tab_items, confirm_danger,
 };
 
+use super::session_io::{DailyLog, TerminalOptions};
 use super::{
     HostTerminalTransports, RemoteTerminalId, ReportedDirectory, TerminalEvent, TerminalLifecycle,
     TerminalMenuItems, TerminalNotice, TerminalStatus, TerminalView, ZmodemDirection, ZmodemReply,
@@ -171,8 +170,24 @@ impl TerminalPanel {
                 ("terminal", id.0),
                 move |_| t!("terminal.remote.label", host = name),
                 transports.factory_for(&connection),
-                true,
-                (protocol == ProtocolKind::Serial).then(|| (host.name.to_string(), serial_modes)),
+                TerminalOptions {
+                    remote: true,
+                    serial: (protocol == ProtocolKind::Serial)
+                        .then(|| (host.name.to_string(), serial_modes)),
+                    log: host.log_enabled.then(|| {
+                        DailyLog::new(
+                            host.log_directory
+                                .as_ref()
+                                .map(|path| PathBuf::from(path.as_ref()))
+                                .unwrap_or_else(super::default_log_directory),
+                            &host.name,
+                        )
+                    }),
+                    reconnect: super::TerminalConnectionSettings {
+                        auto_reconnect: host.auto_reconnect,
+                        reconnect_delay_secs: host.reconnect_delay_secs,
+                    },
+                },
                 window,
                 cx,
             );
@@ -189,13 +204,23 @@ impl TerminalPanel {
         });
         let hex_input = cx.new(|cx| InputState::new(window, cx).placeholder("00 FF 0D 0A"));
         let subscriptions = vec![
-            cx.observe_global::<super::TerminalConnectionSettings>(|_, cx| cx.notify()),
             cx.subscribe_in(&hex_input, window, move |_, _, event, window, cx| {
                 if matches!(event, InputEvent::PressEnter { .. }) {
                     window.dispatch_action(Box::new(SendSerialHex(id)), cx);
                 }
             }),
-            cx.observe(&store, |_, _, cx| cx.notify()),
+            cx.observe(&store, |this, store, cx| {
+                if let Some(host) = store.read(cx).host(this.host_id) {
+                    let settings = super::TerminalConnectionSettings {
+                        auto_reconnect: host.auto_reconnect,
+                        reconnect_delay_secs: host.reconnect_delay_secs,
+                    };
+                    this.terminal.update(cx, |terminal, cx| {
+                        terminal.set_reconnect_settings(settings, cx)
+                    });
+                }
+                cx.notify();
+            }),
             cx.observe(&terminal, |this, _, cx| {
                 cx.emit(TerminalPanelEvent::StatusChanged(this.id, this.host_id));
                 cx.notify();
@@ -215,7 +240,6 @@ impl TerminalPanel {
                         cx.emit(TerminalPanelEvent::Input(this.id, input.clone()));
                     }
                     TerminalEvent::Started => {
-                        this.start_configured_recording(window, cx);
                         if let Some(command) = this
                             .initial_directory
                             .take()
@@ -466,16 +490,6 @@ impl TerminalPanel {
         }));
     }
 
-    fn start_configured_recording(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.recording_opening || self.terminal.read(cx).is_recording(cx) {
-            return;
-        }
-        let Some(path) = self.host.log_file.as_ref() else {
-            return;
-        };
-        self.begin_recording(PathBuf::from(path.as_ref()), window, cx);
-    }
-
     fn begin_recording(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
         let hex = self.serial_modes(cx).receive_hex;
         let file = path.clone();
@@ -516,7 +530,12 @@ impl TerminalPanel {
     }
 
     pub fn clear_log(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(path) = self.recording_path.clone() else {
+        let Some(path) = self
+            .terminal
+            .read(cx)
+            .recording_path(cx)
+            .or_else(|| self.recording_path.clone())
+        else {
             return;
         };
         let this = cx.entity();
@@ -563,7 +582,12 @@ impl TerminalPanel {
     }
 
     pub fn delete_log(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(path) = self.recording_path.clone() else {
+        let Some(path) = self
+            .terminal
+            .read(cx)
+            .recording_path(cx)
+            .or_else(|| self.recording_path.clone())
+        else {
             return;
         };
         let this = cx.entity();
@@ -593,9 +617,14 @@ impl TerminalPanel {
                 this.recording_opening = false;
                 match result {
                     Ok(()) => {
-                        let mut draft = this.host.draft();
-                        draft.log_file = None;
-                        this.host.log_file = None;
+                        let mut draft = this
+                            .store
+                            .read(cx)
+                            .host(this.host_id)
+                            .map(Host::draft)
+                            .unwrap_or_else(|| this.host.draft());
+                        draft.log_enabled = false;
+                        this.host.log_enabled = false;
                         let store = this.store.clone();
                         let host_id = this.host_id;
                         store.update(cx, |store, cx| {
@@ -761,29 +790,7 @@ impl Panel for TerminalPanel {
             .on_click(move |_, window, cx| {
                 reconnect_dispatch.dispatch_action(&ReconnectTerminal(terminal_id), window, cx)
             });
-        let recording = self.terminal.read(cx).is_recording(cx);
-        let dispatch = self.focus_handle(cx);
-        let record = Button::new(("terminal-recording", terminal_id.0))
-            .tooltip(t!("terminal.recording.description"))
-            .icon(Icon::new(if recording {
-                CatalogIcon::Square
-            } else {
-                CatalogIcon::Download
-            }))
-            .label(if recording {
-                t!("terminal.recording.stop")
-            } else {
-                t!("terminal.recording.start")
-            })
-            .disabled(self.recording_opening)
-            .on_click(move |_, window, cx| {
-                if recording {
-                    dispatch.dispatch_action(&StopTerminalRecording(terminal_id), window, cx);
-                } else {
-                    dispatch.dispatch_action(&StartTerminalRecording(terminal_id), window, cx);
-                }
-            });
-        Some(sftp.into_iter().chain([record, reconnect]).collect())
+        Some(sftp.into_iter().chain([reconnect]).collect())
     }
 
     fn dropdown_menu(
@@ -977,6 +984,13 @@ impl Render for TerminalPanel {
         let modes = self.serial_modes(cx);
         let hex = serial && modes.send_hex;
         let recording = self.terminal.read(cx).is_recording(cx);
+        let path = self
+            .terminal
+            .read(cx)
+            .recording_path(cx)
+            .or_else(|| self.recording_path.clone())
+            .map(|path| path.display().to_string())
+            .unwrap_or_default();
         let dispatch = self.focus_handle(cx);
         let id = self.id;
         v_flex()
@@ -995,20 +1009,14 @@ impl Render for TerminalPanel {
                         .px_2()
                         .py_1()
                         .text_color(cx.theme().muted_foreground)
-                        .aria_label(
-                            self.recording_path
-                                .as_ref()
-                                .map(|path| path.display().to_string())
-                                .unwrap_or_default(),
+                        .aria_label(path.clone())
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .child(t!("terminal.recording.path", path = path.clone())),
                         )
-                        .child(div().flex_1().min_w_0().truncate().child(t!(
-                                    "terminal.recording.path",
-                                    path = self
-                                        .recording_path
-                                        .as_ref()
-                                        .map(|path| path.display().to_string())
-                                        .unwrap_or_default()
-                                )))
                         .child(
                             h_flex()
                                 .gap_1()
@@ -1044,49 +1052,6 @@ impl Render for TerminalPanel {
                                             }
                                         }),
                                 ),
-                        ),
-                )
-            })
-            .when(serial, |view| {
-                view.child(
-                    h_flex()
-                        .p_2()
-                        .gap_3()
-                        .border_t_1()
-                        .border_color(cx.theme().border)
-                        .child(
-                            Checkbox::new(("serial-hex-receive", id.0))
-                                .small()
-                                .label(t!("serial.mode.receive_hex"))
-                                .checked(modes.receive_hex)
-                                .tooltip(t!("serial.mode.scope"))
-                                .on_click({
-                                    let dispatch = dispatch.clone();
-                                    move |_, window, cx| {
-                                        dispatch.dispatch_action(
-                                            &ToggleSerialReceiveHex(id),
-                                            window,
-                                            cx,
-                                        )
-                                    }
-                                }),
-                        )
-                        .child(
-                            Checkbox::new(("serial-hex-transmit", id.0))
-                                .small()
-                                .label(t!("serial.mode.send_hex"))
-                                .checked(modes.send_hex)
-                                .tooltip(t!("serial.mode.scope"))
-                                .on_click({
-                                    let dispatch = dispatch.clone();
-                                    move |_, window, cx| {
-                                        dispatch.dispatch_action(
-                                            &ToggleSerialSendHex(id),
-                                            window,
-                                            cx,
-                                        )
-                                    }
-                                }),
                         ),
                 )
             })

@@ -1,11 +1,12 @@
 use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
 use std::io::{self, Write as _};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 
+use chrono::{Local, NaiveDate};
 use gpui_kit::{App, Global, SharedString};
 use serde::{Deserialize, Serialize};
 
@@ -25,14 +26,6 @@ impl Default for TerminalConnectionSettings {
             auto_reconnect: false,
             reconnect_delay_secs: 5,
         }
-    }
-}
-
-impl Global for TerminalConnectionSettings {}
-
-impl TerminalConnectionSettings {
-    pub fn current(cx: &App) -> Self {
-        cx.try_global::<Self>().copied().unwrap_or_default()
     }
 }
 
@@ -70,32 +63,129 @@ impl SerialPreferences {
     }
 }
 
+pub fn default_log_directory() -> PathBuf {
+    crate::app::data_dir().join("logs")
+}
+
+#[derive(Clone)]
+pub(super) struct DailyLog {
+    directory: PathBuf,
+    name: String,
+}
+
+impl DailyLog {
+    pub fn new(directory: PathBuf, name: &str) -> Self {
+        let name: String = name
+            .chars()
+            .take(60)
+            .map(|character| {
+                if character.is_control() || "<>:\"/\\|?*".contains(character) {
+                    '_'
+                } else {
+                    character
+                }
+            })
+            .collect();
+        let name = name.trim_matches([' ', '.']);
+        Self {
+            directory,
+            name: if name.is_empty() {
+                "terminal".into()
+            } else {
+                name.into()
+            },
+        }
+    }
+
+    pub fn path(&self, date: NaiveDate) -> PathBuf {
+        self.directory
+            .join(format!("{}_{}.log", self.name, date.format("%Y-%m-%d")))
+    }
+}
+
+#[derive(Default)]
+pub(super) struct TerminalOptions {
+    pub remote: bool,
+    pub serial: Option<(String, SerialDataModes)>,
+    pub log: Option<DailyLog>,
+    pub reconnect: TerminalConnectionSettings,
+}
+
+#[derive(Clone)]
+enum RecordingTarget {
+    File(PathBuf),
+    Daily(DailyLog),
+}
+
+impl RecordingTarget {
+    fn path(&self, date: NaiveDate) -> PathBuf {
+        match self {
+            Self::File(path) => path.clone(),
+            Self::Daily(log) => log.path(date),
+        }
+    }
+
+    fn open(&self, date: NaiveDate) -> io::Result<(PathBuf, File)> {
+        let path = self.path(date);
+        if let Self::Daily(log) = self {
+            std::fs::create_dir_all(&log.directory)?;
+        }
+        let file = OpenOptions::new().create(true).append(true).open(&path)?;
+        Ok((path, file))
+    }
+}
+
+struct LogChunk {
+    date: NaiveDate,
+    bytes: Vec<u8>,
+}
+
 pub(super) struct Recording {
-    sender: mpsc::SyncSender<Vec<u8>>,
+    sender: mpsc::SyncSender<LogChunk>,
     failure: Arc<Mutex<Option<String>>>,
     writer: Option<thread::JoinHandle<()>>,
+    target: RecordingTarget,
+    path: Arc<Mutex<PathBuf>>,
 }
 
 impl Recording {
     pub fn open(path: &Path, hex: bool) -> io::Result<Self> {
-        let file = OpenOptions::new().create(true).append(true).open(path)?;
-        Self::with_file(file, hex)
+        Self::start(RecordingTarget::File(path.to_path_buf()), hex)
     }
 
-    fn with_file(mut file: File, hex: bool) -> io::Result<Self> {
-        let (sender, receiver) = mpsc::sync_channel::<Vec<u8>>(256);
+    pub fn daily(log: DailyLog, hex: bool) -> io::Result<Self> {
+        Self::start(RecordingTarget::Daily(log), hex)
+    }
+
+    fn start(target: RecordingTarget, hex: bool) -> io::Result<Self> {
+        let (sender, receiver) = mpsc::sync_channel::<LogChunk>(256);
         let failure = Arc::new(Mutex::new(None));
         let failed = failure.clone();
+        let date = Local::now().date_naive();
+        let path = Arc::new(Mutex::new(target.path(date)));
+        let written_path = path.clone();
+        let destination = target.clone();
         let writer = thread::Builder::new()
             .name("shellrs-terminal-log".into())
             .spawn(move || {
                 let written = (|| -> io::Result<()> {
-                    while let Ok(bytes) = receiver.recv() {
+                    let (mut current, mut file) = destination.open(date)?;
+                    while let Ok(chunk) = receiver.recv() {
+                        let next = destination.path(chunk.date);
+                        if next != current {
+                            file.flush()?;
+                            let opened = destination.open(chunk.date)?;
+                            current = opened.0;
+                            file = opened.1;
+                            *written_path
+                                .lock()
+                                .unwrap_or_else(|error| error.into_inner()) = current.clone();
+                        }
                         if hex {
-                            file.write_all(format_hex(&bytes).as_bytes())?;
+                            file.write_all(format_hex(&chunk.bytes).as_bytes())?;
                             file.write_all(b"\r\n")?;
                         } else {
-                            file.write_all(&bytes)?;
+                            file.write_all(&chunk.bytes)?;
                         }
                     }
                     file.flush()
@@ -109,6 +199,8 @@ impl Recording {
             sender,
             failure,
             writer: Some(writer),
+            target,
+            path,
         })
     }
 
@@ -161,6 +253,27 @@ impl SessionIo {
             .take()
     }
 
+    pub fn recording_path(&self) -> Option<PathBuf> {
+        self.recording
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .as_ref()
+            .map(|active| {
+                active
+                    .path
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .clone()
+            })
+    }
+
+    pub fn report_error(&self, error: String) {
+        *self
+            .failure
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = Some(error);
+    }
+
     pub fn is_recording(&self) -> bool {
         self.recording
             .lock()
@@ -174,7 +287,10 @@ impl SessionIo {
             .lock()
             .unwrap_or_else(|error| error.into_inner());
         if let Some(active) = recording.as_ref()
-            && let Err(error) = active.sender.try_send(bytes.to_vec())
+            && let Err(error) = active.sender.try_send(LogChunk {
+                date: Local::now().date_naive(),
+                bytes: bytes.to_vec(),
+            })
         {
             let reason = match error {
                 mpsc::TrySendError::Full(_) => t!("terminal.recording.overloaded").to_string(),
@@ -253,11 +369,15 @@ pub(super) fn clear_log(
     previous: Option<Recording>,
     hex: bool,
 ) -> io::Result<Recording> {
+    let target = previous
+        .as_ref()
+        .map(|previous| previous.target.clone())
+        .unwrap_or_else(|| RecordingTarget::File(path.to_path_buf()));
     if let Some(previous) = previous {
         previous.finish();
     }
     OpenOptions::new().write(true).truncate(true).open(path)?;
-    Recording::open(path, hex)
+    Recording::start(target, hex)
 }
 
 pub(super) fn delete_log(path: &Path, previous: Option<Recording>) -> io::Result<()> {
@@ -306,7 +426,8 @@ pub(super) fn decode_hex(text: &str) -> Result<Vec<u8>, SharedString> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Recording, SessionIo, decode_hex, format_hex};
+    use super::{DailyLog, LogChunk, Recording, SessionIo, decode_hex, format_hex};
+    use chrono::NaiveDate;
     use std::time::{Duration, Instant};
 
     #[test]
@@ -318,6 +439,62 @@ mod tests {
             assert!(decode_hex(text).is_err(), "{text}");
         }
         assert_eq!(format_hex(&[0, 255, 13, 10]), "00 FF 0D 0A");
+    }
+
+    #[test]
+    fn daily_logs_rotate_by_received_date_and_append_after_reopening() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = DailyLog::new(dir.path().join("nested"), "COM3");
+        let first = NaiveDate::from_ymd_opt(2026, 11, 5).unwrap();
+        let next = first.succ_opt().unwrap();
+        let recording = Recording::daily(log.clone(), false).unwrap();
+        for (date, bytes) in [
+            (first, b"day one\n".to_vec()),
+            (next, b"day two\n".to_vec()),
+        ] {
+            recording.sender.send(LogChunk { date, bytes }).unwrap();
+        }
+        recording.finish();
+        assert_eq!(std::fs::read(log.path(first)).unwrap(), b"day one\n");
+        assert_eq!(std::fs::read(log.path(next)).unwrap(), b"day two\n");
+        let reopened = Recording::daily(log.clone(), false).unwrap();
+        reopened
+            .sender
+            .send(LogChunk {
+                date: next,
+                bytes: b"reconnected\n".to_vec(),
+            })
+            .unwrap();
+        reopened.finish();
+        assert_eq!(
+            std::fs::read(log.path(next)).unwrap(),
+            b"day two\nreconnected\n"
+        );
+        assert!(log.path(first).ends_with("COM3_2026-11-05.log"));
+    }
+
+    #[test]
+    fn daily_log_names_cannot_escape_the_directory_or_contain_windows_path_characters() {
+        let date = NaiveDate::from_ymd_opt(2026, 11, 5).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        for name in [
+            "../../COM3",
+            "COM3: test|<>?*\r\n",
+            "...",
+            "开发板",
+            &"🦀".repeat(200),
+        ] {
+            let log = DailyLog::new(dir.path().to_path_buf(), name);
+            let path = log.path(date);
+            assert_eq!(path.parent(), Some(dir.path()));
+            let filename = path.file_name().unwrap().to_str().unwrap();
+            assert!(filename.len() <= 255);
+            assert!(
+                !filename
+                    .chars()
+                    .any(|character| character.is_control() || "<>:\"/\\|?*".contains(character))
+            );
+        }
     }
 
     #[test]

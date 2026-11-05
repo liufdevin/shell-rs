@@ -290,14 +290,26 @@ host.dialog.log_file_none:
   zh-CN: 未选择文件；连接时不会自动保存日志
   en: No file selected; connections won’t save a log automatically
 host.dialog.log_file_choose:
-  zh-CN: 选择日志文件…
-  en: Choose log file…
+  zh-CN: 选择日志文件夹…
+  en: Choose log folder…
 host.dialog.log_file_clear:
-  zh-CN: 清除设置
-  en: Clear setting
+  zh-CN: 使用默认
+  en: Use default
 host.dialog.log_file_description:
-  zh-CN: 选定文件即启用。每次连接、重连以及重启后再次连接，都会在后台继续追加收到的数据，直到在终端里停止保存。文件只在这台电脑上使用，不随同步复制。
-  en: Choosing a file enables automatic logging. Every connection, reconnection and connection after a restart keeps appending received data in the background until logging is stopped in the terminal. The file is local to this computer and is not synced.
+  zh-CN: 勾选后每次连接自动保存。未选择文件夹时使用数据目录下的 logs，以“主机名称_年-月-日.log”命名，跨天后自动写入新文件；同一天重连继续追加。日志设置仅用于这台电脑。
+  en: Enable to log every connection automatically. The default folder is logs in the app data directory. Files are named host_YYYY-MM-DD.log and rotate daily; reconnecting on the same day appends. Log settings stay on this computer.
+host.dialog.auto_reconnect:
+  zh-CN: 掉线后自动重连
+  en: Reconnect automatically
+host.dialog.reconnect_delay:
+  zh-CN: 重连间隔（秒）
+  en: Retry interval (seconds)
+host.dialog.reconnect_description:
+  zh-CN: 仅适用于这台主机。掉线或连接失败后按间隔重试；手动断开、取消连接或关闭标签后停止。
+  en: Applies only to this host. Retry after a disconnect or failed connection; disconnecting manually, canceling or closing the tab stops retries.
+host.dialog.reconnect_invalid:
+  zh-CN: 重连间隔请输入 1–3600 之间的整数秒数。
+  en: Enter a whole number of seconds between 1 and 3600.
 host.dialog.optional:
   zh-CN: 可选
   en: Optional

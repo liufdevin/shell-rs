@@ -41,6 +41,7 @@ gpui_kit::actions!(
         ImportSshConfig,
         /// Open the import dialog for the hosts `~/.ssh/known_hosts` names.
         ImportKnownHosts,
+        ImportTerminalSchemes,
         /// Open a new local login-shell terminal.
         NewLocalTerminal,
         /// Start 命令广播, which turns terminal tab marks into checkboxes,
@@ -259,6 +260,7 @@ macro_rules! id_actions {
 }
 
 id_actions! {
+    RemoveTerminalScheme(String);
     /// Open a new terminal connection for a host.
     ConnectHost(HostId);
     /// Open a new SFTP tab for a host, like a new terminal connection.
@@ -568,10 +570,11 @@ pub enum ToolKind {
     Gpu,
     /// 项目, the one tool of local terminals.
     Projects,
+    Serial,
 }
 
 impl ToolKind {
-    pub const ALL: [ToolKind; 12] = [
+    pub const ALL: [ToolKind; 13] = [
         ToolKind::Snippets,
         ToolKind::History,
         ToolKind::Files,
@@ -584,6 +587,7 @@ impl ToolKind {
         ToolKind::Monitor,
         ToolKind::Gpu,
         ToolKind::Projects,
+        ToolKind::Serial,
     ];
 
     /// What `settings.json` calls the tool in 侧栏功能, and the database
@@ -603,6 +607,7 @@ impl ToolKind {
             ToolKind::Monitor => "monitor",
             ToolKind::Gpu => "gpu",
             ToolKind::Projects => "projects",
+            ToolKind::Serial => "serial",
         }
     }
 
@@ -632,6 +637,7 @@ impl ToolKind {
             ToolKind::Monitor => t!("tools.kind.monitor"),
             ToolKind::Gpu => "GPU/NPU".into(),
             ToolKind::Projects => t!("tools.kind.projects"),
+            ToolKind::Serial => t!("tools.kind.serial"),
         }
     }
 
@@ -652,6 +658,7 @@ impl ToolKind {
             ToolKind::Monitor => CatalogIcon::Activity,
             ToolKind::Gpu => CatalogIcon::Gpu,
             ToolKind::Projects => CatalogIcon::FolderCode,
+            ToolKind::Serial => CatalogIcon::Settings,
         })
     }
 }

@@ -24,7 +24,10 @@ pub fn apply(settings: AppSettings, window: &mut Window, cx: &mut App) {
     let mode = settings.appearance.theme_mode(window.appearance());
     let chosen = settings.terminal_theme.theme(mode);
     let app = settings.terminal_theme.app_theme(mode);
-    if cx.theme().mode != mode || *cx.theme().theme_name() != ui_theme_name(app, cx) {
+    if cx.theme().mode != mode
+        || *cx.theme().theme_name() != ui_theme_name(app, cx)
+        || (settings.terminal_theme.app_follows && TerminalColors::current(cx) != chosen)
+    {
         let config = ui_theme(app, cx);
         let theme = Theme::global_mut(cx);
         match mode {
@@ -82,11 +85,6 @@ pub fn apply(settings: AppSettings, window: &mut Window, cx: &mut App) {
     // Terminals observe cursor changes; mouse behavior is read on input.
     if cx.try_global::<TerminalInteraction>() != Some(&settings.terminal_interaction) {
         cx.set_global(settings.terminal_interaction);
-    }
-    if cx.try_global::<crate::terminal::TerminalConnectionSettings>()
-        != Some(&settings.terminal_connection)
-    {
-        cx.set_global(settings.terminal_connection);
     }
     if cx.try_global::<crate::terminal::SerialPreferences>() != Some(&settings.serial_preferences) {
         cx.set_global(settings.serial_preferences);

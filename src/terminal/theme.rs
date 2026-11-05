@@ -8,14 +8,20 @@
 use alacritty_terminal::vte::ansi::{NamedColor, Rgb};
 use gpui_kit::component::{ActiveTheme as _, ThemeMode};
 use gpui_kit::*;
+use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
+
+mod xshell;
+
+pub use xshell::import_xshell_schemes;
 
 /// A built-in theme. Its colors are `0xrrggbb`: data, like a picture's, not
 /// theme roles, so they are the same whatever the app's appearance.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TerminalTheme {
     /// What the settings file stores. Never changes once released.
-    key: &'static str,
-    name: &'static str,
+    key: Cow<'static, str>,
+    name: Cow<'static, str>,
     /// The appearance it is made for: the column it is listed in.
     mode: ThemeMode,
     foreground: u32,
@@ -26,6 +32,8 @@ pub struct TerminalTheme {
     /// Black, red, green, yellow, blue, magenta, cyan, white, then their
     /// bright versions.
     ansi: [u32; 16],
+    #[serde(default)]
+    bold_foreground: Option<u32>,
 }
 
 impl TerminalTheme {
@@ -51,12 +59,12 @@ impl TerminalTheme {
             .expect("each appearance has its themes")
     }
 
-    pub fn key(&self) -> &'static str {
-        self.key
+    pub fn key(&self) -> &str {
+        &self.key
     }
 
-    pub fn name(&self) -> &'static str {
-        self.name
+    pub fn name(&self) -> &str {
+        &self.name
     }
 
     pub fn mode(&self) -> ThemeMode {
@@ -65,6 +73,14 @@ impl TerminalTheme {
 
     pub fn foreground(&self) -> Hsla {
         rgb(self.foreground).into()
+    }
+
+    pub fn bold_foreground(&self) -> Hsla {
+        rgb(self.bold_foreground.unwrap_or(self.foreground)).into()
+    }
+
+    pub fn has_separate_bold_colors(&self) -> bool {
+        self.bold_foreground.is_some()
     }
 
     pub fn background(&self) -> Hsla {
@@ -91,6 +107,9 @@ impl TerminalTheme {
     pub fn query_color(&self, index: usize) -> Rgb {
         let value = match index {
             0..=255 => self.indexed_rgb(index as u8),
+            _ if index == NamedColor::BrightForeground as usize => {
+                self.bold_foreground.unwrap_or(self.foreground)
+            }
             _ if index == NamedColor::Background as usize => self.background,
             _ if index == NamedColor::Cursor as usize => self.cursor,
             // The foreground, and the dim and bright versions of it and of
@@ -130,26 +149,26 @@ impl TerminalTheme {
 
 /// The theme terminals draw with now, set by the settings for the app's
 /// current appearance.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct TerminalColors(&'static TerminalTheme);
+#[derive(Clone, Debug, PartialEq)]
+pub struct TerminalColors(TerminalTheme);
 
 impl Global for TerminalColors {}
 
 impl TerminalColors {
-    pub fn new(theme: &'static TerminalTheme) -> Self {
-        Self(theme)
+    pub fn new(theme: &TerminalTheme) -> Self {
+        Self(theme.clone())
     }
 
     /// The theme in effect; before the settings set one, the default for
     /// the app's appearance.
-    pub fn current(cx: &App) -> &'static TerminalTheme {
+    pub fn current(cx: &App) -> &TerminalTheme {
         cx.try_global::<Self>()
-            .map(|colors| colors.0)
+            .map(|colors| &colors.0)
             .unwrap_or_else(|| TerminalTheme::default_for(cx.theme().mode))
     }
 
-    pub fn theme(&self) -> &'static TerminalTheme {
-        self.0
+    pub fn theme(&self) -> &TerminalTheme {
+        &self.0
     }
 }
 
@@ -157,8 +176,9 @@ impl TerminalColors {
 /// `primary` cursor and the `selection` over white, with ANSI colors from
 /// the same Tailwind palette, dark enough to read on white.
 const SHELLRS_LIGHT: TerminalTheme = TerminalTheme {
-    key: "shellrs-light",
-    name: "ShellLF Light",
+    key: Cow::Borrowed("shellrs-light"),
+    name: Cow::Borrowed("ShellLF Light"),
+    bold_foreground: None,
     mode: ThemeMode::Light,
     foreground: 0x0a0a0a,
     background: 0xffffff,
@@ -174,8 +194,9 @@ const SHELLRS_LIGHT: TerminalTheme = TerminalTheme {
 /// text and cursor, the `selection` over the background, with ANSI colors
 /// light enough to read on it; black is the app's borders.
 const SHELLRS_DARK: TerminalTheme = TerminalTheme {
-    key: "shellrs-dark",
-    name: "ShellLF Dark",
+    key: Cow::Borrowed("shellrs-dark"),
+    name: Cow::Borrowed("ShellLF Dark"),
+    bold_foreground: None,
     mode: ThemeMode::Dark,
     foreground: 0xe0e0e4,
     background: 0x1e1e1f,
@@ -219,8 +240,9 @@ static THEMES: [TerminalTheme; 20] = [
 /// The palette table of the README, laid out as the official iTerm2 files
 /// lay it out.
 const SOLARIZED_LIGHT: TerminalTheme = TerminalTheme {
-    key: "solarized-light",
-    name: "Solarized Light",
+    key: Cow::Borrowed("solarized-light"),
+    name: Cow::Borrowed("Solarized Light"),
+    bold_foreground: None,
     mode: ThemeMode::Light,
     foreground: 0x657b83,
     background: 0xfdf6e3,
@@ -235,8 +257,9 @@ const SOLARIZED_LIGHT: TerminalTheme = TerminalTheme {
 /// https://raw.githubusercontent.com/folke/tokyonight.nvim/main/extras/ghostty/tokyonight_day (Apache-2.0).
 /// The project calls it Tokyo Night Day.
 const TOKYO_DAY: TerminalTheme = TerminalTheme {
-    key: "tokyo-day",
-    name: "Tokyo Day",
+    key: Cow::Borrowed("tokyo-day"),
+    name: Cow::Borrowed("Tokyo Day"),
+    bold_foreground: None,
     mode: ThemeMode::Light,
     foreground: 0x3760bf,
     background: 0xe1e2e7,
@@ -250,8 +273,9 @@ const TOKYO_DAY: TerminalTheme = TerminalTheme {
 
 /// https://raw.githubusercontent.com/catppuccin/ghostty/main/themes/catppuccin-latte.conf (MIT).
 const CATPPUCCIN_LATTE: TerminalTheme = TerminalTheme {
-    key: "catppuccin-latte",
-    name: "Catppuccin Latte",
+    key: Cow::Borrowed("catppuccin-latte"),
+    name: Cow::Borrowed("Catppuccin Latte"),
+    bold_foreground: None,
     mode: ThemeMode::Light,
     foreground: 0x4c4f69,
     background: 0xeff1f5,
@@ -266,8 +290,9 @@ const CATPPUCCIN_LATTE: TerminalTheme = TerminalTheme {
 /// https://raw.githubusercontent.com/kepano/flexoki/main/iterm2/flexoki_light.itermcolors (MIT).
 /// The selection is the kitty port's: this file selects by inverting.
 const FLEXOKI_LIGHT: TerminalTheme = TerminalTheme {
-    key: "flexoki-light",
-    name: "Flexoki Light",
+    key: Cow::Borrowed("flexoki-light"),
+    name: Cow::Borrowed("Flexoki Light"),
+    bold_foreground: None,
     mode: ThemeMode::Light,
     foreground: 0x100f0f,
     background: 0xfffcf0,
@@ -281,8 +306,9 @@ const FLEXOKI_LIGHT: TerminalTheme = TerminalTheme {
 
 /// https://raw.githubusercontent.com/sonph/onehalf/master/iterm/OneHalfLight.itermcolors (MIT).
 const ONE_HALF_LIGHT: TerminalTheme = TerminalTheme {
-    key: "one-half-light",
-    name: "One Half Light",
+    key: Cow::Borrowed("one-half-light"),
+    name: Cow::Borrowed("One Half Light"),
+    bold_foreground: None,
     mode: ThemeMode::Light,
     foreground: 0x383a42,
     background: 0xfafafa,
@@ -298,8 +324,9 @@ const ONE_HALF_LIGHT: TerminalTheme = TerminalTheme {
 /// No cursor there: it is the text. The selection is `bg3`, what gruvbox.vim
 /// selects with when not inverting.
 const GRUVBOX_LIGHT: TerminalTheme = TerminalTheme {
-    key: "gruvbox-light",
-    name: "Gruvbox Light",
+    key: Cow::Borrowed("gruvbox-light"),
+    name: Cow::Borrowed("Gruvbox Light"),
+    bold_foreground: None,
     mode: ThemeMode::Light,
     foreground: 0x3c3836,
     background: 0xfbf1c7,
@@ -313,8 +340,9 @@ const GRUVBOX_LIGHT: TerminalTheme = TerminalTheme {
 
 /// https://raw.githubusercontent.com/rebelot/kanagawa.nvim/master/extras/ghostty/kanagawa-lotus (MIT).
 const KANAGAWA_LOTUS: TerminalTheme = TerminalTheme {
-    key: "kanagawa-lotus",
-    name: "Kanagawa Lotus",
+    key: Cow::Borrowed("kanagawa-lotus"),
+    name: Cow::Borrowed("Kanagawa Lotus"),
+    bold_foreground: None,
     mode: ThemeMode::Light,
     foreground: 0x545464,
     background: 0xf2ecbc,
@@ -328,8 +356,9 @@ const KANAGAWA_LOTUS: TerminalTheme = TerminalTheme {
 
 /// https://raw.githubusercontent.com/rose-pine/ghostty/main/dist/rose-pine-dawn (MIT).
 const ROSE_PINE_DAWN: TerminalTheme = TerminalTheme {
-    key: "rose-pine-dawn",
-    name: "Rosé Pine Dawn",
+    key: Cow::Borrowed("rose-pine-dawn"),
+    name: Cow::Borrowed("Rosé Pine Dawn"),
+    bold_foreground: None,
     mode: ThemeMode::Light,
     foreground: 0x575279,
     background: 0xfaf4ed,
@@ -347,8 +376,9 @@ const ROSE_PINE_DAWN: TerminalTheme = TerminalTheme {
 /// the selection. It sets no cursor color by default: the cursor is the
 /// text.
 const EVERFOREST_LIGHT: TerminalTheme = TerminalTheme {
-    key: "everforest-light",
-    name: "Everforest Light",
+    key: Cow::Borrowed("everforest-light"),
+    name: Cow::Borrowed("Everforest Light"),
+    bold_foreground: None,
     mode: ThemeMode::Light,
     foreground: 0x5c6a72,
     background: 0xfdf6e3,
@@ -364,8 +394,9 @@ const EVERFOREST_LIGHT: TerminalTheme = TerminalTheme {
 /// The palette table of the README, laid out as the official iTerm2 files
 /// lay it out.
 const SOLARIZED_DARK: TerminalTheme = TerminalTheme {
-    key: "solarized-dark",
-    name: "Solarized Dark",
+    key: Cow::Borrowed("solarized-dark"),
+    name: Cow::Borrowed("Solarized Dark"),
+    bold_foreground: None,
     mode: ThemeMode::Dark,
     foreground: 0x839496,
     background: 0x002b36,
@@ -379,8 +410,9 @@ const SOLARIZED_DARK: TerminalTheme = TerminalTheme {
 
 /// https://raw.githubusercontent.com/folke/tokyonight.nvim/main/extras/ghostty/tokyonight_night (Apache-2.0).
 const TOKYO_NIGHT: TerminalTheme = TerminalTheme {
-    key: "tokyo-night",
-    name: "Tokyo Night",
+    key: Cow::Borrowed("tokyo-night"),
+    name: Cow::Borrowed("Tokyo Night"),
+    bold_foreground: None,
     mode: ThemeMode::Dark,
     foreground: 0xc0caf5,
     background: 0x1a1b26,
@@ -394,8 +426,9 @@ const TOKYO_NIGHT: TerminalTheme = TerminalTheme {
 
 /// https://raw.githubusercontent.com/catppuccin/ghostty/main/themes/catppuccin-mocha.conf (MIT).
 const CATPPUCCIN_MOCHA: TerminalTheme = TerminalTheme {
-    key: "catppuccin-mocha",
-    name: "Catppuccin Mocha",
+    key: Cow::Borrowed("catppuccin-mocha"),
+    name: Cow::Borrowed("Catppuccin Mocha"),
+    bold_foreground: None,
     mode: ThemeMode::Dark,
     foreground: 0xcdd6f4,
     background: 0x1e1e2e,
@@ -410,8 +443,9 @@ const CATPPUCCIN_MOCHA: TerminalTheme = TerminalTheme {
 /// https://raw.githubusercontent.com/kepano/flexoki/main/iterm2/flexoki_dark.itermcolors (MIT).
 /// The selection is the kitty port's: this file selects by inverting.
 const FLEXOKI_DARK: TerminalTheme = TerminalTheme {
-    key: "flexoki-dark",
-    name: "Flexoki Dark",
+    key: Cow::Borrowed("flexoki-dark"),
+    name: Cow::Borrowed("Flexoki Dark"),
+    bold_foreground: None,
     mode: ThemeMode::Dark,
     foreground: 0xcecdc3,
     background: 0x100f0f,
@@ -427,8 +461,9 @@ const FLEXOKI_DARK: TerminalTheme = TerminalTheme {
 /// Bright black is Windows Terminal's `#5a6374`: here it is the
 /// background, which hides text in it.
 const ONE_HALF_DARK: TerminalTheme = TerminalTheme {
-    key: "one-half-dark",
-    name: "One Half Dark",
+    key: Cow::Borrowed("one-half-dark"),
+    name: Cow::Borrowed("One Half Dark"),
+    bold_foreground: None,
     mode: ThemeMode::Dark,
     foreground: 0xdcdfe4,
     background: 0x282c34,
@@ -444,8 +479,9 @@ const ONE_HALF_DARK: TerminalTheme = TerminalTheme {
 /// No cursor there: it is the text. The selection is `bg3`, what gruvbox.vim
 /// selects with when not inverting.
 const GRUVBOX_DARK: TerminalTheme = TerminalTheme {
-    key: "gruvbox-dark",
-    name: "Gruvbox Dark",
+    key: Cow::Borrowed("gruvbox-dark"),
+    name: Cow::Borrowed("Gruvbox Dark"),
+    bold_foreground: None,
     mode: ThemeMode::Dark,
     foreground: 0xebdbb2,
     background: 0x282828,
@@ -459,8 +495,9 @@ const GRUVBOX_DARK: TerminalTheme = TerminalTheme {
 
 /// https://raw.githubusercontent.com/rebelot/kanagawa.nvim/master/extras/ghostty/kanagawa-wave (MIT).
 const KANAGAWA_WAVE: TerminalTheme = TerminalTheme {
-    key: "kanagawa-wave",
-    name: "Kanagawa Wave",
+    key: Cow::Borrowed("kanagawa-wave"),
+    name: Cow::Borrowed("Kanagawa Wave"),
+    bold_foreground: None,
     mode: ThemeMode::Dark,
     foreground: 0xdcd7ba,
     background: 0x1f1f28,
@@ -474,8 +511,9 @@ const KANAGAWA_WAVE: TerminalTheme = TerminalTheme {
 
 /// https://raw.githubusercontent.com/dracula/windows-terminal/master/dracula.json (MIT).
 const DRACULA: TerminalTheme = TerminalTheme {
-    key: "dracula",
-    name: "Dracula",
+    key: Cow::Borrowed("dracula"),
+    name: Cow::Borrowed("Dracula"),
+    bold_foreground: None,
     mode: ThemeMode::Dark,
     foreground: 0xf8f8f2,
     background: 0x282a36,
@@ -489,8 +527,9 @@ const DRACULA: TerminalTheme = TerminalTheme {
 
 /// https://raw.githubusercontent.com/nordtheme/alacritty/main/src/nord.yaml (MIT).
 const NORD: TerminalTheme = TerminalTheme {
-    key: "nord",
-    name: "Nord",
+    key: Cow::Borrowed("nord"),
+    name: Cow::Borrowed("Nord"),
+    bold_foreground: None,
     mode: ThemeMode::Dark,
     foreground: 0xd8dee9,
     background: 0x2e3440,
@@ -533,8 +572,8 @@ mod tests {
     fn keys_are_unique_and_each_theme_suits_its_column() {
         let mut keys = HashSet::new();
         for theme in TerminalTheme::all() {
-            assert!(keys.insert(theme.key), "{} twice", theme.key);
-            assert_eq!(TerminalTheme::find(theme.key), Some(theme));
+            assert!(keys.insert(theme.key()), "{} twice", theme.key);
+            assert_eq!(TerminalTheme::find(theme.key()), Some(theme));
             assert_eq!(
                 luminance(theme.background) > 0.5,
                 theme.mode == ThemeMode::Light,

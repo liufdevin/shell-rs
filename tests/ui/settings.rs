@@ -3,7 +3,106 @@
 use crate::support::*;
 
 #[gpui_kit::test]
-fn terminal_reconnection_can_be_changed_in_settings(cx: &mut TestAppContext) {
+async fn xshell_schemes_import_apply_update_and_delete_in_settings(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("配色.xcs");
+    let original = include_str!("../fixtures/xshell/3024 Day.xcs");
+    std::fs::write(&path, original).unwrap();
+    let (handle, workspace) = open_workspace(cx);
+    let settings = cx.update(|cx| workspace.read(cx).settings().clone());
+    cx.update(|cx| {
+        settings.update(cx, |store, cx| {
+            store.update(|settings| settings.appearance = Appearance::Light, cx)
+        })
+    });
+    cx.run_until_parked();
+    in_frame(cx, handle, |window, cx| window.click("open-settings", cx));
+    in_frame(cx, handle, |window, cx| {
+        window.within("settings").click("0-0", cx)
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.click("import-terminal-schemes", cx)
+    });
+    assert!(cx.did_prompt_for_paths());
+    cx.simulate_path_prompt_response(|options| {
+        assert!(options.files && !options.directories && options.multiple);
+        Some(vec![path.clone()])
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(5), |window, cx| {
+        window.render_frame(cx);
+        settings.read(cx).settings().terminal_theme.imported.len() == 1
+    })
+    .await;
+    let key = cx.update(|cx| {
+        settings.read(cx).settings().terminal_theme.imported[0]
+            .key()
+            .to_owned()
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.click(
+            gpui_kit::SharedString::from(format!("terminal-theme-{key}")),
+            cx,
+        );
+    });
+    cx.update(|cx| {
+        assert_eq!(shellrs::terminal::TerminalColors::current(cx).key(), key);
+        assert_eq!(
+            shellrs::terminal::TerminalColors::current(cx).foreground(),
+            gpui_kit::Hsla::from(gpui_kit::rgb(0x4a4543))
+        );
+    });
+    cx.update(|cx| {
+        settings.update(cx, |store, cx| {
+            store.update(|settings| settings.terminal_theme.app_follows = true, cx)
+        });
+    });
+    cx.run_until_parked();
+    let interface_foreground = cx.update(|cx| {
+        assert_eq!(cx.theme().theme_name().as_ref(), "3024 Day");
+        cx.theme().foreground
+    });
+    std::fs::write(&path, original.replace("text=4a4543", "text=123456")).unwrap();
+    in_frame(cx, handle, |window, cx| {
+        window.click("import-terminal-schemes", cx)
+    });
+    cx.simulate_path_prompt_response(|_| Some(vec![path.clone()]));
+    cx.wait_for(handle.into(), Duration::from_secs(5), |window, cx| {
+        window.render_frame(cx);
+        shellrs::terminal::TerminalColors::current(cx).foreground()
+            == gpui_kit::Hsla::from(gpui_kit::rgb(0x123456))
+    })
+    .await;
+    cx.update(|cx| {
+        assert_ne!(cx.theme().foreground, interface_foreground);
+        assert_eq!(
+            settings.read(cx).settings().terminal_theme.imported.len(),
+            1
+        )
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.click(
+            gpui_kit::SharedString::from(format!("remove-terminal-scheme-{key}")),
+            cx,
+        );
+    });
+    cx.update(|cx| {
+        assert!(
+            settings
+                .read(cx)
+                .settings()
+                .terminal_theme
+                .imported
+                .is_empty()
+        );
+        assert_eq!(
+            shellrs::terminal::TerminalColors::current(cx).key(),
+            "shellrs-light"
+        );
+    });
+}
+
+#[gpui_kit::test]
+fn global_settings_do_not_store_per_host_reconnection(cx: &mut TestAppContext) {
     let (handle, workspace) = open_workspace(cx);
     in_frame(cx, handle, |window, cx| window.click("open-settings", cx));
     in_frame(cx, handle, |window, cx| {
@@ -26,22 +125,13 @@ fn terminal_reconnection_can_be_changed_in_settings(cx: &mut TestAppContext) {
             );
         });
     }
-    in_frame(cx, handle, |window, cx| {
-        let mut page = window.within("settings");
-        page.within("group-5").within("item-0").click("check", cx);
-    });
     cx.update(|cx| {
-        let settings = workspace
-            .read(cx)
-            .settings()
-            .read(cx)
-            .settings()
-            .terminal_connection;
-        assert!(settings.auto_reconnect);
-        assert_eq!(settings.reconnect_delay_secs, 5);
-        assert_eq!(
-            shellrs::terminal::TerminalConnectionSettings::current(cx),
-            settings
+        let settings = workspace.read(cx).settings().read(cx).settings();
+        assert!(
+            serde_json::to_value(settings)
+                .unwrap()
+                .get("terminal_connection")
+                .is_none()
         );
     });
 }
@@ -407,7 +497,8 @@ fn terminal_themes_follow_the_appearance_and_a_card_chooses_one(cx: &mut TestApp
 
     let (handle, workspace) = open_workspace(cx);
     let settings = cx.update(|cx| workspace.read(cx).settings().clone());
-    let in_effect = |cx: &mut TestAppContext| cx.update(|cx| TerminalColors::current(cx).key());
+    let in_effect =
+        |cx: &mut TestAppContext| cx.update(|cx| TerminalColors::current(cx).key().to_owned());
     let set_appearance = |appearance, cx: &mut TestAppContext| {
         cx.update(|cx| {
             settings.update(cx, |settings, cx| {

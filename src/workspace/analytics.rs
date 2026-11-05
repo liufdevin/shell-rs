@@ -9,6 +9,7 @@ use crate::analytics::{Analytics, Counter, Snapshot};
 use crate::app::{ShortcutOverrides, ToolKind};
 use crate::host::{AuthKind, ForwardKind, HostId, Route};
 use crate::settings::Choice as _;
+use crate::terminal::TerminalTheme;
 
 use super::Workspace;
 
@@ -132,6 +133,7 @@ impl Workspace {
             ToolKind::Gpu => Counter::ToolGpu,
             ToolKind::Tmux => Counter::ToolTmux,
             ToolKind::Projects => Counter::ToolProjects,
+            ToolKind::Serial => return,
         });
     }
 
@@ -192,8 +194,10 @@ impl Workspace {
         Snapshot {
             appearance: settings.appearance.key(),
             language: settings.language.key(),
-            light_theme: settings.terminal_theme.theme(ThemeMode::Light).key(),
-            dark_theme: settings.terminal_theme.theme(ThemeMode::Dark).key(),
+            light_theme: TerminalTheme::find(settings.terminal_theme.theme(ThemeMode::Light).key())
+                .map_or("custom", |theme| theme.key()),
+            dark_theme: TerminalTheme::find(settings.terminal_theme.theme(ThemeMode::Dark).key())
+                .map_or("custom", |theme| theme.key()),
             ui_follows_theme: settings.terminal_theme.app_follows,
             highlight: settings.terminal_highlight.enabled,
             external_cli: settings.external_cli.enabled,

@@ -36,9 +36,10 @@ use super::notices::{NoticeScanner, ProgramNotice, TerminalNotice};
 use super::run::{BusyReason, RunFailure, RunHandle};
 use super::search::{
     MatchMarker, SearchDirection, SearchMark, SearchOptions, SearchPosition, TerminalSearch,
+    visible_matches,
 };
 use super::session_io::{
-    Recording, SerialDataModes, SessionIo, TerminalConnectionSettings, format_hex,
+    Recording, SerialDataModes, SessionIo, TerminalConnectionSettings, TerminalOptions, format_hex,
 };
 use super::zmodem::{Fed, Shown, Zmodem, ZmodemControl, ZmodemDirection, ZmodemReply};
 use super::{
@@ -48,6 +49,8 @@ use super::{
 };
 
 pub type AlacrittyTerm = Term<TerminalEventProxy>;
+
+const AI_CITATION_PATTERN: &str = r"\x{e200}cite\x{e202}turn[0-9]+(?:view|search)[0-9]+(?:\x{e202}turn[0-9]+(?:view|search)[0-9]+)*\x{e201}";
 
 #[derive(Clone, Debug)]
 pub struct TerminalCell {
@@ -87,7 +90,13 @@ impl TerminalSnapshot {
             .map(|row| {
                 row.iter()
                     .filter(|cell| !cell.flags.contains(Flags::WIDE_CHAR_SPACER))
-                    .map(|cell| cell.character.as_str())
+                    .map(|cell| {
+                        if cell.flags.contains(Flags::HIDDEN) {
+                            " "
+                        } else {
+                            cell.character.as_str()
+                        }
+                    })
                     .collect::<String>()
                     .trim_end()
                     .to_owned()
@@ -109,6 +118,7 @@ pub struct TerminalEngine {
     search: RefCell<Option<TerminalSearch>>,
     /// Finds the web addresses on screen, built once.
     url_search: RefCell<RegexSearch>,
+    citation_search: RefCell<RegexSearch>,
     /// The 关键字高亮 rules, shared with the parser thread, which checks new
     /// lines against them; swapped when the settings change them.
     highlights: SharedHighlights,
@@ -134,18 +144,17 @@ pub struct TerminalEngine {
     serial_name: Option<String>,
     reconnect_allowed: bool,
     reconnect_task: Option<gpui_kit::Task<()>>,
-    _connection_observer: gpui_kit::Subscription,
+    reconnect_settings: TerminalConnectionSettings,
 }
 
 impl TerminalEngine {
     pub fn new(factory: SharedTerminalTransportFactory, cx: &mut gpui_kit::Context<Self>) -> Self {
-        Self::new_connection(factory, false, None, cx)
+        Self::new_connection(factory, TerminalOptions::default(), cx)
     }
 
     pub(super) fn new_connection(
         factory: SharedTerminalTransportFactory,
-        remote: bool,
-        serial: Option<(String, SerialDataModes)>,
+        options: TerminalOptions,
         cx: &mut gpui_kit::Context<Self>,
     ) -> Self {
         let size = TerminalSize::DEFAULT;
@@ -155,13 +164,25 @@ impl TerminalEngine {
         // burst of terminal bytes results in a single render notification.
         let (event_sender, event_receiver) = mpsc::channel();
         let highlights = Arc::new(Mutex::new(TerminalHighlights::current(cx)));
-        let theme = Arc::new(Mutex::new(TerminalColors::current(cx)));
+        let theme = Arc::new(Mutex::new(TerminalColors::current(cx).clone()));
         let io = Arc::new(SessionIo::default());
+        let TerminalOptions {
+            remote,
+            serial,
+            log,
+            reconnect,
+        } = options;
         let (serial_name, modes) = serial
             .map(|(name, modes)| (Some(name), modes))
             .unwrap_or_default();
         io.receive_hex.store(modes.receive_hex, Ordering::Release);
         io.send_hex.store(modes.send_hex, Ordering::Release);
+        if let Some(log) = log {
+            match Recording::daily(log, modes.receive_hex) {
+                Ok(recording) => io.set_recording(recording),
+                Err(error) => io.report_error(error.to_string()),
+            }
+        }
         let runtime = TerminalRuntime::start(
             generation,
             size,
@@ -185,18 +206,13 @@ impl TerminalEngine {
         });
         let theme_observer = cx.observe_global::<TerminalColors>(|this, cx| {
             *this.theme.lock().unwrap_or_else(|error| error.into_inner()) =
-                TerminalColors::current(cx);
+                TerminalColors::current(cx).clone();
         });
         let interaction_observer = cx.observe_global::<TerminalInteraction>(|this, cx| {
             this.runtime
                 .term
                 .lock()
                 .set_options(terminal_config(TerminalInteraction::current(cx)));
-            cx.notify();
-        });
-        let connection_observer = cx.observe_global::<TerminalConnectionSettings>(|this, cx| {
-            this.reconnect_task = None;
-            this.schedule_reconnect(cx);
             cx.notify();
         });
         let mut this = Self {
@@ -207,6 +223,9 @@ impl TerminalEngine {
             latency: None,
             search: RefCell::new(None),
             url_search: RefCell::new(url_search()),
+            citation_search: RefCell::new(
+                RegexSearch::new(AI_CITATION_PATTERN).expect("the citation pattern is valid"),
+            ),
             highlights,
             _highlights_observer: highlights_observer,
             theme,
@@ -229,7 +248,7 @@ impl TerminalEngine {
             }),
             reconnect_allowed: true,
             reconnect_task: None,
-            _connection_observer: connection_observer,
+            reconnect_settings: reconnect,
         };
         this.event_task = Some(Self::listen(event_receiver, this.io.clone(), cx));
         this
@@ -390,7 +409,7 @@ impl TerminalEngine {
     }
 
     fn schedule_reconnect(&mut self, cx: &mut gpui_kit::Context<Self>) {
-        let settings = TerminalConnectionSettings::current(cx);
+        let settings = self.reconnect_settings;
         if !self.remote
             || !self.reconnect_allowed
             || !settings.auto_reconnect
@@ -420,7 +439,7 @@ impl TerminalEngine {
                 this.reconnect_task = None;
                 if this.generation == generation
                     && this.reconnect_allowed
-                    && TerminalConnectionSettings::current(cx).auto_reconnect
+                    && this.reconnect_settings.auto_reconnect
                     && matches!(
                         this.lifecycle,
                         TerminalLifecycle::Exited { .. } | TerminalLifecycle::Failed(_)
@@ -433,6 +452,19 @@ impl TerminalEngine {
         }));
     }
 
+    pub(super) fn set_reconnect_settings(
+        &mut self,
+        settings: TerminalConnectionSettings,
+        cx: &mut gpui_kit::Context<Self>,
+    ) {
+        if self.reconnect_settings != settings {
+            self.reconnect_settings = settings;
+            self.reconnect_task = None;
+            self.schedule_reconnect(cx);
+            cx.notify();
+        }
+    }
+
     pub(super) fn set_recording(&self, recording: Recording) {
         self.io.set_recording(recording);
     }
@@ -443,6 +475,10 @@ impl TerminalEngine {
 
     pub(super) fn take_recording(&self) -> Option<Recording> {
         self.io.take_recording()
+    }
+
+    pub(super) fn recording_path(&self) -> Option<PathBuf> {
+        self.io.recording_path()
     }
 
     pub fn is_recording(&self) -> bool {
@@ -904,6 +940,10 @@ impl TerminalEngine {
     }
 
     pub fn snapshot(&self) -> TerminalSnapshot {
+        self.display_snapshot(false)
+    }
+
+    pub(super) fn display_snapshot(&self, hide_ai_citations: bool) -> TerminalSnapshot {
         let term = self.runtime.term.lock();
         let content = term.renderable_content();
         let selection = content.selection;
@@ -919,6 +959,12 @@ impl TerminalEngine {
             .map(|search| search.visible(&term))
             .unwrap_or_default();
         let mut marker = MatchMarker::new(&matches, focused.as_ref());
+        let citations = if hide_ai_citations {
+            visible_matches(&term, &mut self.citation_search.borrow_mut())
+        } else {
+            Vec::new()
+        };
+        let mut citation_marker = MatchMarker::new(&citations, None);
         let mut links = LinkMarker::new(visible_links(&term, &mut self.url_search.borrow_mut()));
         let highlights = current(&self.highlights).screen(&term);
         let mut cells: Vec<_> = content
@@ -928,16 +974,23 @@ impl TerminalEngine {
                 if let Some(zerowidth) = indexed.cell.zerowidth() {
                     character.extend(zerowidth);
                 }
+                let citation_hidden = citation_marker.mark(indexed.point) != SearchMark::None;
+                let link = links.mark(indexed.point, indexed.cell.hyperlink());
                 TerminalCell {
                     character,
                     foreground: indexed.cell.fg,
                     background: indexed.cell.bg,
-                    flags: indexed.cell.flags,
+                    flags: if !citation_hidden {
+                        indexed.cell.flags
+                    } else {
+                        (indexed.cell.flags | Flags::HIDDEN)
+                            & !(Flags::ALL_UNDERLINES | Flags::STRIKEOUT)
+                    },
                     selected: selection.is_some_and(|range| {
                         range.contains_cell(&indexed, cursor_point, cursor_shape)
                     }),
                     search: marker.mark(indexed.point),
-                    link: links.mark(indexed.point, indexed.cell.hyperlink()),
+                    link: if citation_hidden { None } else { link },
                     highlight: highlights.color(
                         (indexed.point.line.0 + display_offset) as usize,
                         indexed.point.column.0,
@@ -1367,7 +1420,7 @@ pub struct TerminalEventProxy {
 
 /// The theme a terminal's parser thread answers color queries from,
 /// swapped by the engine when `TerminalColors` changes.
-type SharedTheme = Arc<Mutex<&'static TerminalTheme>>;
+type SharedTheme = Arc<Mutex<TerminalTheme>>;
 
 /// An answer to a query in the output.
 enum Reply {
@@ -1437,7 +1490,7 @@ impl TerminalEventProxy {
         if replies.is_empty() {
             return;
         }
-        let theme = *self.theme.lock().unwrap_or_else(|error| error.into_inner());
+        let theme = self.theme.lock().unwrap_or_else(|error| error.into_inner());
         let mut bytes = Vec::new();
         for reply in replies {
             match reply {
@@ -1817,9 +1870,9 @@ mod tests {
             size: Arc::new(Mutex::new(size)),
             wakeup_pending: Arc::new(AtomicBool::new(false)),
             replies: Arc::default(),
-            theme: Arc::new(Mutex::new(TerminalTheme::default_for(
-                gpui_kit::component::ThemeMode::Light,
-            ))),
+            theme: Arc::new(Mutex::new(
+                TerminalTheme::default_for(gpui_kit::component::ThemeMode::Light).clone(),
+            )),
         };
         (proxy, command_receiver, ui_receiver)
     }
@@ -2031,6 +2084,99 @@ mod tests {
 
     fn feed(term: &mut AlacrittyTerm, bytes: &[u8]) {
         Processor::<alacritty_terminal::vte::ansi::StdSyncHandler>::new().advance(term, bytes);
+    }
+
+    #[test]
+    fn streamed_ansi_output_preserves_ascii_spaces_and_erases_old_glyphs() {
+        let mut term = test_term(40, 4);
+        let mut processor: Processor = Processor::new();
+        let output =
+            "\x1b[?1049h\x1b[?2026h\x1b[2J\x1b[H中文 A\x1b[2m  \x1b[1mB C\x1b[0m\x1b[?2026l";
+        for byte in output.as_bytes() {
+            processor.advance(&mut term, std::slice::from_ref(byte));
+        }
+        for column in [4, 6, 7, 9] {
+            let cell = &term.grid()[Line(0)][Column(column)];
+            assert_eq!(cell.c, ' ');
+            assert!(cell.zerowidth().is_none());
+        }
+        assert_eq!(term.grid()[Line(0)][Column(8)].c, 'B');
+        assert_eq!(term.grid()[Line(0)][Column(10)].c, 'C');
+        processor.advance(&mut term, b"\x1b[1;7H\x1b[K   X");
+        for column in [6, 7, 8, 10] {
+            assert_eq!(term.grid()[Line(0)][Column(column)].c, ' ');
+        }
+        assert_eq!(term.grid()[Line(0)][Column(9)].c, 'X');
+    }
+
+    #[test]
+    fn ai_citations_require_complete_known_markup() {
+        let single = "\u{e200}cite\u{e202}turn0view0\u{e201}";
+        let multiple = "\u{e200}cite\u{e202}turn0search12\u{e202}turn1view2\u{e201}";
+        let mut regex = RegexSearch::new(AI_CITATION_PATTERN).unwrap();
+        for reference in [single, multiple] {
+            let mut term = test_term(100, 4);
+            feed(&mut term, format!("正文 {reference} END").as_bytes());
+            let found = visible_matches(&term, &mut regex);
+            assert_eq!(found.len(), 1);
+            assert_eq!(
+                term.bounds_to_string(*found[0].start(), *found[0].end()),
+                reference
+            );
+            assert_eq!(term.grid()[Line(0)][Column(5)].c, '\u{e200}');
+        }
+        let mut styled = test_term(100, 4);
+        feed(
+            &mut styled,
+            "\u{e200}cite\u{e202}turn\x1b[2m0view0\x1b[0m\u{e201}".as_bytes(),
+        );
+        let found = visible_matches(&styled, &mut regex);
+        assert_eq!(found.len(), 1);
+        assert_eq!(
+            styled.bounds_to_string(*found[0].start(), *found[0].end()),
+            single
+        );
+        for text in [
+            "cite turn0view0",
+            "\u{e200}",
+            "\u{e201}",
+            "\u{e202}",
+            "\u{e200}cite\u{e202}turn0view0",
+            "\u{e200}cite\u{e202}arbitrary text\u{e201}",
+            "\u{e200}other\u{e202}turn0view0\u{e201}",
+            "\u{e200}cite\u{e202}turn0view\r\n0\u{e201}",
+        ] {
+            let mut term = test_term(100, 4);
+            feed(&mut term, text.as_bytes());
+            assert!(visible_matches(&term, &mut regex).is_empty(), "{text}");
+        }
+    }
+
+    #[test]
+    fn ai_citations_match_after_fragmented_utf8_and_across_scrollback_wraps() {
+        let reference = "\u{e200}cite\u{e202}turn0view0\u{e201}";
+        let mut term = test_term(12, 2);
+        let mut processor: Processor = Processor::new();
+        let mut regex = RegexSearch::new(AI_CITATION_PATTERN).unwrap();
+        for byte in "prefixxxxxx\u{e200}cite\u{e202}turn0view0".as_bytes() {
+            processor.advance(&mut term, std::slice::from_ref(byte));
+        }
+        assert!(visible_matches(&term, &mut regex).is_empty());
+        for byte in "\u{e201} END".as_bytes() {
+            processor.advance(&mut term, std::slice::from_ref(byte));
+        }
+        let found = visible_matches(&term, &mut regex);
+        assert_eq!(found.len(), 1);
+        assert!(found[0].start().line.0 < 0);
+        assert_eq!(
+            term.bounds_to_string(*found[0].start(), *found[0].end()),
+            reference
+        );
+        term.scroll_display(Scroll::Top);
+        assert_eq!(visible_matches(&term, &mut regex), found);
+        processor.advance(&mut term, b"\x1b[2J\x1b[Hplain text");
+        term.scroll_display(Scroll::Bottom);
+        assert!(visible_matches(&term, &mut regex).is_empty());
     }
 
     fn line_text(term: &AlacrittyTerm, line: i32) -> String {
@@ -2548,9 +2694,9 @@ mod tests {
             ui_events,
             RuntimeOptions {
                 highlights: Arc::default(),
-                theme: Arc::new(Mutex::new(TerminalTheme::default_for(
-                    gpui_kit::component::ThemeMode::Light,
-                ))),
+                theme: Arc::new(Mutex::new(
+                    TerminalTheme::default_for(gpui_kit::component::ThemeMode::Light).clone(),
+                )),
                 interaction: TerminalInteraction::default(),
                 io: Arc::default(),
             },
@@ -2701,9 +2847,9 @@ mod tests {
             ui_events,
             RuntimeOptions {
                 highlights: Arc::default(),
-                theme: Arc::new(Mutex::new(TerminalTheme::default_for(
-                    gpui_kit::component::ThemeMode::Light,
-                ))),
+                theme: Arc::new(Mutex::new(
+                    TerminalTheme::default_for(gpui_kit::component::ThemeMode::Light).clone(),
+                )),
                 interaction: TerminalInteraction::default(),
                 io: Arc::default(),
             },

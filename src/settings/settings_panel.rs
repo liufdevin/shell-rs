@@ -444,61 +444,7 @@ fn terminal_groups(panel: &SettingsPanel, cx: &App) -> Vec<SettingGroup> {
         sidebar_tools_group(store),
         notification_group(store),
         local_terminal_group(panel),
-        connection_group(store),
     ]
-}
-
-fn connection_switch(
-    store: &Entity<SettingsStore>,
-    read: fn(&crate::terminal::TerminalConnectionSettings) -> bool,
-    write: fn(&mut crate::terminal::TerminalConnectionSettings, bool),
-) -> SettingField<bool> {
-    let (reader, writer) = (store.clone(), store.clone());
-    SettingField::switch(
-        move |cx| read(&reader.read(cx).settings().terminal_connection),
-        move |value, cx| {
-            writer.update(cx, |store, cx| {
-                store.update(
-                    |settings| write(&mut settings.terminal_connection, value),
-                    cx,
-                )
-            });
-        },
-    )
-    .default_value(false)
-}
-
-fn connection_group(store: &Entity<SettingsStore>) -> SettingGroup {
-    SettingGroup::new()
-        .title(t!("settings.connection.title"))
-        .items([
-            SettingItem::new(
-                t!("settings.connection.auto_reconnect"),
-                connection_switch(
-                    store,
-                    |settings| settings.auto_reconnect,
-                    |settings, value| settings.auto_reconnect = value,
-                ),
-            )
-            .description(t!("settings.connection.description")),
-            SettingItem::new(
-                t!("settings.connection.delay"),
-                number_field(
-                    store,
-                    NumberFieldOptions {
-                        min: 1.,
-                        max: 3600.,
-                        step: 1.,
-                    },
-                    |settings| settings.terminal_connection.reconnect_delay_secs as f32,
-                    |settings, value| {
-                        settings.terminal_connection.reconnect_delay_secs = value.round() as u32
-                    },
-                )
-                .default_value(5.),
-            )
-            .description(t!("settings.connection.delay_description")),
-        ])
 }
 
 /// 终端 → 本地终端: the program a local terminal runs, and whether 项目's
@@ -545,6 +491,7 @@ fn local_terminal_group(panel: &SettingsPanel) -> SettingGroup {
 fn interaction_group(store: &Entity<SettingsStore>) -> SettingGroup {
     let (reader, writer) = (store.clone(), store.clone());
     let (cursor_reader, cursor_writer) = (store.clone(), store.clone());
+    let (citation_reader, citation_writer) = (store.clone(), store.clone());
     SettingGroup::new()
         .title(t!("settings.interaction.title"))
         .items([
@@ -614,6 +561,31 @@ fn interaction_group(store: &Entity<SettingsStore>) -> SettingGroup {
                 )
                 .default_value(true),
             ),
+            SettingItem::new(
+                t!("settings.interaction.hide_ai_citations"),
+                SettingField::switch(
+                    move |cx| {
+                        citation_reader
+                            .read(cx)
+                            .settings()
+                            .terminal_interaction
+                            .hide_ai_citations
+                    },
+                    move |on, cx| {
+                        citation_writer.update(cx, |store, cx| {
+                            store.update(
+                                |settings| settings.terminal_interaction.hide_ai_citations = on,
+                                cx,
+                            )
+                        });
+                    },
+                )
+                .default_value(false),
+            )
+            .description(t!("settings.interaction.hide_ai_citations_description"))
+            .keywords(keywords(t!(
+                "settings.interaction.hide_ai_citations_keywords"
+            ))),
         ])
 }
 

@@ -122,6 +122,7 @@ impl Workspace {
             name: panel.host().name.clone(),
             os: panel.host().os,
             shell_only: panel.shell_only(),
+            serial: panel.host().is_serial(),
             view: panel.terminal().downgrade(),
         })
     }
@@ -157,6 +158,7 @@ impl Workspace {
                     .into_iter()
                     .filter(|tool| {
                         !tool.is_local()
+                            && (*tool != ToolKind::Serial || terminal.serial)
                             && shown.shows(*tool)
                             && tool.works_on(os)
                             && !(shell_only && tool.runs_commands())

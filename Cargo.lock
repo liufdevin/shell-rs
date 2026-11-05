@@ -7942,7 +7942,7 @@ dependencies = [
 
 [[package]]
 name = "shellrs"
-version = "0.1.17"
+version = "0.1.18"
 dependencies = [
  "alacritty_terminal",
  "anyhow",
@@ -7954,6 +7954,7 @@ dependencies = [
  "clap",
  "dirs 6.0.0",
  "dunce",
+ "encoding_rs",
  "flate2",
  "futures",
  "global-hotkey",

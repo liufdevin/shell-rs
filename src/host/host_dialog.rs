@@ -260,9 +260,10 @@ pub struct HostForm {
     /// The proxy's password.
     proxy_secret: Entity<SecretFields>,
     notes: Entity<TextareaState>,
-    /// This computer's automatic connection log, in the host's own
-    /// configuration. `None` turns automatic logging off.
-    log_file: Option<PathBuf>,
+    log_enabled: bool,
+    log_directory: Option<PathBuf>,
+    auto_reconnect: bool,
+    reconnect_delay: Entity<InputState>,
     /// A Telnet host's 自动登录: whether it is on, where it takes the
     /// user name and password from, and the prompts it waits for.
     telnet_auto_login: bool,
@@ -610,10 +611,13 @@ impl HostForm {
                 .auto_grow(2, 6)
                 .default_value(draft.notes.clone())
         });
-        let log_file = draft
-            .log_file
+        let log_directory = draft
+            .log_directory
             .as_ref()
             .map(|path| PathBuf::from(path.as_ref()));
+        let reconnect_delay = cx.new(|cx| {
+            InputState::new(window, cx).default_value(draft.reconnect_delay_secs.to_string())
+        });
 
         let subscriptions = vec![
             cx.observe(&credential, |_, _, cx| cx.notify()),
@@ -694,7 +698,10 @@ impl HostForm {
             proxy_user,
             proxy_secret,
             notes,
-            log_file,
+            log_enabled: draft.log_enabled,
+            log_directory,
+            auto_reconnect: draft.auto_reconnect,
+            reconnect_delay,
             device,
             baud,
             data_bits,
@@ -846,34 +853,95 @@ impl HostForm {
             name
         };
         let notes = self.notes.read(cx).value().trim().to_string();
-        Ok(self.with_log_file(HostDraft::serial(name, device, settings, group).with_notes(notes)))
+        Ok(self.with_log_file(
+            HostDraft::serial(name, device, settings, group).with_notes(notes),
+            cx,
+        ))
     }
 
-    fn with_log_file(&self, draft: HostDraft) -> HostDraft {
-        match &self.log_file {
-            Some(path) => draft.with_log_file(path.to_string_lossy().to_string()),
-            None => draft,
-        }
+    fn with_log_file(&self, mut draft: HostDraft, cx: &App) -> HostDraft {
+        draft.log_enabled = self.log_enabled;
+        draft.log_directory = self
+            .log_directory
+            .as_ref()
+            .map(|path| path.to_string_lossy().to_string().into());
+        draft.auto_reconnect = self.auto_reconnect;
+        draft.reconnect_delay_secs = self
+            .reconnect_delay
+            .read(cx)
+            .value()
+            .trim()
+            .parse()
+            .unwrap_or(5);
+        draft
+    }
+
+    fn reconnect_field(&self, cx: &mut Context<Self>) -> Field {
+        Field::new().col_span(4).child(
+            v_flex()
+                .w_full()
+                .gap_2()
+                .child(
+                    Checkbox::new("host-auto-reconnect")
+                        .small()
+                        .label(t!("host.dialog.auto_reconnect"))
+                        .checked(self.auto_reconnect)
+                        .on_click(cx.listener(|this, checked, _, cx| {
+                            this.auto_reconnect = *checked;
+                            cx.notify();
+                        })),
+                )
+                .when(self.auto_reconnect, |view| {
+                    view.child(
+                        h_flex()
+                            .gap_2()
+                            .child(div().text_sm().child(t!("host.dialog.reconnect_delay")))
+                            .child(
+                                Input::new(&self.reconnect_delay)
+                                    .id("host-reconnect-delay")
+                                    .small(),
+                            ),
+                    )
+                })
+                .child(
+                    div()
+                        .text_sm()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(t!("host.dialog.reconnect_description")),
+                ),
+        )
     }
 
     fn choose_log_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let directory = self
-            .log_file
-            .as_ref()
-            .and_then(|path| path.parent())
-            .map(Path::to_path_buf)
-            .or_else(dirs::document_dir)
-            .or_else(dirs::home_dir)
-            .unwrap_or_else(|| PathBuf::from("."));
-        let chosen = cx.prompt_for_new_path(&directory, Some("terminal.log"));
+        let chosen = cx.prompt_for_paths(PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: false,
+            prompt: Some(t!("host.dialog.log_file_choose")),
+        });
         cx.spawn_in(window, async move |this, cx| {
             let path = match chosen.await {
-                Ok(Ok(Some(path))) => Some(path),
-                _ => None,
+                Ok(Ok(Some(paths))) => paths.into_iter().next(),
+                Ok(Ok(None)) => None,
+                result => {
+                    let error = match result {
+                        Ok(Err(error)) => error.to_string(),
+                        Err(error) => error.to_string(),
+                        _ => unreachable!(),
+                    };
+                    this.update_in(cx, |_, window, cx| {
+                        window.push_notification(
+                            Notification::error(t!("terminal.recording.failed", error = error)),
+                            cx,
+                        )
+                    })
+                    .ok();
+                    return;
+                }
             };
             if let Some(path) = path {
                 this.update_in(cx, |this, _, cx| {
-                    this.log_file = Some(path);
+                    this.log_directory = Some(path);
                     cx.notify();
                 })
                 .ok();
@@ -884,17 +952,27 @@ impl HostForm {
 
     fn log_file_field(&self, cx: &mut Context<Self>) -> Field {
         let path = self
-            .log_file
-            .as_ref()
-            .map(|path| path.display().to_string());
-        Field::new()
-            .label(t!("host.dialog.log_file"))
-            .col_span(4)
-            .child(
-                v_flex()
-                    .w_full()
-                    .gap_2()
-                    .child(
+            .log_directory
+            .clone()
+            .unwrap_or_else(crate::terminal::default_log_directory)
+            .display()
+            .to_string();
+        Field::new().col_span(4).child(
+            v_flex()
+                .w_full()
+                .gap_2()
+                .child(
+                    Checkbox::new("host-log-enabled")
+                        .small()
+                        .label(t!("host.dialog.log_file"))
+                        .checked(self.log_enabled)
+                        .on_click(cx.listener(|this, checked, _, cx| {
+                            this.log_enabled = *checked;
+                            cx.notify();
+                        })),
+                )
+                .when(self.log_enabled, |view| {
+                    view.child(
                         h_flex()
                             .w_full()
                             .gap_2()
@@ -902,16 +980,12 @@ impl HostForm {
                                 div()
                                     .id("host-log-file")
                                     .test_support()
-                                    .aria_label(path.clone().unwrap_or_default())
+                                    .aria_label(path.clone())
                                     .flex_1()
                                     .min_w_0()
                                     .truncate()
                                     .text_sm()
-                                    .when(path.is_none(), |text| {
-                                        text.text_color(cx.theme().muted_foreground)
-                                            .child(t!("host.dialog.log_file_none"))
-                                    })
-                                    .when_some(path, |text, path| text.child(path)),
+                                    .child(path),
                             )
                             .child(
                                 Button::new("host-log-choose")
@@ -921,26 +995,27 @@ impl HostForm {
                                         this.choose_log_file(window, cx)
                                     })),
                             )
-                            .when(self.log_file.is_some(), |row| {
+                            .when(self.log_directory.is_some(), |row| {
                                 row.child(
                                     Button::new("host-log-clear")
                                         .small()
                                         .ghost()
                                         .label(t!("host.dialog.log_file_clear"))
                                         .on_click(cx.listener(|this, _, _, cx| {
-                                            this.log_file = None;
+                                            this.log_directory = None;
                                             cx.notify();
                                         })),
                                 )
                             }),
                     )
-                    .child(
-                        div()
-                            .text_sm()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(t!("host.dialog.log_file_description")),
-                    ),
-            )
+                })
+                .child(
+                    div()
+                        .text_sm()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(t!("host.dialog.log_file_description")),
+                ),
+        )
     }
 
     /// The group the form has selected; `None` is the root of the tree.
@@ -1343,6 +1418,21 @@ impl HostForm {
 
     /// Validate and write to the store. Returns whether the dialog may close.
     pub fn commit(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if self.auto_reconnect
+            && !self
+                .reconnect_delay
+                .read(cx)
+                .value()
+                .trim()
+                .parse::<u32>()
+                .is_ok_and(|seconds| (1..=3600).contains(&seconds))
+        {
+            window.push_notification(
+                form_error_notification(t!("host.dialog.reconnect_invalid")),
+                cx,
+            );
+            return false;
+        }
         if self.protocol == ProtocolKind::Telnet {
             return self.commit_telnet(window, cx);
         }
@@ -1413,7 +1503,7 @@ impl HostForm {
         // The proxy's password goes the same way, under the proxy's entry.
         let proxy_change = self.proxy_change(&route, cx);
         let notes = self.notes.read(cx).value().trim().to_string();
-        let draft = self.with_log_file(draft.with_route(route).with_notes(notes));
+        let draft = self.with_log_file(draft.with_route(route).with_notes(notes), cx);
 
         let editing = self.editing;
         self.store.update(cx, |store, cx| {
@@ -1450,7 +1540,7 @@ impl HostForm {
         };
         let proxy_change = self.proxy_change(&route, cx);
         let notes = self.notes.read(cx).value().trim().to_string();
-        let draft = self.with_log_file(draft.with_route(route).with_notes(notes));
+        let draft = self.with_log_file(draft.with_route(route).with_notes(notes), cx);
         let password_change = self
             .telnet_password_typed()
             .then(|| self.telnet_fields.read(cx).password_change(cx))
@@ -2118,6 +2208,7 @@ impl Render for HostForm {
                     .child(Select::new(&self.group).small()),
             )
             .when(!serial, |form| form.child(self.route_field(cx)))
+            .child(self.reconnect_field(cx))
             .child(self.log_file_field(cx))
             .child(
                 Field::new()

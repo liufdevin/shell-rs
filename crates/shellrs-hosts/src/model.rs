@@ -358,9 +358,10 @@ pub struct Host {
     pub group: Option<GroupId>,
     /// Whatever the user wants to remember about it; empty for none.
     pub notes: SharedString,
-    /// This computer's file to append received data to whenever the host
-    /// connects. A path is machine-specific, so it stays out of sync.
-    pub log_file: Option<SharedString>,
+    pub log_enabled: bool,
+    pub log_directory: Option<SharedString>,
+    pub auto_reconnect: bool,
+    pub reconnect_delay_secs: u32,
     /// Order among hosts in the same group.
     pub sort_order: i64,
     /// Detected on every successful connection and persisted, so the tree can
@@ -396,7 +397,10 @@ impl Host {
             route: draft.route,
             group: draft.group,
             notes: draft.notes,
-            log_file: draft.log_file,
+            log_enabled: draft.log_enabled,
+            log_directory: draft.log_directory,
+            auto_reconnect: draft.auto_reconnect,
+            reconnect_delay_secs: draft.reconnect_delay_secs,
             sort_order: 0,
             os: None,
             sidebar_tool: None,
@@ -453,7 +457,10 @@ impl Host {
             route: self.route.clone(),
             group: self.group,
             notes: self.notes.clone(),
-            log_file: self.log_file.clone(),
+            log_enabled: self.log_enabled,
+            log_directory: self.log_directory.clone(),
+            auto_reconnect: self.auto_reconnect,
+            reconnect_delay_secs: self.reconnect_delay_secs,
         }
     }
 }
@@ -524,7 +531,10 @@ pub struct HostDraft {
     pub route: Route,
     pub group: Option<GroupId>,
     pub notes: SharedString,
-    pub log_file: Option<SharedString>,
+    pub log_enabled: bool,
+    pub log_directory: Option<SharedString>,
+    pub auto_reconnect: bool,
+    pub reconnect_delay_secs: u32,
 }
 
 impl HostDraft {
@@ -547,7 +557,10 @@ impl HostDraft {
             route: Route::Direct,
             group,
             notes: SharedString::default(),
-            log_file: None,
+            log_enabled: false,
+            log_directory: None,
+            auto_reconnect: false,
+            reconnect_delay_secs: 5,
         }
     }
 
@@ -596,8 +609,9 @@ impl HostDraft {
         self
     }
 
-    pub fn with_log_file(mut self, path: impl Into<SharedString>) -> Self {
-        self.log_file = Some(path.into());
+    pub fn with_log_directory(mut self, path: impl Into<SharedString>) -> Self {
+        self.log_enabled = true;
+        self.log_directory = Some(path.into());
         self
     }
 

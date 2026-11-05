@@ -4,13 +4,17 @@ use std::rc::Rc;
 use gpui_kit::component::{
     ActiveTheme as _, Icon, IconName, Placement, Selectable as _, Sizable as _,
     button::{Button, ButtonVariants as _},
+    checkbox::Checkbox,
     dock::{BasePanel, Panel, PanelControl, PanelEvent},
     h_flex, v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use crate::app::{CatalogIcon, NewSavedTerminal, NewTerminalGroup, ToggleTool, ToolKind};
+use crate::app::{
+    CatalogIcon, NewSavedTerminal, NewTerminalGroup, ToggleSerialReceiveHex, ToggleSerialSendHex,
+    ToggleTool, ToolKind,
+};
 use crate::docker::{Container, DockerObject, DockerPanel, ObjectSummary};
 use crate::explorer::ExplorerPanel;
 use crate::gpu::GpuPanel;
@@ -32,7 +36,10 @@ impl ToolKind {
     /// the terminal, which a terminal a bastion host opened cannot have.
     /// Command snippets only type into the terminal.
     pub fn runs_commands(self) -> bool {
-        !matches!(self, ToolKind::Snippets | ToolKind::Projects)
+        !matches!(
+            self,
+            ToolKind::Snippets | ToolKind::Projects | ToolKind::Serial
+        )
     }
 
     /// Whether the tool goes with local terminals rather than remote ones.
@@ -49,7 +56,7 @@ impl ToolKind {
             | ToolKind::Connections
             | ToolKind::Monitor
             | ToolKind::Gpu => os.is_none_or(HostOs::is_linux),
-            ToolKind::Snippets | ToolKind::Files | ToolKind::Projects => true,
+            ToolKind::Snippets | ToolKind::Files | ToolKind::Projects | ToolKind::Serial => true,
             // Wherever `sh` runs `docker`, `kubectl` or `tmux`: Linux, and a
             // Mac with Docker Desktop, kubectl or tmux; and bash's history
             // file wherever `sh` reads it.
@@ -74,6 +81,7 @@ impl ToolKind {
             ToolKind::Monitor => "tool-monitor",
             ToolKind::Gpu => "tool-gpu",
             ToolKind::Projects => "tool-projects",
+            ToolKind::Serial => "tool-serial",
         }
     }
 }
@@ -90,6 +98,7 @@ pub struct ToolTerminal {
     /// Nothing runs beside the terminal: a link's, a Telnet host's or a
     /// serial host's.
     pub shell_only: bool,
+    pub serial: bool,
     /// Runs the tools' commands on the terminal's own connection.
     pub view: WeakEntity<TerminalView>,
 }
@@ -139,6 +148,7 @@ pub struct ToolSidebar {
     gpu: Entity<GpuPanel>,
     projects: Entity<ProjectPanel>,
     focus_handle: FocusHandle,
+    terminal_observer: Option<Subscription>,
 }
 
 impl ToolSidebar {
@@ -168,6 +178,7 @@ impl ToolSidebar {
             gpu: cx.new(|cx| GpuPanel::new(dispatch.clone(), cx)),
             dispatch,
             focus_handle: cx.focus_handle(),
+            terminal_observer: None,
         }
     }
 
@@ -202,6 +213,13 @@ impl ToolSidebar {
         cx: &mut Context<Self>,
     ) {
         if self.target != target || self.shown != shown {
+            self.terminal_observer = match &target {
+                Some(SidebarTarget::Remote(terminal)) => terminal
+                    .view
+                    .upgrade()
+                    .map(|view| cx.observe(&view, |_, _, cx| cx.notify())),
+                _ => None,
+            };
             self.target = target;
             self.shown = shown;
             self.sync_tools(cx);
@@ -581,8 +599,56 @@ impl Render for ToolSidebar {
                     ToolKind::Monitor => self.monitor.clone().into_any_element(),
                     ToolKind::Gpu => self.gpu.clone().into_any_element(),
                     ToolKind::Projects => self.projects.clone().into_any_element(),
+                    ToolKind::Serial => self.serial_settings(cx).into_any_element(),
                 };
                 sidebar.child(div().flex_1().min_h_0().child(panel))
+            })
+    }
+}
+
+impl ToolSidebar {
+    fn serial_settings(&self, cx: &App) -> impl IntoElement + use<> {
+        let target = self.remote().filter(|terminal| terminal.serial);
+        let target = target.and_then(|terminal| {
+            let view = terminal.view.upgrade()?;
+            Some((terminal.id, view.read(cx).serial_modes(cx)))
+        });
+        v_flex()
+            .p_3()
+            .gap_3()
+            .when_some(target, |view, (id, modes)| {
+                view.child(
+                    Checkbox::new(("serial-hex-receive", id.0))
+                        .small()
+                        .label(t!("serial.mode.receive_hex"))
+                        .checked(modes.receive_hex)
+                        .tooltip(t!("serial.mode.scope"))
+                        .on_click({
+                            let dispatch = self.dispatch.clone();
+                            move |_, window, cx| {
+                                dispatch.dispatch_action(&ToggleSerialReceiveHex(id), window, cx)
+                            }
+                        }),
+                )
+                .child(
+                    Checkbox::new(("serial-hex-transmit", id.0))
+                        .small()
+                        .label(t!("serial.mode.send_hex"))
+                        .checked(modes.send_hex)
+                        .tooltip(t!("serial.mode.scope"))
+                        .on_click({
+                            let dispatch = self.dispatch.clone();
+                            move |_, window, cx| {
+                                dispatch.dispatch_action(&ToggleSerialSendHex(id), window, cx)
+                            }
+                        }),
+                )
+                .child(
+                    div()
+                        .text_sm()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(t!("serial.mode.scope")),
+                )
             })
     }
 }

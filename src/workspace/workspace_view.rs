@@ -3209,6 +3209,8 @@ impl Workspace {
             .on_action(cx.listener(Self::on_new_host_in_group))
             .on_action(cx.listener(Self::on_new_group))
             .on_action(cx.listener(Self::on_import_ssh_config))
+            .on_action(cx.listener(Self::on_import_terminal_schemes))
+            .on_action(cx.listener(Self::on_remove_terminal_scheme))
             .on_action(cx.listener(Self::on_import_known_hosts))
             .on_action(cx.listener(Self::on_expand_all_groups))
             .on_action(cx.listener(Self::on_collapse_all_groups))

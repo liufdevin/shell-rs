@@ -338,19 +338,25 @@ impl TerminalView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        Self::new_connection(element_id, label, factory, false, None, window, cx)
+        Self::new_connection(
+            element_id,
+            label,
+            factory,
+            super::session_io::TerminalOptions::default(),
+            window,
+            cx,
+        )
     }
 
     pub(super) fn new_connection(
         element_id: impl Into<ElementId>,
         label: impl Fn(&App) -> SharedString + 'static,
         factory: SharedTerminalTransportFactory,
-        remote: bool,
-        serial: Option<(String, super::SerialDataModes)>,
+        options: super::session_io::TerminalOptions,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let engine = cx.new(|cx| TerminalEngine::new_connection(factory, remote, serial, cx));
+        let engine = cx.new(|cx| TerminalEngine::new_connection(factory, options, cx));
         let focus_handle = cx.focus_handle();
         let subscriptions = vec![
             cx.observe(&engine, |this, _, cx| {
@@ -539,7 +545,7 @@ impl TerminalView {
         self.engine.read(cx).send_hex(text)
     }
 
-    pub(super) fn serial_modes(&self, cx: &App) -> super::SerialDataModes {
+    pub fn serial_modes(&self, cx: &App) -> super::SerialDataModes {
         self.engine.read(cx).serial_modes()
     }
 
@@ -568,6 +574,19 @@ impl TerminalView {
 
     pub fn is_recording(&self, cx: &App) -> bool {
         self.engine.read(cx).is_recording()
+    }
+
+    pub(super) fn recording_path(&self, cx: &App) -> Option<PathBuf> {
+        self.engine.read(cx).recording_path()
+    }
+
+    pub(super) fn set_reconnect_settings(
+        &self,
+        settings: super::TerminalConnectionSettings,
+        cx: &mut Context<Self>,
+    ) {
+        self.engine
+            .update(cx, |engine, cx| engine.set_reconnect_settings(settings, cx));
     }
 
     /// Forget everything in progress on the screen that is going away: IME
@@ -654,7 +673,10 @@ impl TerminalView {
     }
 
     pub fn screen_text(&self, cx: &App) -> String {
-        self.engine.read(cx).snapshot().visible_text()
+        self.engine
+            .read(cx)
+            .display_snapshot(TerminalInteraction::current(cx).hide_ai_citations)
+            .visible_text()
     }
 
     pub fn copy_selection(&self, cx: &mut App) {
@@ -1518,7 +1540,10 @@ impl EntityInputHandler for TerminalView {
 
 impl Render for TerminalView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let snapshot = self.engine.read(cx).snapshot();
+        let snapshot = self
+            .engine
+            .read(cx)
+            .display_snapshot(TerminalInteraction::current(cx).hide_ai_citations);
         let font = TerminalFont::current(cx);
         let scrollback = ScrollbackHandle::new(
             self.engine.read(cx).scrollback(),
@@ -2780,7 +2805,7 @@ fn grid_point(
 
 /// The colors of the terminal theme in effect, for one frame.
 struct TerminalPalette {
-    theme: &'static TerminalTheme,
+    theme: TerminalTheme,
     foreground: Hsla,
     background: Hsla,
     cursor: Hsla,
@@ -2791,7 +2816,7 @@ impl TerminalPalette {
     fn new(cx: &App) -> Self {
         let theme = TerminalColors::current(cx);
         Self {
-            theme,
+            theme: theme.clone(),
             foreground: theme.foreground(),
             background: theme.background(),
             cursor: theme.cursor(),
@@ -2812,7 +2837,23 @@ impl TerminalPalette {
         flags: Flags,
         overrides: &[Option<Rgb>; COUNT],
     ) -> (Hsla, Hsla) {
-        let mut foreground = self.resolve(foreground, overrides);
+        let mut foreground = if flags.contains(Flags::BOLD) && self.theme.has_separate_bold_colors()
+        {
+            match foreground {
+                Color::Named(NamedColor::Foreground)
+                    if overrides[NamedColor::Foreground as usize].is_none() =>
+                {
+                    self.theme.bold_foreground()
+                }
+                Color::Indexed(index @ 0..=7) => self.resolve(Color::Indexed(index + 8), overrides),
+                Color::Named(named) if (named as usize) < 8 => {
+                    self.resolve(Color::Indexed(named as u8 + 8), overrides)
+                }
+                _ => self.resolve(foreground, overrides),
+            }
+        } else {
+            self.resolve(foreground, overrides)
+        };
         let mut background = self.resolve(background, overrides);
         if flags.contains(Flags::INVERSE) {
             std::mem::swap(&mut foreground, &mut background);
@@ -2834,7 +2875,8 @@ impl TerminalPalette {
         }
         let dim = |index: u8| self.theme.indexed(index).opacity(0.66);
         match color {
-            Color::Named(NamedColor::Foreground | NamedColor::BrightForeground) => self.foreground,
+            Color::Named(NamedColor::BrightForeground) => self.theme.bold_foreground(),
+            Color::Named(NamedColor::Foreground) => self.foreground,
             Color::Named(NamedColor::DimForeground) => self.foreground.opacity(0.66),
             Color::Named(NamedColor::Background) => self.background,
             Color::Named(NamedColor::Cursor) => self.cursor,
@@ -3150,6 +3192,79 @@ mod tests {
         assert_eq!(painted_cell_text("", Flags::WIDE_CHAR_SPACER), " ");
         assert_eq!(painted_cell_text("", Flags::LEADING_WIDE_CHAR_SPACER), " ");
         assert_eq!(painted_cell_text("secret", Flags::HIDDEN), " ");
+    }
+
+    #[test]
+    fn visible_cell_text_is_not_rewritten_as_a_space() {
+        for text in [
+            " ", "中", "cite", "\u{e200}", "\u{e201}", "\u{e202}", "\u{e0b0}", "\u{f120}",
+            "\u{f015}", " \u{301}",
+        ] {
+            assert_eq!(painted_cell_text(text, Flags::empty()), text);
+        }
+    }
+
+    #[test]
+    fn xshell_bold_colors_and_application_overrides_are_respected() {
+        use alacritty_terminal::term::color::COUNT;
+        use alacritty_terminal::vte::ansi::{Color, NamedColor, Rgb};
+        let text = include_str!("../../tests/fixtures/xshell/3024 Day.xcs")
+            .replace("text(bold)=4a4543", "text(bold)=123456");
+        let theme = crate::terminal::import_xshell_schemes(text.as_bytes())
+            .unwrap()
+            .remove(0);
+        let palette = super::TerminalPalette {
+            foreground: theme.foreground(),
+            background: theme.background(),
+            cursor: theme.cursor(),
+            selection: theme.selection(),
+            theme,
+        };
+        let mut overrides = [None; COUNT];
+        let colors = |foreground, flags, overrides: &[Option<Rgb>; COUNT]| {
+            palette.cell_colors(
+                foreground,
+                Color::Named(NamedColor::Background),
+                flags,
+                overrides,
+            )
+        };
+        assert_eq!(
+            colors(
+                Color::Named(NamedColor::Foreground),
+                Flags::BOLD,
+                &overrides
+            )
+            .0,
+            gpui_kit::Hsla::from(gpui_kit::rgb(0x123456))
+        );
+        assert_eq!(
+            colors(Color::Named(NamedColor::Red), Flags::BOLD, &overrides).0,
+            gpui_kit::Hsla::from(gpui_kit::rgb(0xdb2d20))
+        );
+        assert_eq!(
+            colors(Color::Indexed(1), Flags::empty(), &overrides).0,
+            gpui_kit::Hsla::from(gpui_kit::rgb(0xe8bbd0))
+        );
+        overrides[NamedColor::Foreground as usize] = Some(Rgb { r: 4, g: 5, b: 6 });
+        assert_eq!(
+            colors(
+                Color::Named(NamedColor::Foreground),
+                Flags::BOLD,
+                &overrides
+            )
+            .0,
+            gpui_kit::Hsla::from(gpui_kit::rgb(0x040506))
+        );
+        assert_eq!(
+            colors(
+                Color::Spec(Rgb { r: 7, g: 8, b: 9 }),
+                Flags::BOLD,
+                &overrides
+            )
+            .0,
+            gpui_kit::Hsla::from(gpui_kit::rgb(0x070809))
+        );
     }
 
     #[test]

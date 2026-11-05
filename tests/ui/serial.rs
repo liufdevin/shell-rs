@@ -37,6 +37,59 @@ fn replace_text(window: &mut gpui_kit::Window, id: &'static str, text: &str, cx:
 }
 
 #[gpui_kit::test]
+async fn host_log_defaults_and_reconnection_are_saved_independently(cx: &mut TestAppContext) {
+    let (mut store, id) = serial_store();
+    let other = store.insert_unnotified(HostDraft::serial(
+        "other",
+        "COM4",
+        SerialSettings::default(),
+        None,
+    ));
+    let (handle, workspace) = open_workspace_with_store(cx, store);
+    in_frame(cx, handle, |window, cx| {
+        window.dispatch_action(Box::new(EditHost(id)), cx)
+    });
+    in_frame(cx, handle, |window, cx| {
+        assert_eq!(window.find("host-log-enabled").checked(), Some(false));
+        assert_eq!(window.find("host-auto-reconnect").checked(), Some(false));
+        window.click("host-log-enabled", cx);
+        window.click("host-auto-reconnect", cx);
+    });
+    in_frame(cx, handle, |window, cx| {
+        replace_text(window, "host-reconnect-delay", "17", cx);
+        window.click("commit", cx);
+    });
+    wait_for_dialog_to_close(cx, handle).await;
+    cx.update(|cx| {
+        let hosts = workspace.read(cx).store().read(cx);
+        let host = hosts.host(id).unwrap();
+        assert!(host.log_enabled);
+        assert!(host.log_directory.is_none());
+        assert!(host.auto_reconnect);
+        assert_eq!(host.reconnect_delay_secs, 17);
+        let host = hosts.host(other).unwrap();
+        assert!(!host.log_enabled && !host.auto_reconnect);
+        assert_eq!(host.reconnect_delay_secs, 5);
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.click("host-search", cx);
+        window.dispatch_action(Box::new(EditHost(id)), cx)
+    });
+    in_frame(cx, handle, |window, cx| {
+        assert_eq!(window.find("host-log-enabled").checked(), Some(true));
+        assert_eq!(window.find("host-auto-reconnect").checked(), Some(true));
+        assert_eq!(window.find("host-reconnect-delay").value(), Some("17"));
+        replace_text(window, "host-reconnect-delay", "0", cx);
+        window.click("commit", cx);
+    });
+    in_frame(cx, handle, |window, cx| {
+        assert!(window.find("commit").visible());
+        assert!(!window.notifications(cx).is_empty());
+        window.press("escape", cx);
+    });
+}
+
+#[gpui_kit::test]
 async fn a_serial_host_is_made_from_its_device_and_line(cx: &mut TestAppContext) {
     let tester = Arc::new(FakeConnectionTester::default());
     let (handle, workspace) = open_workspace_with_tester(cx, HostStore::empty(), tester.clone());
@@ -280,16 +333,15 @@ async fn a_serial_port_is_connected_to_without_saving_it(cx: &mut TestAppContext
 fn connection_settings(
     workspace: &Entity<Workspace>,
     cx: &mut TestAppContext,
-    change: impl FnOnce(&mut shellrs::terminal::TerminalConnectionSettings),
+    change: impl FnOnce(&mut HostDraft),
 ) {
     cx.update(|cx| {
-        workspace
-            .read(cx)
-            .settings()
-            .clone()
-            .update(cx, |store, cx| {
-                store.update(|settings| change(&mut settings.terminal_connection), cx);
-            });
+        let store = workspace.read(cx).store().clone();
+        let mut draft = store.read(cx).host(HostId(1)).unwrap().draft();
+        change(&mut draft);
+        store.update(cx, |store, cx| {
+            store.update(HostId(1), draft, cx);
+        });
     });
     cx.run_until_parked();
 }
@@ -494,6 +546,7 @@ async fn serial_hex_sends_actual_bytes_and_rejects_invalid_input_without_sending
     );
     connect(cx, handle, id).await;
     in_frame(cx, handle, |window, cx| {
+        window.click("tool-serial", cx);
         window.click(("serial-hex-receive", 1_u64), cx);
         window.click(("serial-hex-transmit", 1_u64), cx);
     });
@@ -551,7 +604,8 @@ async fn serial_logs_can_be_saved_to_a_chosen_file_and_stopped(cx: &mut TestAppC
     );
     connect(cx, handle, id).await;
     in_frame(cx, handle, |window, cx| {
-        window.click(("terminal-recording", 1_u64), cx)
+        assert!(window.try_find(("terminal-recording", 1_u64)).is_none());
+        window.dispatch_action(Box::new(StartTerminalRecording(RemoteTerminalId(1))), cx)
     });
     assert!(cx.did_prompt_for_new_path());
     cx.simulate_new_path_selection(|_| Some(path.clone()));
@@ -608,7 +662,10 @@ async fn a_hosts_automatic_log_starts_on_connect_and_can_be_cleared_or_deleted(
     cx: &mut TestAppContext,
 ) {
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("console.log");
+    let path = dir.path().join(format!(
+        "console_{}.log",
+        chrono::Local::now().format("%Y-%m-%d")
+    ));
     let (store, id) = serial_store();
     let line = Arc::new(FakeTerminalFactory::default());
     let (handle, workspace) = open_workspace_with_terminals(
@@ -620,9 +677,15 @@ async fn a_hosts_automatic_log_starts_on_connect_and_can_be_cleared_or_deleted(
     in_frame(cx, handle, |window, cx| {
         window.dispatch_action(Box::new(EditHost(id)), cx)
     });
-    in_frame(cx, handle, |window, cx| window.click("host-log-choose", cx));
-    cx.simulate_new_path_selection(|_| Some(path.clone()));
-    let shown = path.display().to_string();
+    in_frame(cx, handle, |window, cx| {
+        window.click("host-log-enabled", cx);
+        window.click("host-log-choose", cx);
+    });
+    cx.simulate_path_prompt_response(|options| {
+        assert!(options.directories && !options.files);
+        Some(vec![dir.path().to_path_buf()])
+    });
+    let shown = dir.path().display().to_string();
     cx.wait_for(handle.into(), Duration::from_secs(2), |window, _| {
         window.find("host-log-file").label() == Some(shown.as_str())
     })
@@ -637,9 +700,9 @@ async fn a_hosts_automatic_log_starts_on_connect_and_can_be_cleared_or_deleted(
                 .read(cx)
                 .host(id)
                 .unwrap()
-                .log_file
+                .log_directory
                 .as_deref(),
-            Some(path.to_string_lossy().as_ref())
+            Some(dir.path().to_string_lossy().as_ref())
         );
     });
 
@@ -695,14 +758,13 @@ async fn a_hosts_automatic_log_starts_on_connect_and_can_be_cleared_or_deleted(
     in_frame(cx, handle, |window, cx| window.click("ok", cx));
     cx.wait_for(handle.into(), Duration::from_secs(2), |_, cx| {
         !path.exists()
-            && workspace
+            && !workspace
                 .read(cx)
                 .store()
                 .read(cx)
                 .host(id)
                 .unwrap()
-                .log_file
-                .is_none()
+                .log_enabled
     })
     .await;
     in_frame(cx, handle, |window, cx| {
@@ -744,6 +806,7 @@ async fn serial_hex_logs_are_append_only_and_a_bad_path_does_not_disconnect(
     );
     connect(cx, handle, id).await;
     in_frame(cx, handle, |window, cx| {
+        window.click("tool-serial", cx);
         window.click(("serial-hex-receive", 1_u64), cx);
         window.click(("serial-hex-transmit", 1_u64), cx);
     });
@@ -818,6 +881,7 @@ async fn serial_hex_modes_are_independent_per_tab_and_remembered_per_host(cx: &m
         window.click(("terminal-tab", 1_u64), cx)
     });
     in_frame(cx, handle, |window, cx| {
+        window.click("tool-serial", cx);
         assert_eq!(
             window.find(("serial-hex-receive", 1_u64)).checked(),
             Some(false)

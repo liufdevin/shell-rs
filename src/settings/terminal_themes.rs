@@ -6,7 +6,9 @@
 
 use gpui_kit::base::{Radio, RadioGroup};
 use gpui_kit::component::{
-    ActiveTheme as _, Icon, IconName, Sizable as _, StyledExt as _, ThemeMode, h_flex,
+    ActiveTheme as _, Icon, IconName, Sizable as _, StyledExt as _, ThemeMode,
+    button::{Button, ButtonVariants as _},
+    h_flex,
     scroll::ScrollableElement as _,
     setting::{SettingField, SettingItem},
     v_flex,
@@ -14,6 +16,7 @@ use gpui_kit::component::{
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
+use crate::app::{CatalogIcon, ImportTerminalSchemes, RemoveTerminalScheme};
 use crate::i18n::t;
 use crate::terminal::{TerminalFont, TerminalTheme};
 
@@ -48,12 +51,31 @@ pub(super) fn terminal_theme_item(store: &Entity<SettingsStore>) -> SettingItem 
     let (reader, dirty, reset) = (store.clone(), store.clone(), store.clone());
     SettingItem::render(move |_, _, cx| {
         let chosen = reader.read(cx).settings().terminal_theme;
-        h_flex()
+        v_flex()
             .w_full()
-            .items_start()
-            .gap_4()
-            .child(column(ThemeMode::Light, &chosen, &reader, cx))
-            .child(column(ThemeMode::Dark, &chosen, &reader, cx))
+            .gap_3()
+            .child(
+                Button::new("import-terminal-schemes")
+                    .outline()
+                    .label(t!("settings.theme.import"))
+                    .on_click(|_, window, cx| {
+                        window.dispatch_action(Box::new(ImportTerminalSchemes), cx)
+                    }),
+            )
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(t!("settings.theme.import_description")),
+            )
+            .child(
+                h_flex()
+                    .w_full()
+                    .items_start()
+                    .gap_4()
+                    .child(column(ThemeMode::Light, &chosen, &reader, cx))
+                    .child(column(ThemeMode::Dark, &chosen, &reader, cx)),
+            )
     })
     .keywords(
         keywords(t!("settings.theme.keywords"))
@@ -95,13 +117,19 @@ fn column(
     chosen: &TerminalThemeSettings,
     store: &Entity<SettingsStore>,
     cx: &App,
-) -> impl IntoElement {
+) -> impl IntoElement + use<> {
     let title = match mode {
         ThemeMode::Light => t!("settings.appearance.light"),
         ThemeMode::Dark => t!("settings.appearance.dark"),
     };
-    let chosen = chosen.theme(mode);
-    let themes: Vec<_> = TerminalTheme::for_mode(mode).collect();
+    let themes: Vec<_> = chosen
+        .imported
+        .iter()
+        .filter(|theme| theme.mode() == mode)
+        .cloned()
+        .chain(TerminalTheme::for_mode(mode).cloned())
+        .collect();
+    let selected = chosen.theme(mode);
     let total = themes.len();
     v_flex()
         .flex_1()
@@ -123,7 +151,7 @@ fn column(
                         // check mark.
                         .pr_3()
                         .children(themes.into_iter().enumerate().map(|(ix, theme)| {
-                            card(theme, theme == chosen, (ix + 1, total), store, cx)
+                            card(&theme, &theme == selected, (ix + 1, total), store, cx)
                         })),
                 )
                 .overflow_y_scrollbar()
@@ -139,22 +167,26 @@ fn column_id(prefix: &str, mode: ThemeMode) -> ElementId {
 /// A theme's name over its sample. The chosen one stands out like a chosen
 /// segment and carries the check mark.
 fn card(
-    theme: &'static TerminalTheme,
+    theme: &TerminalTheme,
     checked: bool,
     (position, total): (usize, usize),
     store: &Entity<SettingsStore>,
     cx: &App,
-) -> impl IntoElement {
+) -> impl IntoElement + use<> {
     let colors = cx.theme();
     let store = store.clone();
-    Radio::new(SharedString::from(format!(
+    let choice = theme.clone();
+    let key = theme.key().to_owned();
+    let radio = Radio::new(SharedString::from(format!(
         "terminal-theme-{}",
         theme.key()
     )))
     .checked(checked)
-    .accessibility_label(theme.name())
+    .accessibility_label(theme.name().to_owned())
     .set_position(position, total)
     .w_full()
+    .flex_1()
+    .min_w_0()
     .flex()
     .flex_col()
     .gap_2()
@@ -174,7 +206,7 @@ fn card(
     .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
     .on_change(move |_, _, _, cx| {
         store.update(cx, |store, cx| {
-            store.update(|settings| settings.terminal_theme.choose(theme), cx)
+            store.update(|settings| settings.terminal_theme.choose(&choice), cx)
         });
     })
     .child(
@@ -187,7 +219,7 @@ fn card(
                     .min_w_0()
                     .truncate()
                     .text_sm()
-                    .child(theme.name()),
+                    .child(theme.name().to_owned()),
             )
             // A fixed slot, so the name does not move with the mark: a disc
             // in the theme's blue, the hue of selection, the check in the
@@ -209,12 +241,29 @@ fn card(
                     }),
             ),
     )
-    .child(sample(theme, cx))
+    .child(sample(theme, cx));
+    h_flex()
+        .w_full()
+        .gap_1()
+        .items_center()
+        .child(radio)
+        .when(key.starts_with("xshell-"), |row| {
+            row.child(
+                Button::new(SharedString::from(format!("remove-terminal-scheme-{key}")))
+                    .ghost()
+                    .small()
+                    .icon(Icon::new(CatalogIcon::Trash))
+                    .tooltip(t!("settings.theme.remove"))
+                    .on_click(move |_, window, cx| {
+                        window.dispatch_action(Box::new(RemoveTerminalScheme(key.clone())), cx)
+                    }),
+            )
+        })
 }
 
 /// The sample lines in the terminal font and the theme's colors, framed by
 /// a hairline so a background like the page's still shows its edge.
-fn sample(theme: &'static TerminalTheme, cx: &App) -> impl IntoElement {
+fn sample(theme: &TerminalTheme, cx: &App) -> impl IntoElement + use<> {
     let font = TerminalFont::current(cx);
     v_flex()
         .w_full()

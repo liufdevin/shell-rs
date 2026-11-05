@@ -848,6 +848,7 @@ fn key_bindings(overrides: &ShortcutOverrides) -> Vec<KeyBinding> {
 fn shell_keys_in_terminal(anywhere: &[KeyBinding]) -> Vec<KeyBinding> {
     anywhere
         .iter()
+        .filter(|binding| !binding.action().as_any().is::<NewLocalTerminal>())
         .filter_map(|binding| {
             let [keystroke] = binding.keystrokes() else {
                 return None;
@@ -1342,12 +1343,16 @@ mod tests {
                     && context.as_deref() == Some(super::TERMINAL_KEY_CONTEXT)
             })
         };
-        assert!(in_terminal("ctrl-t").is_some());
+        assert!(in_terminal("ctrl-t").is_none());
         // Ctrl+Shift with a letter is the app's, as in other terminals.
         assert!(in_terminal("ctrl-shift-b").is_none());
         // The terminal's own shortcut is bound after, and wins there.
         assert!(in_terminal("ctrl-c").is_none());
-        assert!(position(&bindings, "shellrs::CopyTerminal") > in_terminal("ctrl-t").unwrap());
+        assert!(
+            bindings
+                .iter()
+                .any(|(keys, name, _)| keys == "ctrl-t" && name == "shellrs::NewLocalTerminal")
+        );
     }
 
     #[test]

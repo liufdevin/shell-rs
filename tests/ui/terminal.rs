@@ -8,6 +8,112 @@ use shellrs::host::SnippetDraft;
 use shellrs::terminal::{MiddleClick, RightClick};
 
 #[gpui_kit::test]
+async fn ai_citation_display_is_optional_and_keeps_raw_copy_and_grid_positions(
+    cx: &mut TestAppContext,
+) {
+    const REFERENCE: &str = "\u{e200}cite\u{e202}turn0view0\u{e202}turn1search2\u{e201}";
+    let output = concat!(
+        "\x1b[?1049h\x1b[2J\x1b[H中文 ",
+        "\u{e200}cite\u{e202}turn0view0\u{e202}turn1search2\u{e201}",
+        " END\r\nnormal cite turn0view0 \u{e200} \u{f120}"
+    );
+    let (handle, workspace, _) = terminal_printing(cx, output, "normal cite").await;
+    let original = cx.update(|cx| local_screen(&workspace, cx));
+    assert!(original.contains(REFERENCE));
+    in_frame(cx, handle, |window, cx| window.click("open-settings", cx));
+    in_frame(cx, handle, |window, cx| {
+        window.within("settings").click("0-1", cx)
+    });
+    let position = in_frame(cx, handle, |window, _| {
+        window.find("terminal-font-preview").bounds().center()
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.dispatch_event(
+            gpui_kit::ScrollWheelEvent {
+                position,
+                delta: gpui_kit::ScrollDelta::Pixels(point(px(0.), px(-550.))),
+                modifiers: gpui_kit::Modifiers::default(),
+                touch_phase: gpui_kit::TouchPhase::Moved,
+            }
+            .to_platform_input(),
+            cx,
+        );
+    });
+    in_frame(cx, handle, |window, cx| {
+        let mut page = window.within("settings");
+        let mut group = page.within("group-1");
+        let mut row = group.within("item-5");
+        assert!(row.find("check").visible());
+        assert_eq!(row.find("check").checked(), Some(false));
+        row.click("check", cx);
+    });
+    let expected = original.replace(REFERENCE, &" ".repeat(REFERENCE.chars().count()));
+    cx.update(|cx| assert_eq!(local_screen(&workspace, cx), expected));
+    in_frame(cx, handle, |window, cx| window.click("close-settings", cx));
+    in_frame(cx, handle, |window, cx| {
+        window.click(("local-terminal", 1_u64), cx);
+        window.dispatch_action(Box::new(SelectAllTerminal), cx);
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.dispatch_action(Box::new(CopyTerminal), cx)
+    });
+    cx.update(|cx| {
+        assert_eq!(
+            cx.read_from_clipboard()
+                .and_then(|item| item.text())
+                .as_deref(),
+            Some(original.trim_end())
+        )
+    });
+    let settings = cx.update(|cx| workspace.read(cx).settings().clone());
+    cx.update(|cx| {
+        settings.update(cx, |store, cx| {
+            store.update(
+                |settings| settings.terminal_interaction.hide_ai_citations = false,
+                cx,
+            )
+        })
+    });
+    cx.run_until_parked();
+    cx.update(|cx| assert_eq!(local_screen(&workspace, cx), original));
+}
+
+#[gpui_kit::test]
+async fn styled_ascii_spaces_survive_terminal_redraw_zoom_and_copy(cx: &mut TestAppContext) {
+    let output = "\x1b[?1049h\x1b[?2026h\x1b[2J\x1b[H\x1b[2m   \x1b[0m中文  English\x1b[2;1HOLD CONTENT\x1b[2;1H\x1b[2K\x1b[1m     ready\x1b[0m\x1b[?2026l";
+    let expected = "   中文  English\n     ready";
+    let (handle, workspace, _) = terminal_printing(cx, output, "ready").await;
+    cx.update(|cx| assert_eq!(local_screen(&workspace, cx).trim_end(), expected));
+    let settings = cx.update(|cx| workspace.read(cx).settings().clone());
+    for size in [18., 13.] {
+        cx.update(|cx| {
+            settings.update(cx, |store, cx| {
+                store.update(|settings| settings.terminal_font.size = size, cx)
+            })
+        });
+        in_frame(cx, handle, |window, _| {
+            assert!(window.find(("local-terminal", 1_u64)).visible())
+        });
+        cx.update(|cx| assert_eq!(local_screen(&workspace, cx).trim_end(), expected));
+    }
+    in_frame(cx, handle, |window, cx| {
+        window.click(("local-terminal", 1_u64), cx);
+        window.dispatch_action(Box::new(SelectAllTerminal), cx);
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.dispatch_action(Box::new(CopyTerminal), cx)
+    });
+    cx.update(|cx| {
+        assert_eq!(
+            cx.read_from_clipboard()
+                .and_then(|item| item.text())
+                .as_deref(),
+            Some(expected)
+        )
+    });
+}
+
+#[gpui_kit::test]
 async fn control_wheel_zooms_terminal_text_without_reporting_to_the_program(
     cx: &mut TestAppContext,
 ) {
@@ -352,11 +458,10 @@ async fn creates_independent_local_terminals_from_button_and_shortcut(cx: &mut T
         window.render_frame(cx);
         assert!(window.find(("local-terminal", 1_u64)).visible());
         assert_eq!(window.find(("local-terminal", 1_u64)).focused(), Some(true));
-        // Elsewhere Ctrl+T is the shell's in a terminal.
         #[cfg(target_os = "macos")]
         window.press("cmd-t", cx);
         #[cfg(not(target_os = "macos"))]
-        window.click("new-local-terminal", cx);
+        window.press("ctrl-t", cx);
     })
     .unwrap();
     cx.run_until_parked();
@@ -434,7 +539,9 @@ async fn tab_keys_are_sent_to_the_focused_terminal(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-async fn ctrl_with_a_letter_is_the_shells_in_a_terminal(cx: &mut TestAppContext) {
+async fn ctrl_t_creates_a_local_terminal_while_other_control_keys_reach_the_shell(
+    cx: &mut TestAppContext,
+) {
     let factory = Arc::new(FakeTerminalFactory::default());
     let (handle, workspace) = open_workspace_with_factory(cx, factory.clone());
     // 新建本地终端 as on Windows and Linux.
@@ -464,15 +571,14 @@ async fn ctrl_with_a_letter_is_the_shells_in_a_terminal(cx: &mut TestAppContext)
     })
     .await;
 
-    // In the terminal it goes to the shell, as tmux's Ctrl+B would.
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
         assert_eq!(window.find(("local-terminal", 1_u64)).focused(), Some(true));
-        window.press("ctrl-t", cx);
+        window.press("ctrl-b", cx);
     })
     .unwrap();
     cx.wait_for(handle.into(), Duration::from_secs(2), |_, _| {
-        factory.written_text() == "\x14"
+        factory.written_text() == "\x02"
     })
     .await;
     cx.run_until_parked();
@@ -483,10 +589,9 @@ async fn ctrl_with_a_letter_is_the_shells_in_a_terminal(cx: &mut TestAppContext)
             .is_none()
     }));
 
-    // Outside a terminal the shortcut works.
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
-        window.click("open-settings", cx);
+        window.click(("local-terminal", 1_u64), cx);
     })
     .unwrap();
     cx.run_until_parked();
