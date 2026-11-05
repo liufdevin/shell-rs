@@ -149,8 +149,8 @@ workspace.status.local_closing:
   zh-CN: 正在关闭 本地终端
   en: Local terminal closing
 workspace.status.encoding:
-  zh-CN: 编码 UTF-8
-  en: Encoding UTF-8
+  zh-CN: 编码 %{encoding}
+  en: Encoding %{encoding}
 workspace.status.terminal_type:
   zh-CN: 终端 xterm-256color
   en: Terminal xterm-256color

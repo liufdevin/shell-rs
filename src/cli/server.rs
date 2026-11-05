@@ -972,6 +972,7 @@ fn run_in_terminal(
 fn run_error(failure: RunFailure, host: &str) -> CliError {
     let busy = |message| CliError::new(ErrorCode::TerminalBusy, message);
     match failure {
+        RunFailure::Encoding(message) => CliError::new(ErrorCode::BadRequest, message),
         RunFailure::HostNotFound => host_not_found(host),
         RunFailure::NoTerminal => {
             CliError::new(ErrorCode::NoTerminal, t!("cli.terminal.no_terminal"))

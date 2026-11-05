@@ -456,6 +456,8 @@ impl HostData {
                     credential,
                     route,
                     notes: host.notes.to_string(),
+                    terminal_encoding: (host.terminal_encoding != crate::TerminalEncoding::Utf8)
+                        .then(|| host.terminal_encoding.key().to_owned()),
                 }),
                 edited_ms: host.edited_ms,
             });
@@ -1072,6 +1074,11 @@ impl HostData {
                     ),
                 });
                 draft.credential = credential.map(|credential| credential.id);
+                draft.terminal_encoding = data
+                    .terminal_encoding
+                    .as_deref()
+                    .and_then(crate::TerminalEncoding::from_key)
+                    .unwrap_or_default();
                 if let sync::Protocol::Telnet(telnet) = &data.protocol {
                     draft.protocol = Protocol::Telnet(TelnetSettings {
                         user_prompt: telnet.user_prompt.clone().unwrap_or_default().into(),
@@ -1670,7 +1677,8 @@ mod tests {
                 HostDraft::new("web", "10.0.0.1", 22, "", AuthKind::Password, Some(db))
                     .with_credential(key)
                     .with_route(Route::Jump(vec![Some(bastion)]))
-                    .with_notes("behind the bastion"),
+                    .with_notes("behind the bastion")
+                    .with_terminal_encoding(crate::TerminalEncoding::Gbk),
             );
             let mut switch = HostDraft::telnet("switch", "10.0.0.9", 23, None);
             switch.credential = Some(deploy);
@@ -1753,6 +1761,7 @@ mod tests {
             assert!(store.hosts().iter().all(|host| !host.is_serial()));
             assert!(store.forwards().iter().all(|rule| !rule.auto_start));
             let web = store.hosts().iter().find(|h| h.name == "web").unwrap();
+            assert_eq!(web.terminal_encoding, crate::TerminalEncoding::Gbk);
             assert!(store.bookmarks(web.id, BookmarkSide::Local).is_empty());
             assert_eq!(store.bookmarks(web.id, BookmarkSide::Remote), ["/var/log"]);
             assert_eq!(web.edited_ms, 0);
@@ -1834,6 +1843,7 @@ mod tests {
                 credential: None,
                 route: sync::Route::Direct,
                 notes: String::new(),
+                terminal_encoding: None,
             }),
         };
         let export = store.sync_export();

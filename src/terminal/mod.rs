@@ -4,6 +4,7 @@ mod box_drawing;
 mod broadcast;
 mod directory;
 mod directory_setup;
+mod encoding;
 mod engine;
 mod environment;
 mod exec;
@@ -36,6 +37,7 @@ pub use directory_setup::{
     install_command as directory_install_command, installed as directory_installed,
     parse_check as parse_directory_check,
 };
+pub(crate) use encoding::{TerminalDecoder, encode_input, encode_secret};
 pub use engine::{TerminalCell, TerminalEngine, TerminalEvent, TerminalSnapshot};
 pub(crate) use environment::strip_launcher_vars;
 pub use exec::{ExecTarget, exec_answer};

@@ -362,6 +362,7 @@ pub struct Host {
     pub log_directory: Option<SharedString>,
     pub auto_reconnect: bool,
     pub reconnect_delay_secs: u32,
+    pub terminal_encoding: crate::TerminalEncoding,
     /// Order among hosts in the same group.
     pub sort_order: i64,
     /// Detected on every successful connection and persisted, so the tree can
@@ -401,6 +402,7 @@ impl Host {
             log_directory: draft.log_directory,
             auto_reconnect: draft.auto_reconnect,
             reconnect_delay_secs: draft.reconnect_delay_secs,
+            terminal_encoding: draft.terminal_encoding,
             sort_order: 0,
             os: None,
             sidebar_tool: None,
@@ -461,6 +463,7 @@ impl Host {
             log_directory: self.log_directory.clone(),
             auto_reconnect: self.auto_reconnect,
             reconnect_delay_secs: self.reconnect_delay_secs,
+            terminal_encoding: self.terminal_encoding,
         }
     }
 }
@@ -535,9 +538,15 @@ pub struct HostDraft {
     pub log_directory: Option<SharedString>,
     pub auto_reconnect: bool,
     pub reconnect_delay_secs: u32,
+    pub terminal_encoding: crate::TerminalEncoding,
 }
 
 impl HostDraft {
+    pub fn with_terminal_encoding(mut self, encoding: crate::TerminalEncoding) -> Self {
+        self.terminal_encoding = encoding;
+        self
+    }
+
     pub fn new(
         name: impl Into<SharedString>,
         address: impl Into<SharedString>,
@@ -561,6 +570,7 @@ impl HostDraft {
             log_directory: None,
             auto_reconnect: false,
             reconnect_delay_secs: 5,
+            terminal_encoding: crate::TerminalEncoding::default(),
         }
     }
 

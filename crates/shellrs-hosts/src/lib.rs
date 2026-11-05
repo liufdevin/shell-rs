@@ -25,6 +25,7 @@ pub mod secrets;
 mod serial_settings;
 mod snippet;
 pub mod sync;
+mod terminal_encoding;
 
 pub use credential::*;
 pub use data::{
@@ -49,3 +50,4 @@ pub use protocol::{Protocol, ProtocolKind, TelnetSettings};
 pub use saved_terminal::*;
 pub use serial_settings::*;
 pub use snippet::*;
+pub use terminal_encoding::TerminalEncoding;

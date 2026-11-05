@@ -22,10 +22,11 @@ use futures::future::{Either, select};
 use gpui_kit::SharedString;
 
 use crate::connection::{ConnectionPrompt, ConnectionPromptReply, Latency};
-use crate::host::HostOs;
+use crate::host::{HostOs, TerminalEncoding};
 use crate::i18n::t;
 
 use super::directory::ReportedDirectory;
+use super::encoding::{TerminalDecoder, encode_input};
 use super::highlight::{
     HighlightColor, KeywordHit, LineWatcher, SharedHighlights, TerminalHighlights,
     advance_watching, current,
@@ -107,6 +108,7 @@ impl TerminalSnapshot {
 }
 
 pub struct TerminalEngine {
+    encoding: TerminalEncoding,
     factory: SharedTerminalTransportFactory,
     runtime: TerminalRuntime,
     lifecycle: TerminalLifecycle,
@@ -167,6 +169,7 @@ impl TerminalEngine {
         let theme = Arc::new(Mutex::new(TerminalColors::current(cx).clone()));
         let io = Arc::new(SessionIo::default());
         let TerminalOptions {
+            encoding,
             remote,
             serial,
             log,
@@ -189,6 +192,7 @@ impl TerminalEngine {
             factory.create(),
             event_sender.clone(),
             RuntimeOptions {
+                encoding,
                 highlights: highlights.clone(),
                 theme: theme.clone(),
                 interaction: TerminalInteraction::current(cx),
@@ -216,6 +220,7 @@ impl TerminalEngine {
             cx.notify();
         });
         let mut this = Self {
+            encoding,
             factory,
             runtime,
             lifecycle: TerminalLifecycle::Starting,
@@ -378,6 +383,9 @@ impl TerminalEngine {
             TerminalUiEventKind::ZmodemAsk(direction) => {
                 return Some(TerminalEvent::ZmodemAsk(direction));
             }
+            TerminalUiEventKind::InputRejected(error) => {
+                return Some(TerminalEvent::InputRejected(error));
+            }
         }
         None
     }
@@ -522,6 +530,7 @@ impl TerminalEngine {
             self.event_sender.clone(),
             RuntimeOptions {
                 highlights: self.highlights.clone(),
+                encoding: self.encoding,
                 theme: self.theme.clone(),
                 interaction: TerminalInteraction::current(cx),
                 io: self.io.clone(),
@@ -589,15 +598,29 @@ impl TerminalEngine {
     /// Send bytes originating from the user. Unlike protocol writes such as
     /// terminal query responses and focus reports, interactive input returns
     /// to the live screen and retires the previous selection first.
-    pub fn send_user_input(&self, bytes: impl Into<Vec<u8>>) {
+    pub fn send_user_input(&self, bytes: impl Into<Vec<u8>>) -> bool {
         if !self.lifecycle.accepts_input() || self.sends_hex() {
-            return;
+            return false;
         }
+        let bytes = match encode_input(self.runtime.encoding, bytes.into()) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                let _ = self.event_sender.send(TerminalUiEvent {
+                    generation: self.generation,
+                    kind: TerminalUiEventKind::InputRejected(error),
+                });
+                return false;
+            }
+        };
+        self.send_encoded_input(bytes);
+        true
+    }
 
+    fn send_encoded_input(&self, bytes: Vec<u8>) {
         let mut term = self.runtime.term.lock();
         prepare_term_for_user_input(&mut term);
         drop(term);
-        self.runtime.write(bytes.into());
+        self.runtime.write(bytes);
     }
 
     pub fn prepare_for_user_input(&self) {
@@ -609,8 +632,8 @@ impl TerminalEngine {
         prepare_term_for_user_input(&mut term);
     }
 
-    pub fn paste(&self, text: &str) {
-        self.send_user_input(encode_paste(text, self.mode()));
+    pub fn paste(&self, text: &str) -> bool {
+        self.send_user_input(encode_paste(text, self.mode()))
     }
 
     /// Put `command` on the shell's input line, as a paste, and with `run`
@@ -629,7 +652,11 @@ impl TerminalEngine {
         if self.sends_hex() {
             return Err(t!("serial.hex.use_input"));
         }
-        self.send_user_input(encode_command(command, run, replace, self.mode())?);
+        let bytes = encode_input(
+            self.runtime.encoding,
+            encode_command(command, run, replace, self.mode())?,
+        )?;
+        self.send_encoded_input(bytes);
         Ok(())
     }
 
@@ -887,7 +914,7 @@ impl TerminalEngine {
             if slot.as_ref().is_some_and(RunHandle::is_active) {
                 return Err(RunFailure::Busy(BusyReason::AnotherRun));
             }
-            if !run.accept(self.runtime.commands.clone()) {
+            if !run.accept_with_encoding(self.runtime.commands.clone(), self.runtime.encoding)? {
                 return Ok(());
             }
             *slot = Some(run);
@@ -931,6 +958,11 @@ impl TerminalEngine {
             self.size.columns(),
             self.size.rows(),
         )
+        .with_encoding(self.runtime.encoding)
+    }
+
+    pub(super) fn set_connection_encoding(&mut self, encoding: TerminalEncoding) {
+        self.encoding = encoding;
     }
 
     /// Whether the cursor blinks: the program may say. Cheaper than a
@@ -1095,6 +1127,7 @@ impl Drop for TerminalEngine {
 
 #[derive(Clone, Debug)]
 pub enum TerminalEvent {
+    InputRejected(SharedString),
     RecordingFailed(String),
     /// Emitted only by TerminalView for direct user input, never by the engine.
     Input(super::TerminalInputEvent),
@@ -1120,6 +1153,7 @@ pub enum TerminalEvent {
 }
 
 struct TerminalRuntime {
+    encoding: TerminalEncoding,
     term: Arc<FairMutex<AlacrittyTerm>>,
     commands: mpsc::Sender<TerminalTransportCommand>,
     size: Arc<Mutex<TerminalSize>>,
@@ -1135,6 +1169,7 @@ struct TerminalRuntime {
 }
 
 struct RuntimeOptions {
+    encoding: TerminalEncoding,
     highlights: SharedHighlights,
     theme: SharedTheme,
     interaction: TerminalInteraction,
@@ -1145,16 +1180,18 @@ impl TerminalRuntime {
     fn start(
         generation: u64,
         size: TerminalSize,
-        transport: Box<dyn super::TerminalTransport>,
+        mut transport: Box<dyn super::TerminalTransport>,
         ui_events: mpsc::Sender<TerminalUiEvent>,
         options: RuntimeOptions,
     ) -> Self {
         let RuntimeOptions {
+            encoding,
             highlights,
             theme,
             interaction,
             io,
         } = options;
+        transport.set_encoding(encoding);
         let (commands, command_receiver) = mpsc::channel();
         let (transport_events, transport_receiver) = async_channel::unbounded();
         let shared_size = Arc::new(Mutex::new(size));
@@ -1176,6 +1213,8 @@ impl TerminalRuntime {
         let (zmodem, zmodem_controls) = async_channel::unbounded();
         let transferring = Arc::new(AtomicBool::new(false));
         let mut parser = Parser {
+            decoder: TerminalDecoder::new(encoding),
+            hex_mode: false,
             term: term.clone(),
             processor: Processor::new(),
             notices: NoticeScanner::default(),
@@ -1183,7 +1222,7 @@ impl TerminalRuntime {
             highlights,
             proxy: parser_proxy,
             run: run.clone(),
-            zmodem: Zmodem::default(),
+            zmodem: Zmodem::default().with_encoding(encoding),
             transferring: transferring.clone(),
         };
         thread::Builder::new()
@@ -1227,6 +1266,11 @@ impl TerminalRuntime {
                         }
                         TerminalTransportEvent::Output(bytes) => {
                             io.record(&bytes);
+                            let hex_mode = io.displays_hex();
+                            if parser.hex_mode != hex_mode {
+                                parser.finish_output();
+                                parser.hex_mode = hex_mode;
+                            }
                             if io.displays_hex() {
                                 let text = format!("{}\r\n", format_hex(&bytes));
                                 parser
@@ -1276,6 +1320,7 @@ impl TerminalRuntime {
                         TerminalTransportEvent::Exited { code, signal } => {
                             let fed = parser.zmodem.disconnected();
                             parser.transfer(fed);
+                            parser.finish_output();
                             let description = signal
                                 .as_deref()
                                 .map(|signal| {
@@ -1300,6 +1345,7 @@ impl TerminalRuntime {
                         TerminalTransportEvent::Failed(error) => {
                             let fed = parser.zmodem.disconnected();
                             parser.transfer(fed);
+                            parser.finish_output();
                             append_message_with_processor(
                                 &parser.term,
                                 &mut parser.processor,
@@ -1310,6 +1356,7 @@ impl TerminalRuntime {
                         }
                     }
                 }
+                parser.finish_output();
                 if let Some(run) = lock_run(&parser.run).take() {
                     run.disconnected();
                 }
@@ -1329,6 +1376,7 @@ impl TerminalRuntime {
 
         Self {
             term,
+            encoding,
             commands,
             size: shared_size,
             wakeup_pending,
@@ -1526,6 +1574,7 @@ struct TerminalUiEvent {
 }
 
 enum TerminalUiEventKind {
+    InputRejected(SharedString),
     Started,
     Wakeup,
     Title(String),
@@ -1622,6 +1671,8 @@ fn earliest(one: Option<Instant>, other: Option<Instant>) -> Option<Instant> {
 /// What the parser thread keeps: the emulator it feeds, and what reads
 /// the output beside it.
 struct Parser {
+    decoder: TerminalDecoder,
+    hex_mode: bool,
     term: Arc<FairMutex<AlacrittyTerm>>,
     processor: Processor,
     /// Alacritty drops the notifications programs ask for.
@@ -1644,6 +1695,7 @@ impl Parser {
             match shown {
                 Shown::Output(bytes) => self.output(&bytes),
                 Shown::Note(note) => {
+                    self.finish_output();
                     let mut term = self.term.lock();
                     end_overdue_sync(&mut self.processor, &mut term);
                     let text = note.render(term.columns());
@@ -1667,6 +1719,18 @@ impl Parser {
     /// Output for the emulator, and for what reads it beside: 关键字高亮,
     /// the programs' notifications and folders, an `exec --terminal` run.
     fn output(&mut self, bytes: &[u8]) {
+        let bytes = self.decoder.decode(bytes, false);
+        self.parsed_output(&bytes);
+    }
+
+    fn finish_output(&mut self) {
+        let bytes = self.decoder.finish();
+        if !bytes.is_empty() {
+            self.parsed_output(&bytes);
+        }
+    }
+
+    fn parsed_output(&mut self, bytes: &[u8]) {
         self.watcher.sync(current(&self.highlights));
         // The lines are only read under the lock; the rules match them
         // once it is let go.
@@ -2686,6 +2750,14 @@ mod tests {
 
     /// A terminal whose transport plays `script`.
     fn run_script(script: Vec<TerminalTransportEvent>) -> TerminalRuntime {
+        run_encoded_script(script, TerminalEncoding::Utf8, Arc::default())
+    }
+
+    fn run_encoded_script(
+        script: Vec<TerminalTransportEvent>,
+        encoding: TerminalEncoding,
+        io: Arc<SessionIo>,
+    ) -> TerminalRuntime {
         let (ui_events, _) = mpsc::channel();
         TerminalRuntime::start(
             1,
@@ -2694,11 +2766,12 @@ mod tests {
             ui_events,
             RuntimeOptions {
                 highlights: Arc::default(),
+                encoding,
                 theme: Arc::new(Mutex::new(
                     TerminalTheme::default_for(gpui_kit::component::ThemeMode::Light).clone(),
                 )),
                 interaction: TerminalInteraction::default(),
-                io: Arc::default(),
+                io,
             },
         )
     }
@@ -2741,6 +2814,41 @@ mod tests {
         assert!(screen_once_it_shows(&runtime, "before frame").contains("before frame"));
         // Held back meanwhile, as the update asked.
         assert!(started.elapsed() >= Duration::from_millis(150));
+    }
+
+    #[test]
+    fn encoded_output_is_streamed_to_the_emulator_while_logs_keep_wire_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("wire.log");
+        let io = Arc::new(SessionIo::default());
+        io.set_recording(Recording::open(&path, false).unwrap());
+        let raw = encode_input(
+            TerminalEncoding::Gb18030,
+            "\x1b[31m中文😀\x1b[0m".as_bytes().to_vec(),
+        )
+        .unwrap();
+        let script = raw
+            .iter()
+            .map(|byte| TerminalTransportEvent::Output(vec![*byte]))
+            .collect();
+        let runtime = run_encoded_script(script, TerminalEncoding::Gb18030, io.clone());
+        let screen = screen_once_it_shows(&runtime, "中文😀");
+        assert!(screen.contains("中文😀"), "{screen}");
+        io.stop_recording();
+        assert_eq!(std::fs::read(path).unwrap(), raw);
+    }
+
+    #[test]
+    fn hex_receive_bypasses_the_legacy_decoder() {
+        let io = Arc::new(SessionIo::default());
+        io.receive_hex.store(true, Ordering::Release);
+        let runtime = run_encoded_script(
+            vec![TerminalTransportEvent::Output(vec![0xd6, 0xd0, 0, 0xff])],
+            TerminalEncoding::Gbk,
+            io,
+        );
+        let screen = screen_once_it_shows(&runtime, "D6 D0 00 FF");
+        assert!(screen.contains("D6 D0 00 FF"), "{screen}");
     }
 
     #[test]
@@ -2847,6 +2955,7 @@ mod tests {
             ui_events,
             RuntimeOptions {
                 highlights: Arc::default(),
+                encoding: TerminalEncoding::default(),
                 theme: Arc::new(Mutex::new(
                     TerminalTheme::default_for(gpui_kit::component::ThemeMode::Light).clone(),
                 )),

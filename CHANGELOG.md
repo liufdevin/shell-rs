@@ -8,6 +8,7 @@ One section per version, titled `## [version]`, optionally followed by a date. E
 
 ### Added
 
+- Per-host terminal encoding: UTF-8 by default, with GBK and GB18030 for SSH, Telnet and serial terminals. Receive decoding is streamed across packets, text input is encoded for the connection, and HEX and file-transfer bytes stay unchanged.
 - Import Xshell `.xcs` color schemes under Settings → Appearance → Theme. A file may contain several schemes, including bold text, background and ANSI 16 colors. Imported schemes persist across launches, update when reimported under the same name, and can be removed.
 - Configure automatic reconnection per host. Serial, SSH and Telnet terminals retry a dropped connection at a chosen interval, from 1 to 3600 seconds; disabling it, disconnecting or closing the tab stops retrying.
 - Save connection logs per host without choosing a file. An optional folder can be selected, otherwise logs go to the app data folder. Files use the host name and date, rotate at midnight, and can still be cleared or deleted from the terminal.

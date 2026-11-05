@@ -15,6 +15,7 @@ const ESC: u8 = 0x1b;
 
 #[derive(Default)]
 pub(crate) struct LocalLine {
+    encoding: crate::host::TerminalEncoding,
     /// Typed and shown, not sent yet.
     line: Vec<u8>,
     /// The last byte typed was Enter's CR: an LF right after it (a pasted
@@ -31,6 +32,11 @@ pub(crate) struct Edited {
 }
 
 impl LocalLine {
+    pub fn with_encoding(mut self, encoding: crate::host::TerminalEncoding) -> Self {
+        self.encoding = encoding;
+        self
+    }
+
     pub fn edit(&mut self, typed: &[u8]) -> Edited {
         let mut edited = Edited::default();
         // Arrow and function keys and the terminal's replies go as they are:
@@ -82,13 +88,35 @@ impl LocalLine {
 
     /// Takes back the last character, a wide one over both its columns.
     fn erase(&mut self, echo: &mut Vec<u8>) {
-        let Some(start) = self.line.iter().rposition(|byte| byte & 0xc0 != 0x80) else {
+        let start = if self.encoding == crate::host::TerminalEncoding::Utf8 {
+            self.line.iter().rposition(|byte| byte & 0xc0 != 0x80)
+        } else {
+            self.line.len().checked_sub(1)
+        };
+        let Some(mut start) = start else {
             self.line.clear();
             return;
         };
-        let width = std::str::from_utf8(&self.line[start..])
-            .ok()
-            .and_then(|text| text.chars().next())
+        let decoded;
+        let character = if self.encoding == crate::host::TerminalEncoding::Utf8 {
+            std::str::from_utf8(&self.line[start..])
+                .ok()
+                .and_then(|text| text.chars().next())
+        } else {
+            decoded = crate::terminal::TerminalDecoder::new(self.encoding).decode(&self.line, true);
+            let character = std::str::from_utf8(&decoded)
+                .ok()
+                .and_then(|text| text.chars().last());
+            let size = character
+                .and_then(|character| {
+                    crate::terminal::encode_input(self.encoding, character.to_string().into_bytes())
+                        .ok()
+                })
+                .map_or(1, |bytes| bytes.len());
+            start = self.line.len().saturating_sub(size);
+            character
+        };
+        let width = character
             .and_then(|character| character.width())
             .unwrap_or(1);
         self.line.truncate(start);
@@ -101,6 +129,29 @@ impl LocalLine {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn legacy_line_editing_erases_whole_multibyte_characters() {
+        for (encoding, charset, text) in [
+            (
+                crate::host::TerminalEncoding::Gbk,
+                encoding_rs::GBK,
+                "a中文",
+            ),
+            (
+                crate::host::TerminalEncoding::Gb18030,
+                encoding_rs::GB18030,
+                "a中😀",
+            ),
+        ] {
+            let mut line = LocalLine::default().with_encoding(encoding);
+            let (bytes, _, _) = charset.encode(text);
+            assert_eq!(line.edit(&bytes).echo, bytes.as_ref());
+            assert_eq!(line.edit(&[BACKSPACE]).echo, b"\x08\x08  \x08\x08");
+            let (expected, _, _) = charset.encode("a中");
+            assert_eq!(line.take(), expected.as_ref());
+        }
+    }
 
     fn edit(line: &mut LocalLine, typed: &[u8]) -> (Vec<u8>, Vec<u8>) {
         let edited = line.edit(typed);

@@ -40,6 +40,7 @@ enum Escape {
 }
 
 pub(crate) struct AutoLogin {
+    encoding: crate::host::TerminalEncoding,
     user: String,
     password: Option<Zeroizing<String>>,
     user_prompts: Vec<String>,
@@ -68,6 +69,7 @@ impl AutoLogin {
             }
         };
         Self {
+            encoding: crate::host::TerminalEncoding::Utf8,
             user: user.to_owned(),
             password: password.filter(|password| !password.is_empty()),
             user_prompts: prompts(user_prompt, &USER_PROMPTS),
@@ -127,6 +129,17 @@ impl AutoLogin {
         }
     }
 
+    pub fn with_encoding(mut self, encoding: crate::host::TerminalEncoding) -> Self {
+        self.encoding = encoding;
+        self
+    }
+
+    pub fn answer_encoded(&mut self) -> Result<Option<Zeroizing<Vec<u8>>>, gpui_kit::SharedString> {
+        self.answer()
+            .map(|bytes| crate::terminal::encode_secret(self.encoding, &bytes))
+            .transpose()
+    }
+
     /// Whether the line ends with a prompt still to be answered.
     pub fn waiting(&self) -> bool {
         self.prompt().is_some()
@@ -176,7 +189,8 @@ impl AutoLogin {
         if self.stage == Stage::Done {
             return None;
         }
-        let line = String::from_utf8_lossy(&self.line);
+        let bytes = crate::terminal::TerminalDecoder::new(self.encoding).decode(&self.line, false);
+        let line = String::from_utf8_lossy(&bytes);
         let line = line.trim_end().to_lowercase();
         let ends =
             |prompts: &[String]| prompts.iter().any(|prompt| line.ends_with(prompt.as_str()));
@@ -201,6 +215,35 @@ fn line_of(text: &[u8]) -> Zeroizing<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn legacy_prompts_and_credentials_follow_the_terminal_encoding() {
+        for encoding in [
+            crate::host::TerminalEncoding::Gbk,
+            crate::host::TerminalEncoding::Gb18030,
+        ] {
+            let mut login = AutoLogin::new(
+                "用户",
+                Some(Zeroizing::new("密码".into())),
+                "账号：",
+                "口令：",
+            )
+            .with_encoding(encoding);
+            for prompt in ["\x1b[31m账号：\x1b[0m", "\r\n口令："] {
+                let (bytes, _, _) = encoding_rs::GBK.encode(prompt);
+                for byte in bytes.as_ref() {
+                    login.output(std::slice::from_ref(byte));
+                }
+                assert!(login.waiting());
+                let answer = login.answer_encoded().unwrap().unwrap();
+                if prompt.contains("账号") {
+                    assert_eq!(&*answer, b"\xd3\xc3\xbb\xa7\r");
+                } else {
+                    assert_eq!(&*answer, b"\xc3\xdc\xc2\xeb\r");
+                }
+            }
+        }
+    }
 
     fn login(user: &str, password: Option<&str>) -> AutoLogin {
         AutoLogin::new(user, password.map(|p| Zeroizing::new(p.to_owned())), "", "")

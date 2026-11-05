@@ -20,6 +20,16 @@ async fn xshell_schemes_import_apply_update_and_delete_in_settings(cx: &mut Test
     in_frame(cx, handle, |window, cx| {
         window.within("settings").click("0-0", cx)
     });
+    in_frame(cx, handle, |window, _| {
+        assert_eq!(
+            window.find("import-terminal-schemes").label(),
+            Some("导入配色方案…")
+        );
+        assert_eq!(
+            window.find("terminal-scheme-support").label(),
+            Some("当前支持：Xshell (.xcs)")
+        );
+    });
     in_frame(cx, handle, |window, cx| {
         window.click("import-terminal-schemes", cx)
     });

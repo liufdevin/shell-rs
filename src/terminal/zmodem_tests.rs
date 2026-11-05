@@ -667,14 +667,31 @@ fn the_cans_sz_gives_up_with_leave_its_prompt_shown() {
     bytes.extend([CAN; 10]);
     bytes.extend([8; 10]);
     bytes.extend(b"STOPPED\r\n# ");
-    assert_eq!(text_after_data(&bytes), b"STOPPED\r\n# ");
+    assert_eq!(
+        text_after_data(&bytes, crate::host::TerminalEncoding::Utf8),
+        b"STOPPED\r\n# "
+    );
     // `sz` threw away the rest of a subpacket as it gave up.
     let mut bytes = b"data\x18i\x41\x42\x43\x44".to_vec();
     bytes.extend([0; 600]);
     bytes.extend([CAN; 10]);
     bytes.extend([8; 10]);
     bytes.extend("已停止\r\n# ".as_bytes());
-    assert_eq!(text_after_data(&bytes), "已停止\r\n# ".as_bytes());
+    assert_eq!(
+        text_after_data(&bytes, crate::host::TerminalEncoding::Utf8),
+        "已停止\r\n# ".as_bytes()
+    );
+    for (encoding, charset) in [
+        (crate::host::TerminalEncoding::Gbk, encoding_rs::GBK),
+        (crate::host::TerminalEncoding::Gb18030, encoding_rs::GB18030),
+    ] {
+        let (prompt, _, _) = charset.encode("已停止\r\n# ");
+        let mut bytes = b"data\x18i\x41\x42\x43\x44".to_vec();
+        bytes.extend([CAN; 10]);
+        bytes.extend([8; 10]);
+        bytes.extend_from_slice(&prompt);
+        assert_eq!(text_after_data(&bytes, encoding), prompt.as_ref());
+    }
 }
 
 #[test]

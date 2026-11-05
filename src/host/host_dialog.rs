@@ -34,7 +34,7 @@ use super::{
     ErrorMessage as _, FlowControl, GroupId, Host, HostDraft, HostDraftError, HostId, HostLogin,
     HostLoginExt, HostStore, KindLabel as _, Parity, Protocol, ProtocolKind, ProxyKind,
     ProxySettings, Route, SSH_PORT, SerialLine, SerialSettings, StopBits, TELNET_PORT,
-    TelnetSettings, credential_summary, group_options,
+    TelnetSettings, TerminalEncoding, credential_summary, group_options,
 };
 pub use crate::shared::DeleteHandler;
 use crate::shared::{
@@ -264,6 +264,7 @@ pub struct HostForm {
     log_directory: Option<PathBuf>,
     auto_reconnect: bool,
     reconnect_delay: Entity<InputState>,
+    terminal_encoding: Entity<SelectState<Vec<SharedString>>>,
     /// A Telnet host's 自动登录: whether it is on, where it takes the
     /// user name and password from, and the prompts it waits for.
     telnet_auto_login: bool,
@@ -404,6 +405,16 @@ impl HostForm {
             DataBits::ALL
                 .iter()
                 .position(|bits| *bits == line.data_bits),
+            window,
+            cx,
+        );
+        let terminal_encoding = choice(
+            TerminalEncoding::ALL
+                .map(|encoding| SharedString::from(encoding.label()))
+                .to_vec(),
+            TerminalEncoding::ALL
+                .iter()
+                .position(|encoding| *encoding == draft.terminal_encoding),
             window,
             cx,
         );
@@ -702,6 +713,7 @@ impl HostForm {
             log_directory,
             auto_reconnect: draft.auto_reconnect,
             reconnect_delay,
+            terminal_encoding,
             device,
             baud,
             data_bits,
@@ -860,6 +872,12 @@ impl HostForm {
     }
 
     fn with_log_file(&self, mut draft: HostDraft, cx: &App) -> HostDraft {
+        draft.terminal_encoding = self
+            .terminal_encoding
+            .read(cx)
+            .selected_index(cx)
+            .and_then(|index| TerminalEncoding::ALL.get(index.row).copied())
+            .unwrap_or_default();
         draft.log_enabled = self.log_enabled;
         draft.log_directory = self
             .log_directory
@@ -1643,6 +1661,7 @@ impl HostForm {
                 HostDraft::new(name, host, port, user, auth, None)
             }
         };
+        let draft = self.with_log_file(draft, cx);
         let id = self
             .store
             .update(cx, |store, cx| store.insert_temporary(draft, password, cx));
@@ -2197,6 +2216,30 @@ impl Render for HostForm {
             ProtocolKind::Telnet => self.telnet_fields(form, cx),
             ProtocolKind::Serial => self.serial_fields(form, cx),
         };
+        let form = form.child(
+            Field::new()
+                .label(t!("host.dialog.terminal_encoding"))
+                .col_span(4)
+                .child(
+                    v_flex()
+                        .w_full()
+                        .gap_2()
+                        .child(
+                            Select::new(&self.terminal_encoding)
+                                .id("host-terminal-encoding")
+                                .small(),
+                        )
+                        .child(
+                            div()
+                                .id("host-terminal-encoding-note")
+                                .test_support()
+                                .w_full()
+                                .text_sm()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(t!("host.dialog.terminal_encoding_description")),
+                        ),
+                ),
+        );
         // What only a saved host has.
         let form = if self.temporary {
             form
@@ -2205,7 +2248,7 @@ impl Render for HostForm {
                 Field::new()
                     .label(t!("host.dialog.group"))
                     .col_span(4)
-                    .child(Select::new(&self.group).small()),
+                    .child(Select::new(&self.group).id("host-group").small()),
             )
             .when(!serial, |form| form.child(self.route_field(cx)))
             .child(self.reconnect_field(cx))

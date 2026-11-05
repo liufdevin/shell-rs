@@ -75,6 +75,7 @@ pub struct HostData {
     pub credential: Option<String>,
     pub route: Route,
     pub notes: String,
+    pub terminal_encoding: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -375,6 +376,13 @@ fn parse_host(key: &RecordKey, r: &Reader) -> Result<HostData, String> {
         credential,
         route,
         notes: r.string("notes")?,
+        terminal_encoding: match r.0.get("terminal_encoding") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(value)) if matches!(value.as_str(), "utf-8" | "gbk" | "gb18030") => {
+                Some(value.clone())
+            }
+            _ => return Err("unknown terminal encoding".into()),
+        },
     })
 }
 
@@ -447,6 +455,7 @@ fn known_fields(kind: &Kind) -> &'static [&'static str] {
             "jumps",
             "proxy",
             "notes",
+            "terminal_encoding",
         ],
         Kind::Bookmark => &["host", "path", "sort_order"],
         Kind::Forward => &[
@@ -528,6 +537,9 @@ fn fields(data: &RecordData) -> Vec<(&'static str, Value)> {
                 }
             }
             out.push(("notes", json!(host.notes)));
+            if let Some(encoding) = &host.terminal_encoding {
+                out.push(("terminal_encoding", json!(encoding)));
+            }
             out
         }
         RecordData::Bookmark(bookmark) => vec![
@@ -690,7 +702,28 @@ pub(crate) mod tests {
             credential: None,
             route: Route::Direct,
             notes: String::new(),
+            terminal_encoding: None,
         }
+    }
+
+    #[test]
+    fn host_encoding_is_optional_and_round_trips_when_known() {
+        let key = RecordKey::new(Kind::Host, "h1");
+        let original = RecordData::Host(ssh_host("web"));
+        let data: Map = fields(&original)
+            .into_iter()
+            .map(|(key, value)| (key.to_owned(), value))
+            .collect();
+        assert_eq!(parse(&key, &data).unwrap(), original);
+        for encoding in ["utf-8", "gbk", "gb18030"] {
+            let mut data = data.clone();
+            data.insert("terminal_encoding".into(), json!(encoding));
+            let parsed = parse(&key, &data).unwrap();
+            assert!(fields(&parsed).contains(&("terminal_encoding", json!(encoding))));
+        }
+        let mut invalid = data;
+        invalid.insert("terminal_encoding".into(), json!("other"));
+        assert!(parse(&key, &invalid).is_err());
     }
 
     pub(crate) fn samples() -> Vec<(RecordKey, RecordData)> {

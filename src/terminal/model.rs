@@ -120,6 +120,7 @@ pub struct TerminalStatus {
     lifecycle: TerminalLifecycle,
     columns: usize,
     rows: usize,
+    encoding: crate::host::TerminalEncoding,
 }
 
 impl TerminalStatus {
@@ -128,11 +129,21 @@ impl TerminalStatus {
             lifecycle,
             columns,
             rows,
+            encoding: crate::host::TerminalEncoding::default(),
         }
     }
 
     pub fn lifecycle(&self) -> &TerminalLifecycle {
         &self.lifecycle
+    }
+
+    pub(super) fn with_encoding(mut self, encoding: crate::host::TerminalEncoding) -> Self {
+        self.encoding = encoding;
+        self
+    }
+
+    pub fn encoding(&self) -> crate::host::TerminalEncoding {
+        self.encoding
     }
 
     pub fn columns(&self) -> usize {

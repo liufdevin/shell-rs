@@ -11,10 +11,12 @@ use alacritty_terminal::term::color::COUNT;
 use alacritty_terminal::vte::ansi::{Color, CursorShape, NamedColor, Rgb};
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Icon, IconName, Selectable as _, Sizable as _,
+    WindowExt as _,
     button::{Button, ButtonVariants as _},
     h_flex,
     input::{Input, InputEvent, InputState},
     menu::PopupMenu,
+    notification::Notification,
     scroll::{ScrollableElement as _, Scrollbar},
     tooltip::Tooltip,
     v_flex,
@@ -368,9 +370,16 @@ impl TerminalView {
                 cx.notify();
             }),
             // The panel hears the engine's events through the view.
-            cx.subscribe(&engine, |_, _, event: &TerminalEvent, cx| {
-                cx.emit(event.clone())
-            }),
+            cx.subscribe_in(
+                &engine,
+                window,
+                |_, _, event: &TerminalEvent, window, cx| {
+                    if let TerminalEvent::InputRejected(error) = event {
+                        window.push_notification(Notification::error(error.clone()), cx);
+                    }
+                    cx.emit(event.clone())
+                },
+            ),
             cx.on_focus(&focus_handle, window, |this, window, cx| {
                 if this.focus_window != window.window_handle().window_id() {
                     return;
@@ -677,6 +686,15 @@ impl TerminalView {
             .read(cx)
             .display_snapshot(TerminalInteraction::current(cx).hide_ai_citations)
             .visible_text()
+    }
+
+    pub(super) fn set_connection_encoding(
+        &self,
+        encoding: crate::host::TerminalEncoding,
+        cx: &mut Context<Self>,
+    ) {
+        self.engine
+            .update(cx, |engine, _| engine.set_connection_encoding(encoding));
     }
 
     pub fn copy_selection(&self, cx: &mut App) {
@@ -1288,15 +1306,18 @@ impl TerminalView {
             return false;
         }
         let engine = self.engine.read(cx);
-        match input {
+        let sent = match input {
             TerminalInput::Key(key) => {
                 let Some(bytes) = encode_key(key, engine.mode()) else {
                     return false;
                 };
-                engine.send_user_input(bytes);
+                engine.send_user_input(bytes)
             }
             TerminalInput::Bytes(bytes) => engine.send_user_input(bytes.clone()),
             TerminalInput::Paste(text) => engine.paste(text),
+        };
+        if !sent {
+            return true;
         }
         self.hover_link(None, cx);
         self.selecting = false;

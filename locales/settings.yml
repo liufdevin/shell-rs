@@ -101,8 +101,14 @@ settings.appearance.theme:
   zh-CN: 主题
   en: Theme
 settings.theme.import:
-  zh-CN: 导入 Xshell 配色方案…
-  en: Import Xshell color schemes…
+  zh-CN: 导入配色方案…
+  en: Import color scheme…
+settings.theme.import_supported:
+  zh-CN: "当前支持：Xshell (.xcs)"
+  en: "Currently supports: Xshell (.xcs)"
+settings.theme.import_supported_tooltip:
+  zh-CN: 目前可导入 Xshell 导出的 .xcs 配色方案，后续会支持其他终端软件的配色方案。
+  en: You can currently import .xcs color schemes exported by Xshell. Support for other terminal apps will be added later.
 settings.theme.import_description:
   zh-CN: 支持 .xcs 文件，一个文件可包含多个方案。导入后按背景明暗分栏，点击方案立即应用；同名方案再次导入会更新。
   en: Import .xcs files containing one or more schemes. Schemes are grouped by background brightness; choose one to apply it immediately. Importing the same name updates it.

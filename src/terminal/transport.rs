@@ -147,6 +147,8 @@ pub enum TerminalTransportEvent {
 /// One running transport. Implementations may block because ShellRS always
 /// invokes this method on a dedicated worker thread.
 pub trait TerminalTransport: Send + 'static {
+    fn set_encoding(&mut self, _encoding: crate::host::TerminalEncoding) {}
+
     fn run(
         self: Box<Self>,
         initial_size: TerminalSize,

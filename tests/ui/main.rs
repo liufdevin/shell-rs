@@ -16,6 +16,7 @@ mod credential;
 mod detached;
 mod docker;
 mod editor;
+mod encoding;
 mod file_sidebar;
 mod forward;
 mod gpu;

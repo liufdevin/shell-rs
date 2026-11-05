@@ -747,9 +747,12 @@ fn checked_host(
         Some(id) => Some(saved_host(data, id.0).ok_or(StoreError::NotFound)?),
         None => None,
     };
-    let draft = draft.validated().map_err(|error| StoreError::Host {
+    let mut draft = draft.validated().map_err(|error| StoreError::Host {
         problem: error.into(),
     })?;
+    if let Some(host) = old {
+        draft.terminal_encoding = host.terminal_encoding;
+    }
     if draft.group.is_some_and(|group| data.group(group).is_none()) {
         return Err(StoreError::GroupNotFound);
     }
@@ -1021,5 +1024,33 @@ impl From<Change> for ChangeKind {
             | Change::SavedTerminalTabs
             | Change::Batch => Self::Other,
         }
+    }
+}
+
+#[cfg(test)]
+mod encoding_tests {
+    #[test]
+    fn editing_without_an_encoding_field_preserves_the_saved_encoding() {
+        let mut data = shellrs_hosts::HostData::empty();
+        let draft = shellrs_hosts::HostDraft::new(
+            "host",
+            "example.com",
+            22,
+            "root",
+            shellrs_hosts::AuthKind::NoPassword,
+            None,
+        );
+        let id = data.insert(
+            draft
+                .clone()
+                .with_terminal_encoding(shellrs_hosts::TerminalEncoding::Gb18030),
+        );
+        let edited = super::checked_host(&data, Some(id), draft.clone()).unwrap();
+        assert_eq!(
+            edited.terminal_encoding,
+            shellrs_hosts::TerminalEncoding::Gb18030
+        );
+        let new = super::checked_host(&data, None, draft).unwrap();
+        assert_eq!(new.terminal_encoding, shellrs_hosts::TerminalEncoding::Utf8);
     }
 }

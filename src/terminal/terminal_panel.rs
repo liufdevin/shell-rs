@@ -171,6 +171,7 @@ impl TerminalPanel {
                 move |_| t!("terminal.remote.label", host = name),
                 transports.factory_for(&connection),
                 TerminalOptions {
+                    encoding: host.terminal_encoding,
                     remote: true,
                     serial: (protocol == ProtocolKind::Serial)
                         .then(|| (host.name.to_string(), serial_modes)),
@@ -215,8 +216,10 @@ impl TerminalPanel {
                         auto_reconnect: host.auto_reconnect,
                         reconnect_delay_secs: host.reconnect_delay_secs,
                     };
+                    let encoding = host.terminal_encoding;
                     this.terminal.update(cx, |terminal, cx| {
-                        terminal.set_reconnect_settings(settings, cx)
+                        terminal.set_reconnect_settings(settings, cx);
+                        terminal.set_connection_encoding(encoding, cx);
                     });
                 }
                 cx.notify();
@@ -288,7 +291,7 @@ impl TerminalPanel {
                         cx.emit(TerminalPanelEvent::FilesDropped(this.id, files.clone()));
                     }
                     // Only a local transport tells.
-                    TerminalEvent::WorkingDirectory(_) => {}
+                    TerminalEvent::WorkingDirectory(_) | TerminalEvent::InputRejected(_) => {}
                 },
             ),
         ];

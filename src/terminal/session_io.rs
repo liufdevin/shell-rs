@@ -105,6 +105,7 @@ impl DailyLog {
 
 #[derive(Default)]
 pub(super) struct TerminalOptions {
+    pub encoding: crate::host::TerminalEncoding,
     pub remote: bool,
     pub serial: Option<(String, SerialDataModes)>,
     pub log: Option<DailyLog>,

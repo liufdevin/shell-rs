@@ -349,6 +349,7 @@ impl Detector {
 /// The ZMODEM side of one connection's output: idle, asking the user, or
 /// running a transfer.
 pub(crate) struct Zmodem {
+    encoding: crate::host::TerminalEncoding,
     detector: Detector,
     state: State,
     /// Files dropped on the terminal, for the `rz` typed for them, and
@@ -381,6 +382,7 @@ impl Default for Zmodem {
     fn default() -> Self {
         Self {
             detector: Detector::default(),
+            encoding: crate::host::TerminalEncoding::Utf8,
             state: State::Idle,
             dropped: None,
             over_and_out: 0,
@@ -389,6 +391,11 @@ impl Default for Zmodem {
 }
 
 impl Zmodem {
+    pub(super) fn with_encoding(mut self, encoding: crate::host::TerminalEncoding) -> Self {
+        self.encoding = encoding;
+        self
+    }
+
     /// Whether a transfer has the terminal: running, or waiting for the
     /// user to choose. The keys then go nowhere but Ctrl+C.
     pub(crate) fn active(&self) -> bool {
@@ -519,7 +526,7 @@ impl Zmodem {
                 State::Idle => {}
                 // Enough waiting for the sender: what comes is shown.
                 State::Draining { since_data, .. } => {
-                    let shown = text_after_data(since_data).to_vec();
+                    let shown = text_after_data(since_data, self.encoding).to_vec();
                     self.state = State::Idle;
                     self.run(shown, now, true, &mut fed);
                 }
@@ -578,7 +585,7 @@ impl Zmodem {
                 quiet_at,
                 ..
             } if now >= *quiet_at => {
-                let shown = text_after_data(since_data).to_vec();
+                let shown = text_after_data(since_data, self.encoding).to_vec();
                 self.state = State::Idle;
                 self.run(shown, now, true, &mut fed);
             }
@@ -998,7 +1005,7 @@ fn last_subpacket_end(bytes: &[u8]) -> Option<usize> {
 /// reads as text, or else the text it ends with. The CANs and backspaces
 /// lrzsz's `sz` sends as it gives up (`canit()`) come before its shell's
 /// prompt and are left out.
-fn text_after_data(bytes: &[u8]) -> &[u8] {
+fn text_after_data(bytes: &[u8], encoding: crate::host::TerminalEncoding) -> &[u8] {
     let rest = match last_subpacket_end(bytes) {
         None => bytes,
         Some(end) => {
@@ -1014,7 +1021,7 @@ fn text_after_data(bytes: &[u8]) -> &[u8] {
         }
     };
     let rest = without_cancel(rest);
-    if looks_like_text(rest) {
+    if looks_like_text(rest, encoding) {
         return rest;
     }
     // A subpacket cut short: `sz` throws away what it has not written out
@@ -1024,7 +1031,10 @@ fn text_after_data(bytes: &[u8]) -> &[u8] {
         .iter()
         .rposition(|byte| !is_text_byte(*byte))
         .map_or(0, |at| at + 1);
-    let mut tail = &rest[start..];
+    let mut tail = without_cancel(&rest[start..]);
+    if looks_like_text(tail, encoding) {
+        return tail;
+    }
     loop {
         match std::str::from_utf8(tail) {
             Ok(_) => return without_cancel(tail),
@@ -1045,10 +1055,17 @@ fn without_cancel(bytes: &[u8]) -> &[u8] {
     &bytes[cancel..]
 }
 
-/// Whether `bytes` read as a terminal's text: UTF-8, without control
-/// characters other than line ends, tabs, backspaces, the bell and ESC.
-fn looks_like_text(bytes: &[u8]) -> bool {
-    std::str::from_utf8(bytes).is_ok() && bytes.iter().all(|byte| is_text_byte(*byte))
+fn looks_like_text(bytes: &[u8], encoding: crate::host::TerminalEncoding) -> bool {
+    let valid = match encoding {
+        crate::host::TerminalEncoding::Utf8 => std::str::from_utf8(bytes).is_ok(),
+        crate::host::TerminalEncoding::Gbk => {
+            !encoding_rs::GBK.decode_without_bom_handling(bytes).1
+        }
+        crate::host::TerminalEncoding::Gb18030 => {
+            !encoding_rs::GB18030.decode_without_bom_handling(bytes).1
+        }
+    };
+    valid && bytes.iter().all(|byte| is_text_byte(*byte))
 }
 
 fn is_text_byte(byte: u8) -> bool {

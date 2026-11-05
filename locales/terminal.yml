@@ -1,4 +1,7 @@
 _version: 2
+terminal.encoding.unrepresentable:
+  zh-CN: "输入内容包含 %{encoding} 无法表示的字符，未发送任何内容。请使用 GB18030 或 UTF-8，修改后重新连接。"
+  en: "The input contains characters that %{encoding} cannot represent. Nothing was sent. Choose GB18030 or UTF-8 and reconnect."
 terminal.reconnect.waiting:
   zh-CN: "%{seconds} 秒后自动重连。手动断开或关闭标签可停止重试。"
   en: "Reconnecting in %{seconds} seconds. Disconnect or close the tab to stop retries."

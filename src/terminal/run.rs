@@ -123,13 +123,18 @@ impl RunContext {
     /// interpreter, a line each. A directory may hold newlines itself, so
     /// it is what is left between the first two and the last.
     fn read(hex: &[u8], shell: &str) -> Self {
+        Self::read_encoded(hex, shell, crate::host::TerminalEncoding::Utf8)
+    }
+
+    fn read_encoded(hex: &[u8], shell: &str, encoding: crate::host::TerminalEncoding) -> Self {
         let bytes: Vec<u8> = hex
             .as_chunks::<2>()
             .0
             .iter()
             .filter_map(|pair| u8::from_str_radix(std::str::from_utf8(pair).ok()?, 16).ok())
             .collect();
-        let text = String::from_utf8_lossy(&bytes);
+        let decoded = crate::terminal::TerminalDecoder::new(encoding).decode(&bytes, true);
+        let text = String::from_utf8_lossy(&decoded);
         let mut context = Self {
             shell: shell.to_owned(),
             ..Self::default()
@@ -163,6 +168,7 @@ pub enum RunEvent {
 /// Why a run did not run, or did not finish.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RunFailure {
+    Encoding(String),
     HostNotFound,
     /// The host has no terminal open.
     NoTerminal,
@@ -249,8 +255,10 @@ impl Phase {
 }
 
 struct RunState {
+    encoding: crate::host::TerminalEncoding,
     nonce: String,
     command: String,
+    wire_command: Option<Vec<u8>>,
     phase: Phase,
     shell: Option<RunShell>,
     scanner: RunScanner,
@@ -282,7 +290,12 @@ impl RunState {
             self.fail(RunFailure::UnsupportedShell(program_name(exe).to_owned()));
             return;
         };
-        let mut line = command_line(&self.nonce, &self.command);
+        let mut line = command_line_bytes(
+            &self.nonce,
+            self.wire_command
+                .as_deref()
+                .unwrap_or(self.command.as_bytes()),
+        );
         line.push('\r');
         if line.len() > shell.line_limit() {
             self.fail(RunFailure::TooLong {
@@ -322,9 +335,11 @@ impl TerminalRun {
             .collect();
         let (events, receiver) = mpsc::channel();
         let state = RunState {
+            encoding: crate::host::TerminalEncoding::Utf8,
             scanner: RunScanner::new(&nonce),
             nonce,
             command,
+            wire_command: None,
             phase: Phase::Queued,
             shell: None,
             input: None,
@@ -450,14 +465,28 @@ impl RunHandle {
     /// Take the run up in a terminal whose input is `input`; the ^C is the
     /// terminal's to send. False when the request gave it up already.
     pub fn accept(&self, input: mpsc::Sender<TerminalTransportCommand>) -> bool {
+        self.accept_with_encoding(input, crate::host::TerminalEncoding::Utf8)
+            .unwrap_or(false)
+    }
+
+    pub(super) fn accept_with_encoding(
+        &self,
+        input: mpsc::Sender<TerminalTransportCommand>,
+        encoding: crate::host::TerminalEncoding,
+    ) -> Result<bool, RunFailure> {
         let mut state = lock(&self.state);
         if state.phase != Phase::Queued {
-            return false;
+            return Ok(false);
         }
+        state.wire_command = Some(
+            super::encoding::encode_input(encoding, state.command.as_bytes().to_vec())
+                .map_err(|error| RunFailure::Encoding(error.to_string()))?,
+        );
+        state.encoding = encoding;
         state.input = Some(input);
         state.phase = Phase::Installed;
         state.tell(RunEvent::Accepted);
-        true
+        Ok(true)
     }
 
     /// Say why no terminal can take the run up.
@@ -487,7 +516,12 @@ impl RunHandle {
                 (Scanned::Begin(hex), Phase::Typed) => {
                     let shell = state.shell.map(RunShell::name).unwrap_or_default();
                     state.phase = Phase::Begun;
-                    state.tell(RunEvent::Begun(RunContext::read(&hex, shell)));
+                    let context = if state.encoding == crate::host::TerminalEncoding::Utf8 {
+                        RunContext::read(&hex, shell)
+                    } else {
+                        RunContext::read_encoded(&hex, shell, state.encoding)
+                    };
+                    state.tell(RunEvent::Begun(context));
                 }
                 (Scanned::Output(bytes), Phase::Begun) => state.tell(RunEvent::Output(bytes)),
                 (Scanned::End(code), Phase::Begun) => {
@@ -518,10 +552,10 @@ fn probe_line(nonce: &str) -> String {
 }
 
 /// The command line: `command` as [`encode_command`] writes it.
-fn command_line(nonce: &str, command: &str) -> String {
+fn command_line_bytes(nonce: &str, command: &[u8]) -> String {
     format!(
         " sh -c '{COMMAND_SCRIPT}' sh {nonce} '{}'",
-        encode_command(command.as_bytes())
+        encode_command(command)
     )
 }
 

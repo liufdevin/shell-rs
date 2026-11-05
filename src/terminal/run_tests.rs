@@ -11,6 +11,36 @@ const QUICK: RunTiming = RunTiming {
     tick: Duration::from_millis(10),
 };
 
+#[test]
+fn terminal_commands_use_the_connection_encoding_before_shell_escaping() {
+    let (run, _) = TerminalRun::new("echo 中文".into());
+    let (input, commands) = mpsc::channel();
+    run.handle()
+        .accept_with_encoding(input, crate::host::TerminalEncoding::Gbk)
+        .unwrap();
+    lock(&run.state).probed("bash");
+    let line = typed(&commands);
+    assert!(line.contains("echo \\0326\\0320\\0316\\0304"), "{line}");
+    let (run, _) = TerminalRun::new("echo 😀".into());
+    let (input, commands) = mpsc::channel();
+    assert!(matches!(
+        run.handle()
+            .accept_with_encoding(input, crate::host::TerminalEncoding::Gbk),
+        Err(RunFailure::Encoding(_))
+    ));
+    assert!(commands.try_recv().is_err());
+    let (bytes, _, _) = encoding_rs::GBK.encode("用户\n设备\n/目录\nbash");
+    let hex = bytes
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let context =
+        RunContext::read_encoded(hex.as_bytes(), "bash", crate::host::TerminalEncoding::Gbk);
+    assert_eq!(context.user, "用户");
+    assert_eq!(context.host, "设备");
+    assert_eq!(context.cwd, "/目录");
+}
+
 fn nonce(run: &TerminalRun) -> String {
     lock(&run.state).nonce.clone()
 }

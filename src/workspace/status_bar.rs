@@ -210,7 +210,19 @@ impl RenderOnce for WorkspaceStatus {
                             .child(format),
                     ),
                 None => bar
-                    .right(t!("workspace.status.encoding"))
+                    .right({
+                        let label = t!(
+                            "workspace.status.encoding",
+                            encoding = terminal
+                                .as_ref()
+                                .map_or("UTF-8", |status| status.encoding().label())
+                        );
+                        div()
+                            .id("status-terminal-encoding")
+                            .test_support()
+                            .aria_label(label.clone())
+                            .child(label)
+                    })
                     .right(Separator::vertical())
                     .right(t!("workspace.status.terminal_type")),
             })

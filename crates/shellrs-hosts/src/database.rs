@@ -41,7 +41,7 @@ fn from_sql(id: i64) -> u64 {
 /// command snippets, 15 the serial hosts, 16 the Telnet hosts, 17 each
 /// host's right sidebar, 18 the saved local terminals, 19 their titles, 20
 /// what sync needs, 21 each host's local connection log.
-const SCHEMA_VERSION: i64 = 22;
+const SCHEMA_VERSION: i64 = 23;
 
 /// The whole schema, as a new database gets it.
 ///
@@ -174,6 +174,7 @@ CREATE TABLE hosts (
     log_enabled       INTEGER NOT NULL DEFAULT 0 CHECK (log_enabled IN (0, 1)),
     auto_reconnect    INTEGER NOT NULL DEFAULT 0 CHECK (auto_reconnect IN (0, 1)),
     reconnect_delay_secs INTEGER NOT NULL DEFAULT 5 CHECK (reconnect_delay_secs BETWEEN 1 AND 3600),
+    terminal_encoding TEXT NOT NULL DEFAULT 'utf-8' CHECK (terminal_encoding IN ('utf-8', 'gbk', 'gb18030')),
     CHECK ((auth = 'credential') = (credential_id IS NOT NULL)),
     CHECK ((auth = 'credential') = (username IS NULL)),
     CHECK ((route = 'proxy') = (proxy_kind IS NOT NULL)),
@@ -294,7 +295,7 @@ enum Step {
 ///
 /// A step is history: it says what that version's change was, and stays as
 /// written when `SCHEMA` changes again.
-const STEPS: [(i64, Step); 9] = [
+const STEPS: [(i64, Step); 10] = [
     (
     13,
     // The command snippets.
@@ -406,6 +407,7 @@ COMMIT;",
         ),
     ),
     (21, Step::Code(add_daily_logs)),
+    (22, Step::Sql("BEGIN; ALTER TABLE hosts ADD COLUMN terminal_encoding TEXT NOT NULL DEFAULT 'utf-8' CHECK (terminal_encoding IN ('utf-8', 'gbk', 'gb18030')); PRAGMA user_version = 23; COMMIT;")),
 ];
 
 fn add_daily_logs(connection: &Connection) -> rusqlite::Result<()> {
@@ -814,7 +816,7 @@ impl HostDatabase {
                  credential_id, route, proxy_kind, proxy_host, proxy_port, proxy_username, \
                  notes, os, protocol, serial_baud, serial_data_bits, serial_parity, \
                  serial_stop_bits, serial_flow, telnet_user_prompt, telnet_pass_prompt, \
-                 sidebar_tool, edited_ms, log_directory, log_enabled, auto_reconnect, reconnect_delay_secs \
+                 sidebar_tool, edited_ms, log_directory, log_enabled, auto_reconnect, reconnect_delay_secs, terminal_encoding \
                  FROM hosts ORDER BY id",
             )?
             .query_map([], |row| {
@@ -884,6 +886,8 @@ impl HostDatabase {
                 host.log_enabled = row.get(28)?;
                 host.auto_reconnect = row.get(29)?;
                 host.reconnect_delay_secs = row.get(30)?;
+                let encoding: String = row.get(31)?;
+                host.terminal_encoding = crate::TerminalEncoding::from_key(&encoding).ok_or_else(|| rusqlite::Error::InvalidColumnType(31, "terminal_encoding".into(), rusqlite::types::Type::Text))?;
                 match protocol.as_str() {
                     "serial" => host.protocol = Protocol::Serial(serial.settings()),
                     "telnet" => host.protocol = Protocol::Telnet(telnet),
@@ -1289,9 +1293,9 @@ impl HostDatabase {
              username, credential_id, route, proxy_kind, proxy_host, proxy_port, \
              proxy_username, notes, os, protocol, serial_baud, serial_data_bits, \
              serial_parity, serial_stop_bits, serial_flow, telnet_user_prompt, \
-             telnet_pass_prompt, sidebar_tool, log_directory, edited_ms, log_enabled, auto_reconnect, reconnect_delay_secs) \
+             telnet_pass_prompt, sidebar_tool, log_directory, edited_ms, log_enabled, auto_reconnect, reconnect_delay_secs, terminal_encoding) \
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, \
-             ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31)",
+             ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32)",
             params![
                 to_sql(host.id.0),
                 host.public_id.as_str(),
@@ -1324,6 +1328,7 @@ impl HostDatabase {
                 host.log_enabled,
                 host.auto_reconnect,
                 host.reconnect_delay_secs,
+                host.terminal_encoding.key(),
             ],
         )?;
             write_jumps(connection, host)
@@ -1344,7 +1349,7 @@ impl HostDatabase {
              proxy_kind = ?11, proxy_host = ?12, proxy_port = ?13, proxy_username = ?14, \
              notes = ?15, serial_baud = ?16, serial_data_bits = ?17, serial_parity = ?18, \
              serial_stop_bits = ?19, serial_flow = ?20, telnet_user_prompt = ?21, \
-             telnet_pass_prompt = ?22, protocol = ?23, log_directory = ?24, edited_ms = ?25, log_enabled = ?26, auto_reconnect = ?27, reconnect_delay_secs = ?28 \
+             telnet_pass_prompt = ?22, protocol = ?23, log_directory = ?24, edited_ms = ?25, log_enabled = ?26, auto_reconnect = ?27, reconnect_delay_secs = ?28, terminal_encoding = ?29 \
              WHERE id = ?1",
                 params![
                     to_sql(host.id.0),
@@ -1375,6 +1380,7 @@ impl HostDatabase {
                     host.log_enabled,
                     host.auto_reconnect,
                     host.reconnect_delay_secs,
+                    host.terminal_encoding.key(),
                 ],
             )?;
             write_jumps(connection, host)
@@ -3317,6 +3323,56 @@ INSERT INTO snippets (id, category_id, name, command) VALUES (1, 1, 'ps', 'docke
     }
 
     #[test]
+    fn terminal_encoding_is_persisted_and_updated_per_host() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("encoding.db");
+        let db = HostDatabase::open(&path).unwrap();
+        let mut first = host(1, "COM3", None);
+        first.terminal_encoding = crate::TerminalEncoding::Gbk;
+        db.insert_host(&first).unwrap();
+        db.insert_host(&host(2, "COM4", None)).unwrap();
+        first.terminal_encoding = crate::TerminalEncoding::Gb18030;
+        db.update_host(&first).unwrap();
+        drop(db);
+        let loaded = HostDatabase::open(&path).unwrap().load().unwrap();
+        assert_eq!(
+            loaded.hosts[0].terminal_encoding,
+            crate::TerminalEncoding::Gb18030
+        );
+        assert_eq!(
+            loaded.hosts[1].terminal_encoding,
+            crate::TerminalEncoding::Utf8
+        );
+        assert_eq!(
+            loaded.hosts[0].draft().terminal_encoding,
+            crate::TerminalEncoding::Gb18030
+        );
+    }
+
+    #[test]
+    fn version_22_hosts_upgrade_to_utf8_without_changing_other_settings() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("encoding.db");
+        {
+            let db = HostDatabase::open(&path).unwrap();
+            let mut saved = host(1, "COM3", None);
+            saved.auto_reconnect = true;
+            db.insert_host(&saved).unwrap();
+            db.connection
+                .execute_batch(
+                    "ALTER TABLE hosts DROP COLUMN terminal_encoding; PRAGMA user_version = 22;",
+                )
+                .unwrap();
+        }
+        let loaded = HostDatabase::open(&path).unwrap().load().unwrap();
+        assert_eq!(
+            loaded.hosts[0].terminal_encoding,
+            crate::TerminalEncoding::Utf8
+        );
+        assert!(loaded.hosts[0].auto_reconnect);
+    }
+
+    #[test]
     fn version_21_log_files_become_enabled_daily_log_directories_without_touching_files() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("shellrs.db");
@@ -3327,7 +3383,8 @@ INSERT INTO snippets (id, category_id, name, command) VALUES (1, 1, 'ps', 'docke
             db.insert_host(&host(1, "COM3", None)).unwrap();
             db.connection
                 .execute_batch(
-                    "ALTER TABLE hosts DROP COLUMN auto_reconnect;
+                    "ALTER TABLE hosts DROP COLUMN terminal_encoding;
+ALTER TABLE hosts DROP COLUMN auto_reconnect;
 ALTER TABLE hosts DROP COLUMN reconnect_delay_secs;
 ALTER TABLE hosts DROP COLUMN log_enabled;
 ALTER TABLE hosts RENAME COLUMN log_directory TO log_file;

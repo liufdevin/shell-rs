@@ -45,6 +45,7 @@ impl TelnetTerminalTransportProvider for TelnetTransportProvider {
     fn factory_for(&self, login: &TelnetLogin) -> SharedTerminalTransportFactory {
         Arc::new(TelnetTransport {
             login: login.clone(),
+            encoding: crate::host::TerminalEncoding::Utf8,
             connector: self.connector.clone(),
         })
     }
@@ -54,6 +55,7 @@ impl TelnetTerminalTransportProvider for TelnetTransportProvider {
 /// runs a fresh copy.
 #[derive(Clone)]
 struct TelnetTransport {
+    encoding: crate::host::TerminalEncoding,
     login: TelnetLogin,
     connector: SshConnector,
 }
@@ -65,6 +67,10 @@ impl TerminalTransportFactory for TelnetTransport {
 }
 
 impl TerminalTransport for TelnetTransport {
+    fn set_encoding(&mut self, encoding: crate::host::TerminalEncoding) {
+        self.encoding = encoding;
+    }
+
     fn run(
         self: Box<Self>,
         initial_size: TerminalSize,
@@ -85,6 +91,7 @@ impl TerminalTransport for TelnetTransport {
                 &auto_login.user_prompt,
                 &auto_login.password_prompt,
             )
+            .with_encoding(self.encoding)
         });
         run_terminal_worker(commands, events.clone(), |broker, commands| {
             self.run_async(initial_size, auto_login, broker, commands, events)
@@ -116,7 +123,7 @@ impl TelnetTransport {
             .map_err(|error| anyhow!(describe_login_error(&error)))?;
         let (mut reader, mut writer) = tokio::io::split(stream);
         let mut session = TelnetSession::new(dimension(size.columns()), dimension(size.rows()));
-        let mut local_line = LocalLine::default();
+        let mut local_line = LocalLine::default().with_encoding(self.encoding);
         events
             .send(TerminalTransportEvent::Started)
             .await
@@ -152,7 +159,8 @@ impl TelnetTransport {
                 },
                 () = tokio::time::sleep_until(settle.unwrap_or_else(Instant::now)), if settle.is_some() => {
                     settle = None;
-                    if let Some(answer) = auto_login.as_mut().and_then(AutoLogin::answer) {
+                    let answer = auto_login.as_mut().map(AutoLogin::answer_encoded).transpose().map_err(|error| anyhow!(error.to_string()))?.flatten();
+                    if let Some(answer) = answer {
                         send(&mut writer, &session.send(&answer)).await?;
                     }
                     if auto_login.as_ref().is_some_and(AutoLogin::is_done) {

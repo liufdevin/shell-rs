@@ -135,6 +135,8 @@ sync; there is no setting to keep them out.
 Every field listed is written, `null` where it has none: a record missing one
 is damaged, kept and passed on but not used.
 
+The optional host field `terminal_encoding` is `utf-8`, `gbk` or `gb18030`; an absent field means UTF-8. Writers may omit the field for UTF-8. Unknown values are parked rather than silently interpreted as another encoding. Older clients preserve the field as an unknown field when updating a host.
+
 Not synced, each device's own: serial hosts (their port is this computer's);
 a host's detected system, last connection and sidebar tool; a group's expanded
 state; a key credential's file path; a forward's automatic start; local SFTP

@@ -1,4 +1,10 @@
 _version: 2
+host.dialog.terminal_encoding:
+  zh-CN: 终端编码
+  en: Terminal encoding
+host.dialog.terminal_encoding_description:
+  zh-CN: 默认 UTF-8，需与主机或串口设备一致。修改后在新连接或重连时生效；HEX 收发、文件传输及原始接收日志不转码。
+  en: Defaults to UTF-8 and must match the host or serial device. Changes apply on a new connection or reconnection. HEX data, file transfers and raw received logs are not transcoded.
 
 # 主机: the saved hosts, their groups and the store that keeps them.
 

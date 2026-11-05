@@ -11,6 +11,7 @@ use gpui_kit::component::{
     h_flex,
     scroll::ScrollableElement as _,
     setting::{SettingField, SettingItem},
+    tooltip::Tooltip,
     v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
@@ -55,12 +56,33 @@ pub(super) fn terminal_theme_item(store: &Entity<SettingsStore>) -> SettingItem 
             .w_full()
             .gap_3()
             .child(
-                Button::new("import-terminal-schemes")
-                    .outline()
-                    .label(t!("settings.theme.import"))
-                    .on_click(|_, window, cx| {
-                        window.dispatch_action(Box::new(ImportTerminalSchemes), cx)
-                    }),
+                h_flex()
+                    .items_center()
+                    .gap_3()
+                    .child(
+                        Button::new("import-terminal-schemes")
+                            .outline()
+                            .label(t!("settings.theme.import"))
+                            .on_click(|_, window, cx| {
+                                window.dispatch_action(Box::new(ImportTerminalSchemes), cx)
+                            }),
+                    )
+                    .child(
+                        h_flex()
+                            .id("terminal-scheme-support")
+                            .test_support()
+                            .items_center()
+                            .gap_1()
+                            .text_sm()
+                            .text_color(cx.theme().muted_foreground)
+                            .aria_label(t!("settings.theme.import_supported"))
+                            .child(Icon::new(CatalogIcon::Info).xsmall())
+                            .child(t!("settings.theme.import_supported"))
+                            .tooltip(|window, cx| {
+                                Tooltip::new(t!("settings.theme.import_supported_tooltip"))
+                                    .build(window, cx)
+                            }),
+                    ),
             )
             .child(
                 div()
