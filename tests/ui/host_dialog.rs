@@ -5,6 +5,25 @@ use crate::support::*;
 use shellrs::host::SerialSettings;
 
 #[gpui_kit::test]
+async fn host_option_notes_appear_only_once_the_option_is_enabled(cx: &mut TestAppContext) {
+    let (handle, _workspace) = open_workspace_with_store(cx, HostStore::empty());
+    in_frame(cx, handle, |window, cx| window.click("new-host-panel", cx));
+    in_frame(cx, handle, |window, cx| {
+        assert!(window.try_find("host-reconnect-description").is_none());
+        assert!(window.try_find("host-log-description").is_none());
+        window.click("host-log-enabled", cx);
+    });
+    in_frame(cx, handle, |window, cx| {
+        assert!(window.find("host-log-description").visible());
+        assert!(window.try_find("host-reconnect-description").is_none());
+        window.click("host-auto-reconnect", cx);
+    });
+    in_frame(cx, handle, |window, _| {
+        assert!(window.find("host-reconnect-description").visible());
+    });
+}
+
+#[gpui_kit::test]
 async fn a_host_without_a_password_says_what_it_tries_and_is_saved_as_such(
     cx: &mut TestAppContext,
 ) {

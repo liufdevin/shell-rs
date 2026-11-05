@@ -3,8 +3,8 @@ host.dialog.terminal_encoding:
   zh-CN: 终端编码
   en: Terminal encoding
 host.dialog.terminal_encoding_description:
-  zh-CN: 默认 UTF-8，需与主机或串口设备一致。修改后在新连接或重连时生效；HEX 收发、文件传输及原始接收日志不转码。
-  en: Defaults to UTF-8 and must match the host or serial device. Changes apply on a new connection or reconnection. HEX data, file transfers and raw received logs are not transcoded.
+  zh-CN: 需与设备一致，重连后生效。HEX、文件传输和原始日志不转码。
+  en: Must match the device. Applies after reconnecting; HEX, transfers and raw logs are unchanged.
 
 # 主机: the saved hosts, their groups and the store that keeps them.
 
@@ -302,8 +302,8 @@ host.dialog.log_file_clear:
   zh-CN: 使用默认
   en: Use default
 host.dialog.log_file_description:
-  zh-CN: 勾选后每次连接自动保存。未选择文件夹时使用数据目录下的 logs，以“主机名称_年-月-日.log”命名，跨天后自动写入新文件；同一天重连继续追加。日志设置仅用于这台电脑。
-  en: Enable to log every connection automatically. The default folder is logs in the app data directory. Files are named host_YYYY-MM-DD.log and rotate daily; reconnecting on the same day appends. Log settings stay on this computer.
+  zh-CN: 按“主机名_日期.log”每天保存，默认位于数据目录 logs，仅本机生效。
+  en: Saves host_YYYY-MM-DD.log daily, by default in the app data logs folder. Local to this computer.
 host.dialog.auto_reconnect:
   zh-CN: 掉线后自动重连
   en: Reconnect automatically
@@ -311,8 +311,8 @@ host.dialog.reconnect_delay:
   zh-CN: 重连间隔（秒）
   en: Retry interval (seconds)
 host.dialog.reconnect_description:
-  zh-CN: 仅适用于这台主机。掉线或连接失败后按间隔重试；手动断开、取消连接或关闭标签后停止。
-  en: Applies only to this host. Retry after a disconnect or failed connection; disconnecting manually, canceling or closing the tab stops retries.
+  zh-CN: 掉线或连接失败后按间隔重试；手动断开或关闭标签时停止。
+  en: Retries after a drop or failed connection. Manual disconnect or closing the tab stops it.
 host.dialog.reconnect_invalid:
   zh-CN: 重连间隔请输入 1–3600 之间的整数秒数。
   en: Enter a whole number of seconds between 1 and 3600.
@@ -320,8 +320,8 @@ host.dialog.optional:
   zh-CN: 可选
   en: Optional
 host.dialog.keychain_note:
-  zh-CN: 密码保存在系统钥匙串，不会写入 ShellLF 的数据库。
-  en: Passwords are kept in the system keychain, never in ShellLF’s database.
+  zh-CN: 密码仅保存在系统钥匙串中。
+  en: Passwords are stored only in the system keychain.
 host.dialog.no_keychain_note:
   zh-CN: 系统钥匙串不可用，这台机器上无法保存密码，每次连接都会询问。
   en: The system keychain isn’t available, so passwords can’t be saved on this computer and are asked for at each connection.
@@ -344,8 +344,8 @@ host.dialog.telnet_prompt_note:
   zh-CN: 留空使用常见提示，匹配时忽略大小写。用户名可留空以支持仅密码登录。
   en: Leave a prompt empty for the usual ones; matching ignores case. Leave the username empty for a device that asks only for a password.
 host.dialog.next_connection_note:
-  zh-CN: 已打开的连接不受影响，下次连接时使用新的设置。
-  en: Open connections stay as they are; the new settings apply the next time you connect.
+  zh-CN: 已打开的连接不受影响，新设置在下次连接时生效。
+  en: Open connections stay unchanged; new settings apply next time.
 host.dialog.temporary_note:
   zh-CN: 仅当前使用的临时会话，不会保存到主机列表。
   en: For this connection only. It won’t be added to your hosts.

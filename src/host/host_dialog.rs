@@ -920,13 +920,15 @@ impl HostForm {
                                     .small(),
                             ),
                     )
-                })
-                .child(
-                    div()
-                        .text_sm()
-                        .text_color(cx.theme().muted_foreground)
-                        .child(t!("host.dialog.reconnect_description")),
-                ),
+                    .child(
+                        div()
+                            .id("host-reconnect-description")
+                            .test_support()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(t!("host.dialog.reconnect_description")),
+                    )
+                }),
         )
     }
 
@@ -1026,13 +1028,15 @@ impl HostForm {
                                 )
                             }),
                     )
-                })
-                .child(
-                    div()
-                        .text_sm()
-                        .text_color(cx.theme().muted_foreground)
-                        .child(t!("host.dialog.log_file_description")),
-                ),
+                    .child(
+                        div()
+                            .id("host-log-description")
+                            .test_support()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(t!("host.dialog.log_file_description")),
+                    )
+                }),
         )
     }
 
@@ -2234,7 +2238,7 @@ impl Render for HostForm {
                                 .id("host-terminal-encoding-note")
                                 .test_support()
                                 .w_full()
-                                .text_sm()
+                                .text_xs()
                                 .text_color(cx.theme().muted_foreground)
                                 .child(t!("host.dialog.terminal_encoding_description")),
                         ),
@@ -2267,7 +2271,7 @@ impl Render for HostForm {
             )
         };
         v_flex()
-            .gap_3()
+            .gap_2()
             .w_full()
             .child(form)
             .when(self.temporary, |form| {
@@ -2284,7 +2288,7 @@ impl Render for HostForm {
             .when(!self.temporary && typed_password, |form| {
                 form.child(
                     div()
-                        .text_sm()
+                        .text_xs()
                         .text_color(cx.theme().muted_foreground)
                         .child(secret_note),
                 )
@@ -2292,7 +2296,7 @@ impl Render for HostForm {
             .when(self.has_tabs, |form| {
                 form.child(
                     div()
-                        .text_sm()
+                        .text_xs()
                         .text_color(cx.theme().muted_foreground)
                         .child(t!("host.dialog.next_connection_note")),
                 )
