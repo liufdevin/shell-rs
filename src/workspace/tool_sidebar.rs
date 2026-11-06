@@ -12,14 +12,14 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::app::{
-    CatalogIcon, NewSavedTerminal, NewTerminalGroup, ToggleSerialReceiveHex, ToggleSerialSendHex,
-    ToggleTool, ToolKind,
+    AutoSerialFiles, CatalogIcon, DownloadSerialFile, NewSavedTerminal, NewTerminalGroup,
+    ToggleSerialReceiveHex, ToggleSerialSendHex, ToggleTool, ToolKind, UploadSerialFile,
 };
 use crate::docker::{Container, DockerObject, DockerPanel, ObjectSummary};
 use crate::explorer::ExplorerPanel;
 use crate::gpu::GpuPanel;
 use crate::history::HistoryPanel;
-use crate::host::{HostId, HostOs, HostStore, SavedTerminalId, SnippetCategoryId};
+use crate::host::{ConnectionState, HostId, HostOs, HostStore, SavedTerminalId, SnippetCategoryId};
 use crate::i18n::t;
 use crate::kubernetes::{KubernetesCommand, KubernetesPanel};
 use crate::monitor::{MonitorDetail, MonitorPanel};
@@ -99,6 +99,8 @@ pub struct ToolTerminal {
     /// serial host's.
     pub shell_only: bool,
     pub serial: bool,
+    pub ssh: bool,
+    pub monitor_settings: crate::host::MonitorSettings,
     /// Runs the tools' commands on the terminal's own connection.
     pub view: WeakEntity<TerminalView>,
 }
@@ -130,12 +132,15 @@ pub struct ToolSidebar {
     target: Option<SidebarTarget>,
     /// Whether the right dock is open.
     shown: bool,
+    serial_transfer_status: Option<(RemoteTerminalId, u64, SharedString)>,
+    serial_checks: HashSet<(RemoteTerminalId, u64)>,
     monitor: Entity<MonitorPanel>,
     snippets: Entity<SnippetPanel>,
     history: Entity<HistoryPanel>,
     /// The terminal in front's 文件, which the workspace owns: one per
     /// terminal, made the first time it is shown.
     files: Option<Entity<ExplorerPanel>>,
+    files_observer: Option<Subscription>,
     tmux: Entity<TmuxPanel>,
     docker: Entity<DockerPanel>,
     /// Created only when Kubernetes is first selected; unused terminals
@@ -164,11 +169,14 @@ impl ToolSidebar {
             tool: ToolKind::default(),
             target: None,
             shown: false,
-            monitor: cx.new(|_| MonitorPanel::new(dispatch.clone())),
+            serial_transfer_status: None,
+            serial_checks: HashSet::new(),
+            monitor: cx.new(|cx| MonitorPanel::new(dispatch.clone(), store.clone(), cx)),
             projects: cx.new(|cx| ProjectPanel::new(store.clone(), dispatch.clone(), cx)),
             snippets: cx.new(|cx| SnippetPanel::new(store, dispatch.clone(), window, cx)),
             history: cx.new(|cx| HistoryPanel::new(dispatch.clone(), window, cx)),
             files: None,
+            files_observer: None,
             tmux: cx.new(|_| TmuxPanel::new(dispatch.clone())),
             docker: cx.new(|_| DockerPanel::new(dispatch.clone())),
             kubernetes: None,
@@ -184,6 +192,15 @@ impl ToolSidebar {
 
     pub fn tool(&self) -> ToolKind {
         self.tool
+    }
+
+    pub fn set_monitor_connector(
+        &mut self,
+        connector: std::sync::Arc<dyn crate::monitor::MonitorConnector>,
+        cx: &mut Context<Self>,
+    ) {
+        self.monitor
+            .update(cx, |monitor, cx| monitor.set_connector(connector, cx));
     }
 
     pub fn disable_kubernetes(&mut self, cx: &mut Context<Self>) {
@@ -261,6 +278,16 @@ impl ToolSidebar {
     pub fn toggle_monitor_detail(&mut self, detail: MonitorDetail, cx: &mut Context<Self>) {
         self.monitor
             .update(cx, |monitor, cx| monitor.toggle(detail, cx));
+    }
+
+    pub fn toggle_monitor_channel(
+        &mut self,
+        terminal: RemoteTerminalId,
+        name: &str,
+        cx: &mut Context<Self>,
+    ) {
+        self.monitor
+            .update(cx, |monitor, cx| monitor.toggle_channel(terminal, name, cx));
     }
 
     /// 网络连接's 刷新.
@@ -430,8 +457,13 @@ impl ToolSidebar {
         self.services.update(cx, |panel, cx| {
             panel.set_target(target.clone(), services, cx)
         });
+        let serial = self
+            .remote()
+            .filter(|terminal| terminal.serial)
+            .map(|terminal| (terminal.host, terminal.monitor_settings.clone()));
+        let native_ssh = self.remote().is_some_and(|terminal| terminal.ssh);
         self.monitor.update(cx, |panel, cx| {
-            panel.set_target(target.clone(), monitor, cx)
+            panel.set_target(target.clone(), serial, native_ssh, monitor, cx)
         });
         self.processes.update(cx, |panel, cx| {
             panel.set_target(target.clone(), processes, cx)
@@ -456,6 +488,9 @@ impl ToolSidebar {
         if self.focus_handle.contains_focused(window, cx) {
             window.focus(&self.focus_handle, cx);
         }
+        self.files_observer = files
+            .as_ref()
+            .map(|files| cx.observe(files, |_, _, cx| cx.notify()));
         self.files = files;
         cx.notify();
     }
@@ -565,6 +600,12 @@ impl Panel for ToolSidebar {
 
 impl Render for ToolSidebar {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let serial_controls = serial_transfer_controls_visible(
+            self.remote().is_some_and(|terminal| terminal.serial),
+            self.files
+                .as_ref()
+                .map(|files| files.read(cx).connection_state()),
+        );
         // Named after the terminal it works on.
         let id: ElementId = match &self.target {
             Some(SidebarTarget::Local(id)) => ("tool-sidebar-local", id.0).into(),
@@ -583,6 +624,13 @@ impl Render for ToolSidebar {
                 let panel = match self.tool {
                     ToolKind::Snippets => self.snippets.clone().into_any_element(),
                     ToolKind::History => self.history.clone().into_any_element(),
+                    ToolKind::Files if serial_controls => v_flex()
+                        .size_full()
+                        .child(self.serial_files(cx))
+                        .when_some(self.files.clone(), |view, files| {
+                            view.child(div().flex_1().min_h_0().child(files))
+                        })
+                        .into_any_element(),
                     ToolKind::Files => match &self.files {
                         Some(files) => files.clone().into_any_element(),
                         None => Empty.into_any_element(),
@@ -606,7 +654,117 @@ impl Render for ToolSidebar {
     }
 }
 
+fn serial_transfer_controls_visible(serial: bool, state: Option<ConnectionState>) -> bool {
+    serial && state != Some(ConnectionState::Connected)
+}
+
 impl ToolSidebar {
+    pub fn serial_probe_needed(&self, id: RemoteTerminalId, generation: u64) -> bool {
+        !self.serial_checks.contains(&(id, generation))
+            && self
+                .serial_transfer_status
+                .as_ref()
+                .is_none_or(|(owner, current, _)| *owner != id || *current != generation)
+    }
+
+    pub fn begin_serial_check(
+        &mut self,
+        id: RemoteTerminalId,
+        generation: u64,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if !self.serial_checks.insert((id, generation)) {
+            return false;
+        }
+        self.serial_transfer_status = Some((id, generation, t!("serial.files.checking")));
+        cx.notify();
+        true
+    }
+
+    pub fn finish_serial_check(
+        &mut self,
+        id: RemoteTerminalId,
+        generation: u64,
+        status: SharedString,
+        cx: &mut Context<Self>,
+    ) {
+        self.serial_checks.remove(&(id, generation));
+        if self
+            .serial_transfer_status
+            .as_ref()
+            .is_none_or(|(owner, current, _)| *owner != id || *current <= generation)
+        {
+            self.serial_transfer_status = Some((id, generation, status));
+        }
+        cx.notify();
+    }
+
+    fn serial_files(&self, cx: &App) -> impl IntoElement + use<> {
+        let terminal = self
+            .remote()
+            .filter(|terminal| terminal.serial)
+            .map(|terminal| terminal.id);
+        let status = terminal
+            .and_then(|id| {
+                self.serial_transfer_status
+                    .as_ref()
+                    .filter(|(owner, generation, _)| {
+                        *owner == id
+                            && self
+                                .remote()
+                                .and_then(|terminal| terminal.view.upgrade())
+                                .is_some_and(|view| view.read(cx).generation(cx) == *generation)
+                    })
+                    .map(|(_, _, status)| status.clone())
+            })
+            .unwrap_or_else(|| t!("serial.files.description"));
+        v_flex()
+            .id("serial-files")
+            .test_support()
+            .p_3()
+            .gap_3()
+            .child(div().text_sm().child(status))
+            .when_some(terminal, |view, id| {
+                let dispatch = self.dispatch.clone();
+                let upload = self.dispatch.clone();
+                let download = self.dispatch.clone();
+                let adb = self.dispatch.clone();
+                view.child(
+                    Button::new("serial-files-auto")
+                        .small()
+                        .label(t!("serial.files.auto"))
+                        .on_click(move |_, window, cx| {
+                            dispatch.dispatch_action(&AutoSerialFiles(id), window, cx)
+                        }),
+                )
+                .child(
+                    Button::new("serial-files-adb")
+                        .small()
+                        .label(t!("adb.choose"))
+                        .on_click(move |_, window, cx| {
+                            adb.dispatch_action(&crate::app::ChooseAdbDevice(id), window, cx)
+                        }),
+                )
+                .child(
+                    Button::new("serial-files-upload")
+                        .small()
+                        .label(t!("serial.files.upload"))
+                        .on_click(move |_, window, cx| {
+                            upload.dispatch_action(&UploadSerialFile(id), window, cx)
+                        }),
+                )
+                .child(
+                    Button::new("serial-files-download")
+                        .small()
+                        .label(t!("serial.files.download"))
+                        .on_click(move |_, window, cx| {
+                            download.dispatch_action(&DownloadSerialFile(id), window, cx)
+                        }),
+                )
+            })
+            .child(div().text_xs().child(t!("serial.files.requirements")))
+    }
+
     fn serial_settings(&self, cx: &App) -> impl IntoElement + use<> {
         let target = self.remote().filter(|terminal| terminal.serial);
         let target = target.and_then(|terminal| {
@@ -693,4 +851,31 @@ pub fn render_tool_switch(
                     target.dispatch_action(&ToggleTool(tool), window, cx)
                 })
         }))
+}
+
+#[cfg(test)]
+mod serial_files_tests {
+    use super::serial_transfer_controls_visible;
+    use crate::host::ConnectionState;
+
+    #[test]
+    fn a_connected_network_shows_only_files_and_a_disconnect_restores_serial_controls() {
+        assert!(serial_transfer_controls_visible(true, None));
+        assert!(serial_transfer_controls_visible(
+            true,
+            Some(ConnectionState::Connecting)
+        ));
+        assert!(!serial_transfer_controls_visible(
+            true,
+            Some(ConnectionState::Connected)
+        ));
+        assert!(serial_transfer_controls_visible(
+            true,
+            Some(ConnectionState::Disconnected)
+        ));
+        assert!(!serial_transfer_controls_visible(
+            false,
+            Some(ConnectionState::Disconnected)
+        ));
+    }
 }

@@ -47,6 +47,15 @@ use crate::shared::{
 const DIALOG_TOP: f32 = 0.05;
 const DIALOG_MAX_HEIGHT: f32 = 0.9;
 
+fn monitor_channel_label(channel: crate::host::MonitorChannel) -> SharedString {
+    match channel {
+        crate::host::MonitorChannel::Auto => t!("monitor.route.auto"),
+        crate::host::MonitorChannel::Adb => "ADB".into(),
+        crate::host::MonitorChannel::Ssh => "SSH".into(),
+        crate::host::MonitorChannel::Serial => t!("monitor.route.serial"),
+    }
+}
+
 /// Why an edit keeps the host an SSH host: the other protocols' segments
 /// are disabled and say so.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -265,6 +274,11 @@ pub struct HostForm {
     auto_reconnect: bool,
     reconnect_delay: Entity<InputState>,
     terminal_encoding: Entity<SelectState<Vec<SharedString>>>,
+    serial_linux_shell: bool,
+    monitor_channel: Entity<SelectState<Vec<SharedString>>>,
+    monitor_adb: Entity<InputState>,
+    monitor_ssh: Entity<SelectState<Vec<SharedString>>>,
+    monitor_ssh_ids: Vec<String>,
     /// A Telnet host's 自动登录: whether it is on, where it takes the
     /// user name and password from, and the prompts it waits for.
     telnet_auto_login: bool,
@@ -451,6 +465,9 @@ impl HostForm {
                 .default_value(ssh_login.map_or(DEFAULT_USER.into(), |draft| draft.user.clone()))
         });
         let fields = cx.new(|cx| SecretFields::new(secrets.clone(), None, window, cx));
+        fields.update(cx, |fields, cx| {
+            fields.enable_password_picker(store.clone(), window, cx)
+        });
         let credential_ix = ssh_login.and_then(|draft| draft.credential).and_then(|id| {
             credentials
                 .iter()
@@ -505,6 +522,7 @@ impl HostForm {
         });
         let telnet_fields = cx.new(|cx| {
             let mut fields = SecretFields::new(secrets.clone(), None, window, cx);
+            fields.enable_password_picker(store.clone(), window, cx);
             fields.set_password_placeholder(
                 t!("host.dialog.telnet_password_placeholder"),
                 window,
@@ -629,6 +647,42 @@ impl HostForm {
         let reconnect_delay = cx.new(|cx| {
             InputState::new(window, cx).default_value(draft.reconnect_delay_secs.to_string())
         });
+        let monitor_channel = cx.new(|cx| {
+            SelectState::new(
+                crate::host::MonitorChannel::ALL
+                    .into_iter()
+                    .map(monitor_channel_label)
+                    .collect::<Vec<_>>(),
+                crate::host::MonitorChannel::ALL
+                    .iter()
+                    .position(|channel| *channel == draft.monitor.channel)
+                    .map(IndexPath::new),
+                window,
+                cx,
+            )
+        });
+        let monitor_adb = cx.new(|cx| {
+            InputState::new(window, cx)
+                .default_value(&draft.monitor.adb_serial)
+                .placeholder(t!("monitor.route.adb_auto"))
+        });
+        let mut monitor_ssh_ids = vec![String::new()];
+        let mut monitor_ssh_labels = vec![t!("monitor.route.ssh_auto")];
+        for host in store.read(cx).hosts().iter().filter(|host| host.is_ssh()) {
+            monitor_ssh_ids.push(host.public_id.as_str().to_owned());
+            monitor_ssh_labels.push(format!("{} · {}", host.name, host.endpoint()).into());
+        }
+        if !draft.monitor.ssh_host.is_empty() && !monitor_ssh_ids.contains(&draft.monitor.ssh_host)
+        {
+            monitor_ssh_ids.push(draft.monitor.ssh_host.clone());
+            monitor_ssh_labels.push(t!("monitor.route.missing_host"));
+        }
+        let selected = monitor_ssh_ids
+            .iter()
+            .position(|id| id == &draft.monitor.ssh_host)
+            .map(IndexPath::new);
+        let monitor_ssh = cx
+            .new(|cx| SelectState::new(monitor_ssh_labels, selected, window, cx).searchable(true));
 
         let subscriptions = vec![
             cx.observe(&credential, |_, _, cx| cx.notify()),
@@ -714,6 +768,14 @@ impl HostForm {
             auto_reconnect: draft.auto_reconnect,
             reconnect_delay,
             terminal_encoding,
+            serial_linux_shell: draft
+                .protocol
+                .serial()
+                .is_some_and(|settings| settings.linux_shell),
+            monitor_channel,
+            monitor_adb,
+            monitor_ssh,
+            monitor_ssh_ids,
             device,
             baud,
             data_bits,
@@ -838,6 +900,7 @@ impl HostForm {
         Ok((
             device,
             SerialSettings {
+                linux_shell: self.serial_linux_shell,
                 baud,
                 data_bits: row(&self.data_bits)
                     .and_then(|ix| DataBits::ALL.get(ix).copied())
@@ -872,6 +935,20 @@ impl HostForm {
     }
 
     fn with_log_file(&self, mut draft: HostDraft, cx: &App) -> HostDraft {
+        draft.monitor.channel = self
+            .monitor_channel
+            .read(cx)
+            .selected_index(cx)
+            .and_then(|index| crate::host::MonitorChannel::ALL.get(index.row).copied())
+            .unwrap_or_default();
+        draft.monitor.adb_serial = self.monitor_adb.read(cx).value().trim().to_owned();
+        draft.monitor.ssh_host = self
+            .monitor_ssh
+            .read(cx)
+            .selected_index(cx)
+            .and_then(|index| self.monitor_ssh_ids.get(index.row))
+            .cloned()
+            .unwrap_or_default();
         draft.terminal_encoding = self
             .terminal_encoding
             .read(cx)
@@ -1148,6 +1225,9 @@ impl HostForm {
     /// The login the form's current values describe, saved or not, or why
     /// there is nothing to test yet.
     fn login_test(&self, cx: &App) -> Result<LoginTest, SharedString> {
+        if let Some(problem) = self.password_problem(cx) {
+            return Err(problem);
+        }
         let (host, port) = self.endpoint(cx)?;
         let route = self.committed_route(cx)?;
         let route_login = self.store.read(cx).route_login(&route);
@@ -1271,6 +1351,10 @@ impl HostForm {
     /// above this one.
     fn test_connection(&mut self, _: &ClickEvent, window: &mut Window, cx: &mut Context<Self>) {
         if self.testing_connection {
+            return;
+        }
+        if let Some(problem) = self.password_problem(cx) {
+            window.push_notification(connection_test_notification(Err(problem.into())), cx);
             return;
         }
         let tester = self.tester.clone();
@@ -1438,8 +1522,24 @@ impl HostForm {
         }
     }
 
-    /// Validate and write to the store. Returns whether the dialog may close.
+    fn password_problem(&self, cx: &App) -> Option<SharedString> {
+        let fields = match self.protocol {
+            ProtocolKind::Ssh if self.source == AuthSource::Password => Some(&self.fields),
+            ProtocolKind::Telnet
+                if self.telnet_auto_login && self.telnet_source == TelnetSource::Manual =>
+            {
+                Some(&self.telnet_fields)
+            }
+            _ => None,
+        };
+        fields.and_then(|fields| fields.read(cx).password_problem(cx))
+    }
+
     pub fn commit(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if let Some(problem) = self.password_problem(cx) {
+            window.push_notification(form_error_notification(problem), cx);
+            return false;
+        }
         if self.auto_reconnect
             && !self
                 .reconnect_delay
@@ -1688,7 +1788,7 @@ impl HostForm {
                 Field::new()
                     .label(t!("host.dialog.password"))
                     .col_span(4)
-                    .child(self.fields.read(cx).password_input("host-password")),
+                    .child(self.fields.read(cx).password_control("host-password")),
             )
         })
     }
@@ -1904,6 +2004,48 @@ impl HostForm {
                     .label(t!("host.dialog.flow_control"))
                     .child(Select::new(&self.flow).id("host-serial-flow").small()),
             )
+            .child(
+                Field::new().col_span(4).child(
+                    Checkbox::new("host-serial-linux-shell")
+                        .small()
+                        .label(t!("serial.shell.enable"))
+                        .checked(self.serial_linux_shell)
+                        .tooltip(t!("serial.shell.description"))
+                        .on_click(cx.listener(|this, checked, _, cx| {
+                            this.serial_linux_shell = *checked;
+                            cx.notify();
+                        })),
+                ),
+            )
+            .when(self.serial_linux_shell, |form| {
+                form.child(
+                    Field::new()
+                        .col_span(4)
+                        .label(t!("monitor.route.channel"))
+                        .child(
+                            Select::new(&self.monitor_channel)
+                                .id("host-monitor-channel")
+                                .small(),
+                        ),
+                )
+                .child(
+                    Field::new()
+                        .col_span(4)
+                        .label(t!("monitor.route.adb_device"))
+                        .child(Input::new(&self.monitor_adb).id("host-monitor-adb").small()),
+                )
+                .child(
+                    Field::new()
+                        .col_span(4)
+                        .label(t!("monitor.route.ssh_host"))
+                        .child(
+                            Select::new(&self.monitor_ssh)
+                                .id("host-monitor-ssh")
+                                .small(),
+                        )
+                        .description(t!("monitor.route.config_note")),
+                )
+            })
     }
 
     /// 「连接方式」: the choice, and below it what the choice needs.
@@ -2373,7 +2515,7 @@ impl HostForm {
                         .child(
                             self.telnet_fields
                                 .read(cx)
-                                .password_input("host-telnet-password"),
+                                .password_control("host-telnet-password"),
                         ),
                 ),
             TelnetSource::Credential => form.child(self.telnet_credential_field(cx)),

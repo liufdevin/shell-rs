@@ -3,6 +3,7 @@
 //! the center shows while no tab is open.
 
 mod analytics;
+mod android_devices;
 mod app_lock;
 mod app_shell;
 mod cli_changes;
@@ -20,6 +21,7 @@ mod links;
 mod notices;
 mod projects;
 mod recent_hosts;
+mod serial_files;
 mod sidebar;
 mod snippets;
 mod status_bar;

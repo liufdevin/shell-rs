@@ -2,6 +2,7 @@
 //! the Telnet protocol on top, 自动登录 watching what comes back, and the
 //! line edited here while the server does not echo.
 
+use std::collections::VecDeque;
 use std::sync::{Arc, mpsc};
 use std::time::Duration;
 
@@ -133,8 +134,34 @@ impl TelnetTransport {
         // When 自动登录 answers the prompt the output ends with, unless more
         // output comes first.
         let mut settle: Option<Instant> = None;
+        let mut shell =
+            crate::terminal::ShellQuery::new(true, self.encoding).require_posix_prompt();
+        let mut query_lines = VecDeque::new();
+        let mut pending_input = Vec::new();
+        let mut next_line = Instant::now();
+        let mut query_poll = tokio::time::interval(Duration::from_millis(20));
+        query_poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             tokio::select! {
+                _ = query_poll.tick() => {
+                    shell.tick();
+                    if !shell.busy() {
+                        query_lines.clear();
+                        if !pending_input.is_empty() {
+                            let input = std::mem::take(&mut pending_input);
+                            shell.input(&input);
+                            write_input(&mut writer, &mut session, &mut local_line, &events, &input).await?;
+                        }
+                    }
+                    if auto_login.is_none() && let Some(lines) = shell.poll() {
+                        query_lines.extend(lines);
+                        next_line = Instant::now();
+                    }
+                    if Instant::now() >= next_line && let Some(line) = query_lines.pop_front() {
+                        send(&mut writer, &session.send(&line)).await?;
+                        next_line = Instant::now() + Duration::from_millis(100);
+                    }
+                },
                 read = reader.read(&mut buffer) => match read {
                     Ok(0) => break,
                     Ok(count) => {
@@ -150,8 +177,8 @@ impl TelnetTransport {
                             auto_login.output(&received.data);
                             settle = auto_login.waiting().then(|| Instant::now() + SETTLE);
                         }
-                        let output = TerminalTransportEvent::Output(received.data);
-                        if events.send(output).await.is_err() {
+                        let visible = shell.output(&received.data);
+                        if !visible.is_empty() && events.send(TerminalTransportEvent::Output(visible)).await.is_err() {
                             break;
                         }
                     }
@@ -176,17 +203,11 @@ impl TelnetTransport {
                                 settle = None;
                             }
                         }
-                        if session.server_echoes() {
-                            send(&mut writer, &session.send(&bytes)).await?;
+                        if !shell.input(&bytes) {
+                            pending_input.extend_from_slice(&bytes);
                             continue;
                         }
-                        let edited = local_line.edit(&bytes);
-                        send(&mut writer, &session.send(&edited.send)).await?;
-                        if !edited.echo.is_empty()
-                            && events.send(TerminalTransportEvent::Output(edited.echo)).await.is_err()
-                        {
-                            break;
-                        }
+                        write_input(&mut writer, &mut session, &mut local_line, &events, &bytes).await?;
                     }
                     // Neither auto login nor the line edited here: the
                     // bytes are a file transfer's, not keys.
@@ -204,10 +225,17 @@ impl TelnetTransport {
                         let _ = tokio::time::timeout(SHUTDOWN_TIMEOUT, writer.shutdown()).await;
                         return Ok(());
                     }
-                    // Nothing runs beside a Telnet terminal: a request
-                    // dropped here closes its answer.
+                    Some(TerminalTransportCommand::Exec(request)) => {
+                        if auto_login.is_some() {
+                            let _ = request.reply.send(Err(t!("serial.shell.busy").to_string()));
+                        } else if let Some(lines) = shell.execute(request) {
+                            query_lines.extend(lines);
+                            next_line = Instant::now();
+                        }
+                    }
                     Some(
-                        TerminalTransportCommand::Exec(_)
+                        TerminalTransportCommand::SerialTransfer(_)
+                        | TerminalTransportCommand::Monitor(_)
                         | TerminalTransportCommand::OpenSftp(_)
                         | TerminalTransportCommand::PromptReply { .. },
                     ) => {}
@@ -223,6 +251,27 @@ impl TelnetTransport {
             .await;
         Ok(())
     }
+}
+
+async fn write_input(
+    writer: &mut (impl AsyncWrite + Unpin),
+    session: &mut TelnetSession,
+    local_line: &mut LocalLine,
+    events: &Sender<TerminalTransportEvent>,
+    bytes: &[u8],
+) -> Result<()> {
+    if session.server_echoes() {
+        return send(writer, &session.send(bytes)).await;
+    }
+    let edited = local_line.edit(bytes);
+    send(writer, &session.send(&edited.send)).await?;
+    if !edited.echo.is_empty() {
+        events
+            .send(TerminalTransportEvent::Output(edited.echo))
+            .await
+            .map_err(|_| anyhow!(t!("ssh.terminal.tab_closed")))?;
+    }
+    Ok(())
 }
 
 async fn send(writer: &mut (impl AsyncWrite + Unpin), bytes: &[u8]) -> Result<()> {
@@ -315,6 +364,74 @@ mod tests {
         let runner =
             std::thread::spawn(move || transport.run(TerminalSize::DEFAULT, receiver, events));
         (commands, received, runner)
+    }
+
+    #[test]
+    fn a_linux_telnet_shell_answers_framed_background_queries() {
+        let Some(listener) = listen() else { return };
+        let port = listener.local_addr().unwrap().port();
+        let device = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            socket.write_all(&[IAC, WILL, ECHO]).unwrap();
+            let mut seen = Vec::new();
+            read_until(&mut socket, &mut seen, &[IAC, DO, ECHO]);
+            socket.write_all(b"root@ubuntu:~# ").unwrap();
+            let mut staged = Vec::new();
+            while !staged
+                .windows(b"E\\037'".len())
+                .any(|bytes| bytes == b"E\\037'")
+            {
+                let mut buffer = [0; 4096];
+                let count = socket.read(&mut buffer).unwrap();
+                assert!(count > 0);
+                staged.extend_from_slice(&buffer[..count]);
+            }
+            let text = String::from_utf8_lossy(&staged);
+            let nonce = &text.split_once("\\036").unwrap().1[..32];
+            assert!(nonce.chars().all(|value| value.is_ascii_hexdigit()));
+            socket
+                .write_all(
+                    format!("\x1e{nonce}B\x1fbandwidth\r\n\x1e{nonce}E\x1froot@ubuntu:~# ")
+                        .as_bytes(),
+                )
+                .unwrap();
+        });
+        let (commands, events, runner) = launch(
+            HostDraft::telnet("ubuntu", "127.0.0.1", port, None),
+            Arc::default(),
+        );
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut output = Vec::new();
+        while !output.ends_with(b"root@ubuntu:~# ") {
+            assert!(Instant::now() < deadline);
+            match events.try_recv() {
+                Ok(TerminalTransportEvent::Output(bytes)) => output.extend(bytes),
+                Ok(TerminalTransportEvent::Failed(error)) => panic!("{error}"),
+                _ => std::thread::sleep(Duration::from_millis(5)),
+            }
+        }
+        let (reply, answer) = mpsc::channel();
+        commands
+            .send(TerminalTransportCommand::Exec(
+                crate::terminal::ExecRequest {
+                    command: "printf bandwidth".into(),
+                    reply,
+                },
+            ))
+            .unwrap();
+        assert_eq!(
+            answer
+                .recv_timeout(Duration::from_secs(5))
+                .unwrap()
+                .unwrap(),
+            "bandwidth\n"
+        );
+        let _ = commands.send(TerminalTransportCommand::Shutdown);
+        device.join().unwrap();
+        runner.join().unwrap().unwrap();
     }
 
     #[test]

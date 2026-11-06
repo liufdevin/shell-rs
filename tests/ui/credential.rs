@@ -3,6 +3,119 @@
 
 use crate::support::*;
 
+#[gpui_kit::test]
+async fn a_saved_password_can_be_reused_without_changing_the_hosts_username(
+    cx: &mut TestAppContext,
+) {
+    let secrets = Arc::new(InMemorySecretStore::default());
+    let (store, _, _) = store_with_credential(secrets.clone());
+    let (handle, workspace) = open_workspace_with_credentials(
+        cx,
+        store,
+        Arc::new(RecordingRemoteProvider::default()),
+        Arc::new(FakeConnectionTester::default()),
+    );
+    in_frame(cx, handle, |window, cx| window.click("new-host-panel", cx));
+    in_frame(cx, handle, |window, cx| {
+        window.click("host-address", cx);
+        window.input("10.0.2.99", cx);
+        let password = window.find("host-password").bounds();
+        let picker = window.find("saved-password-picker").bounds();
+        assert_eq!(password.top(), picker.top());
+        assert!(password.right() < picker.left());
+        window.within("saved-password-picker").click("input", cx);
+    });
+    for key in ["down", "enter"] {
+        in_frame(cx, handle, |window, cx| window.press(key, cx));
+    }
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, cx| {
+        window.render_frame(cx);
+        window.find("saved-password-picker").value() == Some("运维")
+            && window.try_find("saved-password-loading").is_none()
+    })
+    .await;
+    in_frame(cx, handle, |window, cx| {
+        assert_eq!(window.find("host-user").value(), Some("root"));
+        assert_eq!(window.find("host-password").value(), None);
+        window.click("host-name", cx);
+        window.click("commit", cx);
+    });
+    wait_for_dialog_to_close(cx, handle).await;
+    let secret = cx.update(|cx| {
+        let store = workspace.read(cx).store().read(cx);
+        let host = store
+            .hosts()
+            .iter()
+            .find(|host| host.address == "10.0.2.99")
+            .unwrap();
+        assert!(host.credential.is_none());
+        assert_eq!(host.user.as_ref(), "root");
+        host.password_secret()
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(3), |_, _| {
+        secrets.get(&secret).unwrap().as_deref().map(String::as_str) == Some("hunter2")
+    })
+    .await;
+}
+
+#[gpui_kit::test]
+async fn an_unavailable_saved_password_reports_an_error_and_allows_manual_input(
+    cx: &mut TestAppContext,
+) {
+    let secrets = Arc::new(InMemorySecretStore::default());
+    let (store, credential, _) = store_with_credential(secrets.clone());
+    secrets
+        .delete(&store.credential(credential).unwrap().password_secret())
+        .unwrap();
+    let tester = Arc::new(FakeConnectionTester::default());
+    let (handle, _) = open_workspace_with_credentials(
+        cx,
+        store,
+        Arc::new(RecordingRemoteProvider::default()),
+        tester.clone(),
+    );
+    in_frame(cx, handle, |window, cx| window.click("new-host-panel", cx));
+    in_frame(cx, handle, |window, cx| {
+        window.click("host-address", cx);
+        window.input("192.0.2.10", cx);
+        window.click("host-password", cx);
+        window.input("previous-password", cx);
+        window.within("saved-password-picker").click("input", cx)
+    });
+    for key in ["down", "enter"] {
+        in_frame(cx, handle, |window, cx| window.press(key, cx));
+    }
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, cx| {
+        window.render_frame(cx);
+        window.try_find("saved-password-error").is_some()
+    })
+    .await;
+    in_frame(cx, handle, |window, cx| window.click("test-connection", cx));
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, cx| {
+        window.render_frame(cx);
+        !window.notifications(cx).is_empty()
+    })
+    .await;
+    assert!(tester.requests().is_empty());
+    in_frame(cx, handle, |window, cx| {
+        window.click("host-password", cx);
+        window.press("secondary-a", cx);
+        window.input("manual-password", cx);
+    });
+    in_frame(cx, handle, |window, cx| {
+        assert!(window.try_find("saved-password-error").is_none());
+        window.click("test-connection", cx);
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(3), |_, _| {
+        !tester.requests().is_empty()
+    })
+    .await;
+    assert_eq!(tester.requests()[0].3.as_deref(), Some("manual-password"));
+    in_frame(cx, handle, |window, cx| {
+        window.click("cancel", cx);
+    });
+}
+
 /// A store with one password credential, 「运维」 as `deploy`, and the host
 /// db-01 logging in with it; the keychain holds the credential's password.
 fn store_with_credential(secrets: Arc<InMemorySecretStore>) -> (HostStore, CredentialId, HostId) {

@@ -5,6 +5,154 @@ use crate::support::*;
 use shellrs::app::{CloseTerminal, SendBreak, StartTerminalRecording, StopTerminalRecording};
 use shellrs::host::{FlowControl, Protocol, SerialSettings};
 
+struct TestAdbDetector {
+    choose: bool,
+    identities: Mutex<Vec<Option<String>>>,
+}
+impl shellrs::adb::AdbDetector for TestAdbDetector {
+    fn detect(&self, boot: Option<&str>) -> shellrs::adb::AdbDetection {
+        self.identities
+            .lock()
+            .unwrap()
+            .push(boot.map(str::to_owned));
+        let device = |serial: &str, name: &str| {
+            shellrs::adb::AdbConnection::new(
+                std::path::PathBuf::from("injected-adb-not-executed"),
+                serial.to_owned(),
+            )
+            .unwrap()
+            .with_name(name)
+        };
+        if self.choose {
+            shellrs::adb::AdbDetection::Choose(vec![
+                device("board-one", "Helper A133"),
+                device("board-two", "Ubuntu Board"),
+            ])
+        } else {
+            shellrs::adb::AdbDetection::Matched(device("ubuntu-board", "Ubuntu Board"))
+        }
+    }
+}
+
+#[gpui_kit::test]
+async fn a_linux_serial_board_uses_verified_adb_files_without_an_ssh_login(
+    cx: &mut TestAppContext,
+) {
+    let mut store = HostStore::empty();
+    let id = store.insert_unnotified(HostDraft::serial(
+        "console",
+        "COM3",
+        SerialSettings {
+            linux_shell: true,
+            ..Default::default()
+        },
+        None,
+    ));
+    let line = Arc::new(FakeTerminalFactory::answering(&[
+        "@@boot_id\n00000000-0000-4000-8000-000000000001\n@@user\nroot\n@@addresses\n",
+    ]));
+    let (handle, workspace) = open_workspace_with_terminals(
+        cx,
+        store,
+        Arc::new(FakeTerminalFactory::default()),
+        Arc::new(FixedSerialTerminalTransportProvider::new(line)),
+    );
+    let detector = Arc::new(TestAdbDetector {
+        choose: false,
+        identities: Mutex::default(),
+    });
+    cx.update(|cx| {
+        workspace.update(cx, |workspace, _| {
+            workspace.set_adb_detector(detector.clone())
+        })
+    });
+    connect(cx, handle, id).await;
+    in_frame(cx, handle, |window, cx| window.click("tool-files", cx));
+    cx.wait_for(handle.into(), Duration::from_secs(5), |window, cx| {
+        window.render_frame(cx);
+        workspace
+            .read(cx)
+            .file_sidebar(RemoteTerminalId(1))
+            .is_some_and(|files| files.read(cx).connection_state() == ConnectionState::Connected)
+            && window.try_find("serial-files").is_none()
+    })
+    .await;
+    assert_eq!(
+        detector.identities.lock().unwrap()[0].as_deref(),
+        Some("00000000-0000-4000-8000-000000000001")
+    );
+    in_frame(cx, handle, |window, _| {
+        assert!(window.find(("remote-pane", 1u64)).visible())
+    });
+}
+
+#[gpui_kit::test]
+async fn ambiguous_adb_devices_require_a_choice_before_showing_files(cx: &mut TestAppContext) {
+    let mut store = HostStore::empty();
+    let id = store.insert_unnotified(HostDraft::serial(
+        "console",
+        "COM3",
+        SerialSettings {
+            linux_shell: true,
+            ..Default::default()
+        },
+        None,
+    ));
+    let line = Arc::new(FakeTerminalFactory::answering(&[
+        "@@user\nroot\n@@addresses\n",
+    ]));
+    let (handle, workspace) = open_workspace_with_terminals(
+        cx,
+        store,
+        Arc::new(FakeTerminalFactory::default()),
+        Arc::new(FixedSerialTerminalTransportProvider::new(line)),
+    );
+    cx.update(|cx| {
+        workspace.update(cx, |workspace, _| {
+            workspace.set_adb_detector(Arc::new(TestAdbDetector {
+                choose: true,
+                identities: Mutex::default(),
+            }))
+        })
+    });
+    connect(cx, handle, id).await;
+    in_frame(cx, handle, |window, cx| window.click("tool-files", cx));
+    cx.wait_for(handle.into(), Duration::from_secs(5), |window, cx| {
+        window.render_frame(cx);
+        window.try_find("adb-device-picker").is_some()
+    })
+    .await;
+    in_frame(cx, handle, |window, _| {
+        assert_eq!(
+            window.find("adb-device:board-one").label(),
+            Some("Helper A133（board-one）")
+        );
+        assert_eq!(
+            window.find("adb-device:board-two").label(),
+            Some("Ubuntu Board（board-two）")
+        );
+    });
+    cx.update(|cx| {
+        assert!(
+            workspace
+                .read(cx)
+                .file_sidebar(RemoteTerminalId(1))
+                .is_none()
+        )
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.click("adb-device:board-two", cx)
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(5), |window, cx| {
+        window.render_frame(cx);
+        workspace
+            .read(cx)
+            .file_sidebar(RemoteTerminalId(1))
+            .is_some_and(|files| files.read(cx).connection_state() == ConnectionState::Connected)
+    })
+    .await;
+}
+
 /// A store with one serial host, `console` on `/dev/ttyUSB0`.
 fn serial_store() -> (HostStore, HostId) {
     let mut store = HostStore::empty();
@@ -15,6 +163,23 @@ fn serial_store() -> (HostStore, HostId) {
         None,
     ));
     (store, id)
+}
+
+fn serial_directory(path: &str, entries: &[(&str, &str)]) -> String {
+    use base64::Engine as _;
+    let mut bytes = format!("P\0{path}\0").into_bytes();
+    for (kind, name) in entries {
+        bytes.extend_from_slice(format!("{kind}\0{name}\0").as_bytes());
+    }
+    bytes.extend_from_slice(b"E\0");
+    format!(
+        "@@shelllf-files\n{}\n@@shelllf-files-end\n",
+        base64::engine::general_purpose::STANDARD.encode(bytes)
+    )
+}
+
+fn serial_entry(path: &str) -> gpui_kit::SharedString {
+    format!("serial-file-entry:{path}").into()
 }
 
 async fn connect(cx: &mut TestAppContext, handle: WindowHandle<Root>, id: HostId) {
@@ -296,6 +461,219 @@ async fn a_serial_terminal_has_no_sftp_and_only_snippets_beside_it(cx: &mut Test
         line.breaks() == 1
     })
     .await;
+}
+
+#[gpui_kit::test]
+async fn linux_shell_is_saved_per_host_and_enables_only_supported_tools(cx: &mut TestAppContext) {
+    let (mut store, id) = serial_store();
+    let other = store.insert_unnotified(HostDraft::serial(
+        "other",
+        "COM4",
+        SerialSettings::default(),
+        None,
+    ));
+    let root = serial_directory("/home/root", &[("d", "logs"), ("f", "a'b $HOME.log")]);
+    let logs = serial_directory("/home/root/logs", &[]);
+    let line = Arc::new(FakeTerminalFactory::answering(&[
+        "@@user\nroot\n@@addresses\n",
+        &root,
+        &logs,
+        &root,
+    ]));
+    let serial = Arc::new(FixedSerialTerminalTransportProvider::new(line.clone()));
+    let (handle, workspace) = open_workspace_with_terminals(
+        cx,
+        store,
+        Arc::new(FakeTerminalFactory::default()),
+        serial.clone(),
+    );
+    in_frame(cx, handle, |window, cx| {
+        window.dispatch_action(Box::new(EditHost(id)), cx)
+    });
+    in_frame(cx, handle, |window, cx| {
+        assert_eq!(
+            window.find("host-serial-linux-shell").checked(),
+            Some(false)
+        );
+        window.click("host-serial-linux-shell", cx);
+        window.click("commit", cx);
+    });
+    wait_for_dialog_to_close(cx, handle).await;
+    cx.update(|cx| {
+        let store = workspace.read(cx).store().read(cx);
+        assert!(
+            store
+                .host(id)
+                .unwrap()
+                .protocol
+                .serial()
+                .unwrap()
+                .linux_shell
+        );
+        assert!(
+            !store
+                .host(other)
+                .unwrap()
+                .protocol
+                .serial()
+                .unwrap()
+                .linux_shell
+        );
+    });
+    in_frame(cx, handle, |window, cx| window.click("host-search", cx));
+    connect(cx, handle, id).await;
+    assert!(serial.lines()[0].settings.linux_shell);
+    in_frame(cx, handle, |window, cx| {
+        for tool in [
+            "tool-files",
+            "tool-services",
+            "tool-processes",
+            "tool-connections",
+            "tool-monitor",
+            "tool-serial",
+        ] {
+            assert!(window.find(tool).visible(), "{tool}");
+        }
+        assert!(window.try_find("tool-tmux").is_none());
+        window.click("tool-files", cx);
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, cx| {
+        window.render_frame(cx);
+        line.exec_count() == 1 && window.try_find("serial-files-upload").is_some()
+    })
+    .await;
+    in_frame(cx, handle, |window, cx| {
+        assert!(window.find("serial-files-download").visible());
+        window.click("serial-files-upload", cx);
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(2), |_, _| {
+        line.exec_commands()
+            .iter()
+            .any(|command| command.contains("command -v rz"))
+    })
+    .await;
+    in_frame(cx, handle, |window, cx| {
+        window.click("serial-files-download", cx)
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, cx| {
+        window.render_frame(cx);
+        window
+            .try_find(serial_entry("/home/root/logs"))
+            .is_some_and(|entry| entry.visible())
+    })
+    .await;
+    in_frame(cx, handle, |window, cx| {
+        window.click("serial-download", cx);
+        window.click(serial_entry("/home/root/logs"), cx);
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, cx| {
+        window.render_frame(cx);
+        window.find("serial-directory-path").value() == Some("/home/root/logs")
+    })
+    .await;
+    in_frame(cx, handle, |window, cx| {
+        assert!(window.find("serial-directory-empty").visible());
+        window.click("serial-directory-up", cx);
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, cx| {
+        window.render_frame(cx);
+        window
+            .try_find(serial_entry("/home/root/a'b $HOME.log"))
+            .is_some_and(|entry| entry.visible())
+    })
+    .await;
+    in_frame(cx, handle, |window, cx| {
+        window.click(serial_entry("/home/root/a'b $HOME.log"), cx);
+    });
+    in_frame(cx, handle, |window, cx| {
+        assert_ne!(window.find("serial-download").disabled(), Some(true));
+        window.click("serial-download", cx);
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(2), |_, _| {
+        line.exec_commands()
+            .iter()
+            .any(|command| command.contains("sz -- '/home/root/a'\\''b $HOME.log'"))
+    })
+    .await;
+    assert!(line.sftp_opens().is_empty());
+}
+
+#[gpui_kit::test]
+async fn serial_file_browser_can_retry_errors_and_reject_stale_selections(cx: &mut TestAppContext) {
+    use shellrs::app::DownloadSerialFile;
+    let (mut store, id) = serial_store();
+    let mut draft = store.host(id).unwrap().draft();
+    let mut settings = draft.protocol.serial().unwrap();
+    settings.linux_shell = true;
+    draft.protocol = Protocol::Serial(settings);
+    store.update_unnotified(id, draft);
+    let root = serial_directory("/home/root", &[("d", "logs"), ("f", "device.log")]);
+    let line = Arc::new(FakeTerminalFactory::answering(&[
+        "Permission denied",
+        &root,
+    ]));
+    let (handle, workspace) = open_workspace_with_terminals(
+        cx,
+        store,
+        Arc::new(FakeTerminalFactory::default()),
+        Arc::new(FixedSerialTerminalTransportProvider::new(line.clone())),
+    );
+    connect(cx, handle, id).await;
+    in_frame(cx, handle, |window, cx| {
+        window.dispatch_action(Box::new(DownloadSerialFile(RemoteTerminalId(1))), cx)
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, cx| {
+        window.render_frame(cx);
+        window.try_find("serial-directory-error").is_some()
+    })
+    .await;
+    in_frame(cx, handle, |window, cx| {
+        window.click("serial-download", cx);
+        window.click("serial-directory-refresh", cx);
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, cx| {
+        window.render_frame(cx);
+        window
+            .try_find(serial_entry("/home/root/device.log"))
+            .is_some_and(|entry| entry.visible())
+    })
+    .await;
+    in_frame(cx, handle, |window, cx| {
+        window
+            .within("serial-download-browser")
+            .click("serial-file-search", cx);
+        window.input("device", cx);
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, cx| {
+        window.render_frame(cx);
+        window.try_find(serial_entry("/home/root/logs")).is_none()
+    })
+    .await;
+    in_frame(cx, handle, |window, cx| {
+        window.click(serial_entry("/home/root/device.log"), cx)
+    });
+    cx.update(|cx| {
+        let view = workspace
+            .read(cx)
+            .remote_terminal(RemoteTerminalId(1))
+            .unwrap()
+            .read(cx)
+            .terminal()
+            .clone();
+        view.update(cx, |view, cx| view.restart_with_factory(line.clone(), cx));
+    });
+    in_frame(cx, handle, |window, cx| window.click("serial-download", cx));
+    in_frame(cx, handle, |window, cx| {
+        assert!(window.find("serial-download-browser").visible());
+        assert!(window.find("serial-directory-error").visible());
+        window.press("escape", cx);
+    });
+    assert!(
+        !line
+            .exec_commands()
+            .iter()
+            .any(|command| command.contains("command -v sz"))
+    );
 }
 
 #[gpui_kit::test]

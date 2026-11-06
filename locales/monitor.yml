@@ -1,4 +1,56 @@
 _version: 2
+monitor.route.channel:
+  zh-CN: 监控采集通道
+  en: Monitor channel
+monitor.route.auto:
+  zh-CN: 自动（SSH → ADB → 串口）
+  en: Auto (SSH → ADB → Serial)
+monitor.route.serial:
+  zh-CN: 串口空闲采集
+  en: Serial when idle
+monitor.route.adb_device:
+  zh-CN: ADB 序列号（可选）
+  en: ADB serial number (optional)
+monitor.route.adb_auto:
+  zh-CN: 留空按开发板身份自动匹配
+  en: Match the board identity automatically
+monitor.route.ssh_host:
+  zh-CN: SSH 采集主机
+  en: SSH monitor host
+monitor.route.ssh_auto:
+  zh-CN: 自动匹配已保存的 SSH 主机
+  en: Match a saved SSH host
+monitor.route.missing_host:
+  zh-CN: 原 SSH 主机已删除，请重新选择
+  en: SSH host removed; choose another
+monitor.route.config_note:
+  zh-CN: 按开发板启动标识校验。SSH 复用已保存凭据；未知密钥需先连接确认。
+  en: Checks the board boot identity. SSH uses saved credentials; connect first to trust an unknown host key.
+monitor.route.adb_unmatched:
+  zh-CN: 未找到唯一匹配的 ADB 设备。请检查连接，或在编辑主机中指定序列号。
+  en: No unique matching ADB device. Check the connection or specify its serial number in Edit host.
+monitor.route.ssh_unavailable:
+  zh-CN: SSH 采集不可用。请配置对应的 SSH 主机并先验证登录。
+  en: SSH monitoring is unavailable. Configure the matching SSH host and verify its login first.
+monitor.route.unavailable:
+  zh-CN: 指定的监控通道不可用，请检查主机配置。
+  en: The selected monitor channel is unavailable. Check the host configuration.
+monitor.route.paused:
+  zh-CN: "终端忙碌，已暂停采集；空闲后恢复。上次更新：%{time}"
+  en: "Terminal busy; monitoring resumes when idle. Last update: %{time}"
+monitor.route.paused_short:
+  zh-CN: 已暂停
+  en: Paused
+monitor.route.live:
+  zh-CN: 采集中
+  en: Sampling
+
+monitor.hardware.title:
+  zh-CN: 硬件带宽
+  en: Hardware bandwidth
+monitor.hardware.channels:
+  zh-CN: 显示项目
+  en: Channels
 
 # 系统监控: a Linux host's CPU, memory, network and disks.
 

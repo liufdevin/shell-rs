@@ -1093,6 +1093,7 @@ impl HostData {
                         fresh.os = old.os;
                         fresh.sidebar_tool = old.sidebar_tool.take();
                         fresh.log_enabled = old.log_enabled;
+                        fresh.monitor = old.monitor.clone();
                         fresh.log_directory = old.log_directory.take();
                         fresh.auto_reconnect = old.auto_reconnect;
                         fresh.reconnect_delay_secs = old.reconnect_delay_secs;

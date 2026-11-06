@@ -45,13 +45,23 @@ const DISKS: &str = "echo @@df; df -kPl 2>/dev/null || df -kP 2>/dev/null; ";
 /// One line, in single quotes for `sh -c`, so that whatever the login shell
 /// is (bash, zsh, fish, csh) it hands the script to `sh` untouched: the
 /// script has no single quote, and no `!` for csh to expand.
+#[cfg(test)]
 pub fn command(parts: Parts) -> String {
+    command_with_hardware(parts, false)
+}
+
+pub fn command_with_hardware(parts: Parts, hardware: bool) -> String {
     format!(
-        "sh -c 'export LC_ALL=C; if test -r /proc/stat; then {}{}{}\
+        "sh -c 'export LC_ALL=C; if test -r /proc/stat; then {}{}{}{}\
          else echo @@unsupported; uname -s; fi'",
         if parts.system { SYSTEM } else { "" },
         LOAD,
         if parts.disks { DISKS } else { "" },
+        if hardware {
+            super::hardware::COMMAND
+        } else {
+            ""
+        },
     )
 }
 
@@ -109,6 +119,9 @@ pub fn parse(output: &str) -> Parsed {
         disks: sections
             .contains_key("df")
             .then(|| parse_disks(section("df"))),
+        hardware: sections
+            .contains_key("mtop")
+            .then(|| super::hardware::parse(&section("mtop").join("\n"))),
     }))
 }
 

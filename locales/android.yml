@@ -1,0 +1,94 @@
+_version: 2
+android.title:
+  zh-CN: ADB 设备
+  en: ADB devices
+android.select:
+  zh-CN: 选择设备…
+  en: Select a device…
+android.refresh:
+  zh-CN: 检测设备
+  en: Detect devices
+android.scanning:
+  zh-CN: 正在检测设备及 Android 功能…
+  en: Checking devices and Android capabilities…
+android.unsupported:
+  zh-CN: 此设备不支持投屏功能
+  en: This device does not support screen mirroring.
+android.sdk:
+  zh-CN: "Android API %{sdk}"
+  en: "Android API %{sdk}"
+android.mirror:
+  zh-CN: 镜像投屏
+  en: Screen mirroring
+android.start_mirror:
+  zh-CN: 开始投屏…
+  en: Start mirroring…
+android.stop_mirror:
+  zh-CN: 停止投屏
+  en: Stop mirroring
+android.choose_scrcpy:
+  zh-CN: 选择 scrcpy…
+  en: Choose scrcpy…
+android.scrcpy_missing:
+  zh-CN: 未找到 scrcpy。请安装完整工具包并加入 PATH、放在程序旁的 scrcpy 目录，或选择其中的 scrcpy 可执行文件。
+  en: scrcpy was not found. Install the complete bundle in PATH or the app's scrcpy folder, or choose its executable.
+android.mirror_note:
+  zh-CN: 独立窗口、仅镜像、不传音频。关闭此面板不停止投屏，退出 ShellLF 会停止。
+  en: Separate window, view only, without audio. Mirroring continues when this panel closes and stops when ShellLF exits.
+android.mirroring:
+  zh-CN: 投屏进程运行中
+  en: Mirroring process is running
+android.starting:
+  zh-CN: 正在启动投屏…
+  en: Starting mirroring…
+android.install:
+  zh-CN: 安装 APK…
+  en: Install APK…
+android.apps:
+  zh-CN: 启动应用
+  en: Launch an app
+android.apps_hint:
+  zh-CN: 搜索已安装的应用包名…
+  en: Search installed packages…
+android.load_apps:
+  zh-CN: 读取应用
+  en: Load apps
+android.launch:
+  zh-CN: 启动
+  en: Launch
+android.package_note:
+  zh-CN: 可选择或填写包名；无桌面启动入口的应用无法直接启动。
+  en: Select or enter a package name. Apps without a launcher activity cannot be opened directly.
+android.working:
+  zh-CN: 正在处理，请稍候…
+  en: Working…
+android.installed:
+  zh-CN: APK 安装成功。
+  en: APK installed successfully.
+android.launched:
+  zh-CN: 应用已启动。
+  en: App launched.
+android.apps_loaded:
+  zh-CN: 应用列表已更新。
+  en: App list updated.
+android.cancelled:
+  zh-CN: 已停止等待本次操作；安装已提交到设备时请刷新确认结果。
+  en: Stopped waiting. If installation reached the device, refresh to check the result.
+android.invalid_apk:
+  zh-CN: 请选择有效的 .apk 文件。
+  en: Select an existing .apk file.
+android.invalid_package:
+  zh-CN: 包名无效，例如 com.example.app。
+  en: Invalid package name, for example com.example.app.
+android.no_launcher:
+  zh-CN: 找不到此应用的桌面启动入口。
+  en: No launcher activity was found for this app.
+android.failed:
+  zh-CN: "操作失败：%{error}"
+  en: "Operation failed: %{error}"
+android.device_error:
+  zh-CN: "设备 %{device}：%{error}"
+  en: "Device %{device}: %{error}"
+android.close:
+  zh-CN: 关闭
+  en: Close

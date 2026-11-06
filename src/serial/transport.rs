@@ -1,8 +1,9 @@
+use std::collections::VecDeque;
 use std::io::{self, ErrorKind};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result, anyhow};
 use async_channel::Sender;
@@ -27,6 +28,11 @@ const WRITE_TIMEOUT: Duration = Duration::from_secs(10);
 /// How long 发送 Break holds the line, within what consoles look for.
 const BREAK_LENGTH: Duration = Duration::from_millis(300);
 
+enum SerialRead {
+    Output(Vec<u8>),
+    Lost(String),
+}
+
 /// Serial hosts' terminals on the ports of this computer.
 #[derive(Default)]
 pub struct SerialTransportProvider;
@@ -45,15 +51,20 @@ impl TerminalTransportFactory for SerialTransportFactory {
     fn create(&self) -> Box<dyn TerminalTransport> {
         Box::new(SerialTransport {
             line: self.line.clone(),
+            encoding: crate::host::TerminalEncoding::Utf8,
         })
     }
 }
 
 struct SerialTransport {
     line: SerialLine,
+    encoding: crate::host::TerminalEncoding,
 }
 
 impl TerminalTransport for SerialTransport {
+    fn set_encoding(&mut self, encoding: crate::host::TerminalEncoding) {
+        self.encoding = encoding;
+    }
     fn run(
         self: Box<Self>,
         _: TerminalSize,
@@ -62,7 +73,14 @@ impl TerminalTransport for SerialTransport {
     ) -> Result<()> {
         let device = self.line.device.as_str();
         let port = open(&self.line).map_err(|error| anyhow!(open_error(device, &error)))?;
-        serve(Arc::new(port), device, commands, &events)
+        serve_shell(
+            Arc::new(port),
+            device,
+            commands,
+            &events,
+            crate::terminal::ShellQuery::new(self.line.settings.linux_shell, self.encoding),
+            self.line.settings.baud,
+        )
     }
 }
 
@@ -133,72 +151,163 @@ fn open_error(device: &str, error: &io::Error) -> SharedString {
 
 /// Carry the bytes between the terminal and `port` until the terminal shuts
 /// down or the port goes away, say with its USB cable.
+#[cfg(all(test, unix))]
 fn serve(
     port: Arc<SerialPort>,
     device: &str,
     commands: mpsc::Receiver<TerminalTransportCommand>,
     events: &Sender<TerminalTransportEvent>,
 ) -> Result<()> {
+    serve_shell(
+        port,
+        device,
+        commands,
+        events,
+        crate::terminal::ShellQuery::new(false, crate::host::TerminalEncoding::Utf8),
+        115200,
+    )
+}
+
+fn serve_shell(
+    port: Arc<SerialPort>,
+    device: &str,
+    commands: mpsc::Receiver<TerminalTransportCommand>,
+    events: &Sender<TerminalTransportEvent>,
+    mut shell: crate::terminal::ShellQuery,
+    baud: u32,
+) -> Result<()> {
     // Set by the reader when the port is gone, and by the command loop when
     // the terminal shuts down.
     let stop = Arc::new(AtomicBool::new(false));
+    let (raw, received) = mpsc::sync_channel(32);
     let reader = {
         let port = port.clone();
         let stop = stop.clone();
-        let events = events.clone();
         let device = device.to_owned();
         thread::Builder::new()
             .name("shellrs-serial-reader".into())
-            .spawn(move || read(&port, &device, &stop, &events))
+            .spawn(move || read(&port, &device, &stop, raw))
             .context(t!("serial.reader_thread"))?
     };
 
     send_event(events, TerminalTransportEvent::Started);
-    while !stop.load(Ordering::Acquire) {
-        match commands.recv_timeout(Duration::from_millis(20)) {
-            Ok(
-                TerminalTransportCommand::Write(bytes) | TerminalTransportCommand::WriteData(bytes),
-            ) => {
-                if let Err(error) = port.write_all(&bytes)
-                    && !stop.swap(true, Ordering::AcqRel)
-                {
-                    send_event(
-                        events,
-                        TerminalTransportEvent::Failed(
-                            t!("serial.write_error", device = device, error = error).into(),
-                        ),
-                    );
+    let mut lines = VecDeque::new();
+    let mut next_line = Instant::now();
+    let mut pending_input = Vec::new();
+    let result = (|| -> Result<()> {
+        while !stop.load(Ordering::Acquire) {
+            while let Ok(event) = received.try_recv() {
+                match event {
+                    SerialRead::Output(bytes) => {
+                        let visible = shell.output(&bytes);
+                        if !visible.is_empty()
+                            && !send_event(events, TerminalTransportEvent::Output(visible))
+                        {
+                            stop.store(true, Ordering::Release);
+                            break;
+                        }
+                    }
+                    SerialRead::Lost(error) => {
+                        send_event(events, TerminalTransportEvent::Failed(error));
+                        stop.store(true, Ordering::Release);
+                        break;
+                    }
                 }
             }
-            Ok(TerminalTransportCommand::SendBreak) => send_break(&port),
-            Ok(TerminalTransportCommand::Shutdown) | Err(mpsc::RecvTimeoutError::Disconnected) => {
-                stop.store(true, Ordering::Release);
+            if stop.load(Ordering::Acquire) {
+                break;
             }
-            // A serial line has no size, and nothing runs beside it.
-            Ok(_) | Err(mpsc::RecvTimeoutError::Timeout) => {}
+            shell.tick();
+            if !shell.busy() {
+                lines.clear();
+                if !pending_input.is_empty() {
+                    shell.input(&pending_input);
+                    port.write_all(&pending_input)?;
+                    pending_input.clear();
+                }
+            }
+            if let Some(script) = shell.poll() {
+                lines.extend(script);
+                next_line = Instant::now();
+            }
+            if Instant::now() >= next_line
+                && let Some(line) = lines.pop_front()
+            {
+                let line: Vec<u8> = line;
+                port.write_all(&line)?;
+                next_line = Instant::now()
+                    + Duration::from_millis(
+                        (line.len() as u64 * 12000 / u64::from(baud.max(1))).max(100),
+                    );
+            }
+            match commands.recv_timeout(Duration::from_millis(20)) {
+                Ok(TerminalTransportCommand::WriteData(bytes)) => {
+                    port.write_all(&bytes)?;
+                }
+                Ok(TerminalTransportCommand::Write(bytes)) => {
+                    if bytes.contains(&3) {
+                        pending_input.clear();
+                    }
+                    if !shell.input(&bytes) {
+                        pending_input.extend_from_slice(&bytes);
+                        continue;
+                    }
+                    if let Err(error) = port.write_all(&bytes)
+                        && !stop.swap(true, Ordering::AcqRel)
+                    {
+                        send_event(
+                            events,
+                            TerminalTransportEvent::Failed(
+                                t!("serial.write_error", device = device, error = error).into(),
+                            ),
+                        );
+                    }
+                }
+                Ok(TerminalTransportCommand::Exec(request)) => {
+                    if let Some(script) = shell.execute(request) {
+                        lines.extend(script);
+                        next_line = Instant::now();
+                    }
+                }
+                Ok(TerminalTransportCommand::Monitor(request)) => {
+                    if let Some(script) = shell.monitor(request) {
+                        lines.extend(script);
+                        next_line = Instant::now();
+                    }
+                }
+                Ok(TerminalTransportCommand::SerialTransfer(request)) => {
+                    if let Some(command) = shell.transfer(request) {
+                        port.write_all(&command)?;
+                    }
+                }
+                Ok(TerminalTransportCommand::SendBreak) => send_break(&port),
+                Ok(TerminalTransportCommand::Shutdown)
+                | Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    stop.store(true, Ordering::Release);
+                }
+                Ok(_) | Err(mpsc::RecvTimeoutError::Timeout) => {}
+            }
         }
-    }
+        Ok(())
+    })();
+    stop.store(true, Ordering::Release);
+    drop(received);
     let _ = reader.join();
-    Ok(())
+    result
 }
 
 /// Hand what comes in to the terminal until `stop`, or until the port goes
 /// away, which ends the terminal with why.
-fn read(
-    port: &SerialPort,
-    device: &str,
-    stop: &AtomicBool,
-    events: &Sender<TerminalTransportEvent>,
-) {
+fn read(port: &SerialPort, device: &str, stop: &AtomicBool, raw: mpsc::SyncSender<SerialRead>) {
     let mut buffer = [0_u8; 8192];
     while !stop.load(Ordering::Acquire) {
         let lost = match port.read(&mut buffer) {
             Ok(0) => t!("serial.lost", device = device),
             Ok(count) => {
-                if !send_event(
-                    events,
-                    TerminalTransportEvent::Output(buffer[..count].to_vec()),
-                ) {
+                if raw
+                    .send(SerialRead::Output(buffer[..count].to_vec()))
+                    .is_err()
+                {
                     break;
                 }
                 continue;
@@ -214,8 +323,8 @@ fn read(
             Err(error) => t!("serial.lost_error", device = device, error = error),
         };
         // Said once, unless the terminal was shutting down anyway.
-        if !stop.swap(true, Ordering::AcqRel) {
-            send_event(events, TerminalTransportEvent::Failed(lost.into()));
+        if !stop.load(Ordering::Acquire) {
+            let _ = raw.send(SerialRead::Lost(lost.into()));
         }
         break;
     }

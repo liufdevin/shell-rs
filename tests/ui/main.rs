@@ -8,6 +8,7 @@
 mod support;
 
 mod analytics;
+mod android;
 mod app_lock;
 mod cli;
 mod compose;

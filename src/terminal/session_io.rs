@@ -107,6 +107,7 @@ impl DailyLog {
 pub(super) struct TerminalOptions {
     pub encoding: crate::host::TerminalEncoding,
     pub remote: bool,
+    pub shared_shell: bool,
     pub serial: Option<(String, SerialDataModes)>,
     pub log: Option<DailyLog>,
     pub reconnect: TerminalConnectionSettings,

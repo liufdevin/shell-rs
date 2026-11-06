@@ -2,10 +2,13 @@
 //! and disks of the host of the SSH terminal in front, read over that
 //! terminal's own connection. Linux hosts only, for now.
 
+mod connection;
+mod hardware;
 mod linux;
 mod model;
 mod monitor_panel;
 
+pub use connection::{MonitorConnector, MonitorLink, SystemMonitorConnector};
 pub use monitor_panel::MonitorPanel;
 
 /// A part of the system monitor that is folded away until asked for.
@@ -15,4 +18,5 @@ pub enum MonitorDetail {
     Cores,
     /// Every network interface, not only the main one.
     Interfaces,
+    HardwareChannels,
 }

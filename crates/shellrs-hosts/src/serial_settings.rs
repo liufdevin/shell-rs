@@ -14,6 +14,7 @@ pub struct SerialSettings {
     pub parity: Parity,
     pub stop_bits: StopBits,
     pub flow: FlowControl,
+    pub linux_shell: bool,
 }
 
 /// 115200 8N1 without flow control, what most consoles use today.
@@ -25,6 +26,7 @@ impl Default for SerialSettings {
             parity: Parity::None,
             stop_bits: StopBits::One,
             flow: FlowControl::None,
+            linux_shell: false,
         }
     }
 }
@@ -183,6 +185,7 @@ mod tests {
             parity: Parity::Even,
             stop_bits: StopBits::Two,
             flow: FlowControl::RtsCts,
+            linux_shell: false,
         };
         assert_eq!(settings.summary(), "9600 7E2");
     }

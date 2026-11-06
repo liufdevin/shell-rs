@@ -173,6 +173,7 @@ impl TerminalPanel {
                 TerminalOptions {
                     encoding: host.terminal_encoding,
                     remote: true,
+                    shared_shell: protocol != ProtocolKind::Ssh,
                     serial: (protocol == ProtocolKind::Serial)
                         .then(|| (host.name.to_string(), serial_modes)),
                     log: host.log_enabled.then(|| {
@@ -291,7 +292,9 @@ impl TerminalPanel {
                         cx.emit(TerminalPanelEvent::FilesDropped(this.id, files.clone()));
                     }
                     // Only a local transport tells.
-                    TerminalEvent::WorkingDirectory(_) | TerminalEvent::InputRejected(_) => {}
+                    TerminalEvent::WorkingDirectory(_)
+                    | TerminalEvent::InputRejected(_)
+                    | TerminalEvent::ConnectSsh(_) => {}
                 },
             ),
         ];
@@ -337,7 +340,12 @@ impl TerminalPanel {
     /// Whether only the terminal runs on its connection: a link's, a
     /// Telnet host's or a serial host's.
     pub fn shell_only(&self) -> bool {
-        self.external || !self.host.is_ssh()
+        (self.external || self.host.is_serial())
+            && !self
+                .host
+                .protocol
+                .serial()
+                .is_some_and(|settings| settings.linux_shell)
     }
 
     pub fn tab_group(&self) -> Option<WeakEntity<TabGroup>> {

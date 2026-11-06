@@ -435,7 +435,9 @@ fn open_workspace_with_local_terminals(
 }
 
 #[gpui_kit::test]
-async fn creates_independent_local_terminals_from_button_and_shortcut(cx: &mut TestAppContext) {
+async fn creates_a_local_terminal_from_the_button_and_a_command_terminal_from_the_shortcut(
+    cx: &mut TestAppContext,
+) {
     let factory = Arc::new(FakeTerminalFactory::default());
     let (handle, workspace) = open_workspace_with_factory(cx, factory.clone());
 
@@ -469,7 +471,7 @@ async fn creates_independent_local_terminals_from_button_and_shortcut(cx: &mut T
     cx.wait_for(handle.into(), Duration::from_secs(2), |window, _| {
         window
             .try_find("status-connection")
-            .map(|element| element.label() == Some("运行中 本地终端"))
+            .map(|element| element.label() == Some("ShellLF 命令终端"))
             .unwrap_or(false)
             && window.try_find(("local-terminal", 2_u64)).is_some()
     })
@@ -480,7 +482,7 @@ async fn creates_independent_local_terminals_from_button_and_shortcut(cx: &mut T
         assert!(window.find(("local-terminal", 2_u64)).visible());
         assert_eq!(
             window.find("status-connection").label(),
-            Some("运行中 本地终端")
+            Some("ShellLF 命令终端")
         );
         window.click(("close-local-terminal", 2_u64), cx);
     })
@@ -498,7 +500,49 @@ async fn creates_independent_local_terminals_from_button_and_shortcut(cx: &mut T
         let workspace = workspace.read(cx);
         assert!(workspace.local_terminal(LocalTerminalId(1)).is_some());
         assert!(workspace.local_terminal(LocalTerminalId(2)).is_none());
-        assert_eq!(factory.starts.load(Ordering::SeqCst), 2);
+        assert_eq!(factory.starts.load(Ordering::SeqCst), 1);
+    });
+}
+
+#[gpui_kit::test]
+async fn command_terminal_ssh_opens_a_temporary_host_with_remote_tools(cx: &mut TestAppContext) {
+    let (handle, workspace) = open_workspace_with_store(cx, HostStore::empty());
+    in_frame(cx, handle, |window, cx| {
+        window.dispatch_action(Box::new(shellrs::app::NewCommandTerminal), cx)
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, cx| {
+        window.render_frame(cx);
+        window
+            .try_find("status-connection")
+            .is_some_and(|status| status.label() == Some("ShellLF 命令终端"))
+    })
+    .await;
+    in_frame(cx, handle, |window, cx| {
+        window.click(("local-terminal", 1_u64), cx);
+        window.input("ssh -p 2222 ubuntu@192.0.2.10", cx);
+        window.press("enter", cx);
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, cx| {
+        window.render_frame(cx);
+        window
+            .try_find("tool-services")
+            .is_some_and(|tool| tool.visible())
+    })
+    .await;
+    in_frame(cx, handle, |window, _| {
+        assert!(window.find("tool-files").visible());
+        assert!(window.find("tool-monitor").visible());
+        assert!(window.try_find(("local-terminal", 1_u64)).is_none());
+    });
+    cx.update(|cx| {
+        let workspace = workspace.read(cx);
+        let store = workspace.store().read(cx);
+        assert!(store.hosts().is_empty());
+        assert_eq!(store.temporary_hosts().len(), 1);
+        let host = &store.temporary_hosts()[0];
+        assert_eq!(host.address.as_ref(), "192.0.2.10");
+        assert_eq!(host.user.as_ref(), "ubuntu");
+        assert_eq!(host.port, 2222);
     });
 }
 
@@ -553,7 +597,10 @@ async fn ctrl_t_creates_a_local_terminal_while_other_control_keys_reach_the_shel
                     settings.shortcuts.set(
                         Shortcut::find("new-local-terminal").unwrap(),
                         "ctrl-t".into(),
-                    )
+                    );
+                    settings
+                        .shortcuts
+                        .disable(Shortcut::find("new-command-terminal").unwrap());
                 },
                 cx,
             )

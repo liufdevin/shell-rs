@@ -676,9 +676,25 @@ impl TerminalView {
         self.engine.read(cx).exec(command)
     }
 
+    pub fn monitor(
+        &self,
+        command: String,
+        cx: &App,
+    ) -> Option<std::sync::mpsc::Receiver<super::ExecResult>> {
+        self.engine.read(cx).monitor(command)
+    }
+
     /// Take up an `exec --terminal` run; see [`TerminalEngine::run_command`].
     pub fn run_command(&self, run: super::RunHandle, cx: &App) -> Result<(), super::RunFailure> {
         self.engine.read(cx).run_command(run)
+    }
+
+    pub fn serial_transfer(
+        &self,
+        command: String,
+        cx: &App,
+    ) -> Option<std::sync::mpsc::Receiver<super::ExecResult>> {
+        self.engine.read(cx).serial_transfer(command)
     }
 
     pub fn screen_text(&self, cx: &App) -> String {

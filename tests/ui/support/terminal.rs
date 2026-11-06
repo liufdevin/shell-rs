@@ -33,6 +33,7 @@ pub const RZ_STARTS: &[u8] = b"rz waiting to receive.**\x18B0100000023be50\r\x8a
 
 #[derive(Default)]
 pub struct FakeTerminalFactory {
+    pub monitor_busy: Arc<std::sync::atomic::AtomicBool>,
     pub starts: AtomicUsize,
     pub behavior: FakeBehavior,
     pub writes: Arc<Mutex<Vec<Vec<u8>>>>,
@@ -166,11 +167,13 @@ impl TerminalTransportFactory for FakeTerminalFactory {
             sftp_opens: self.sftp_opens.clone(),
             breaks: self.breaks.clone(),
             data: self.data.clone(),
+            monitor_busy: self.monitor_busy.clone(),
         })
     }
 }
 
 pub struct FakeTerminalTransport {
+    pub monitor_busy: Arc<std::sync::atomic::AtomicBool>,
     pub run: usize,
     pub behavior: FakeBehavior,
     pub writes: Arc<Mutex<Vec<Vec<u8>>>>,
@@ -224,6 +227,11 @@ impl TerminalTransport for FakeTerminalTransport {
         let mut line = Vec::new();
         while let Ok(command) = commands.recv() {
             match command {
+                TerminalTransportCommand::Monitor(request)
+                    if self.monitor_busy.load(Ordering::Acquire) =>
+                {
+                    let _ = request.reply.send(Err("shelllf:monitor-paused".into()));
+                }
                 TerminalTransportCommand::Write(bytes) => {
                     self.writes_by_run
                         .lock()
@@ -261,7 +269,8 @@ impl TerminalTransport for FakeTerminalTransport {
                         .unwrap_or_else(|error| error.into_inner())
                         .push(size);
                 }
-                TerminalTransportCommand::Exec(request) => {
+                TerminalTransportCommand::Exec(request)
+                | TerminalTransportCommand::Monitor(request) => {
                     self.exec_commands
                         .lock()
                         .unwrap_or_else(|error| error.into_inner())
@@ -278,6 +287,10 @@ impl TerminalTransport for FakeTerminalTransport {
                     if let Some(output) = output {
                         let _ = request.reply.send(Ok(output));
                     }
+                }
+                TerminalTransportCommand::SerialTransfer(request) => {
+                    self.exec_commands.lock().unwrap().push(request.command);
+                    let _ = request.reply.send(Ok(String::new()));
                 }
                 TerminalTransportCommand::OpenSftp(request) => {
                     self.sftp_opens

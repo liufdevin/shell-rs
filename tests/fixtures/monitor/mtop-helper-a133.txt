@@ -1,0 +1,14 @@
+set devfreq governor node 0444!
+
+iter: 1
+delay: 1.000000
+unit: MB
+output:
+
+Max:158
+total     caltot    cpu       gpu       de0       de1       ve        csi       isp       g2d       eink
+158.00    157.00    20.00     0.00      137.00    0.00      0.00      0.00      0.00      0.00      0.00
+156.00    155.00    18.00     0.00      137.00    0.00      0.00      0.00      0.00      0.00      0.00
+156.00    155.00    18.00     0.00      137.00    0.00      0.00      0.00      0.00      0.00      0.00
+153.00    152.00    15.00     0.00      137.00    0.00      0.00      0.00      0.00      0.00      0.00
+restore devfreq governor node 0644! signal_num 2

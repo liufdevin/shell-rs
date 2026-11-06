@@ -157,8 +157,8 @@ settings.interaction.hide_ai_citations:
   zh-CN: 隐藏 AI 引用标记
   en: Hide AI citation markers
 settings.interaction.hide_ai_citations_description:
-  zh-CN: 仅在终端网格中隐藏完整的 cite 引用串，保留列宽。复制、搜索和日志仍使用原文；关闭可恢复原始显示。默认关闭。
-  en: Hide complete cite markers in the terminal grid without moving columns. Copying, search and logs still use the original text. Turn off to restore raw display. Off by default.
+  zh-CN: 仅隐藏显示，复制、搜索和日志保留原文。
+  en: Hide on screen only; copying, search and logs keep the original text.
 settings.interaction.hide_ai_citations_keywords:
   zh-CN: Codex,AI,引用,cite,空格,乱码
   en: Codex,AI,citation,cite,space,glyph
@@ -166,20 +166,20 @@ settings.interaction.copy_on_select:
   zh-CN: 选中复制
   en: Copy on select
 settings.interaction.copy_on_select_description:
-  zh-CN: 选中文本自动进入系统剪贴板，无需按快捷键。
-  en: Selected text is copied to the clipboard without pressing a shortcut.
+  zh-CN: 选中文字即复制。
+  en: Copy text when selected.
 settings.interaction.right_click:
   zh-CN: 右键行为
   en: Right-click
 settings.interaction.right_click_description:
-  zh-CN: 设置鼠标右键在终端中的行为。
-  en: What right-clicking in a terminal does.
+  zh-CN: 选择右键操作。
+  en: Choose the right-click action.
 settings.interaction.middle_click:
   zh-CN: 中键行为
   en: Middle-click
 settings.interaction.middle_click_description:
-  zh-CN: 选择粘贴或回车时，优先使用此设置；交给终端程序时由程序处理。
-  en: Paste and Enter override the terminal program’s mouse handling. Choose Application to let the program handle it.
+  zh-CN: 选择中键操作，或交给终端程序。
+  en: Choose an action or let the terminal program handle it.
 settings.mouse.enter:
   zh-CN: 回车
   en: Enter
@@ -199,8 +199,8 @@ settings.interaction.cursor_style:
   zh-CN: 光标样式
   en: Cursor style
 settings.interaction.cursor_style_description:
-  zh-CN: 选择光标的显示形状。
-  en: Choose the shape of the cursor.
+  zh-CN: 选择光标形状。
+  en: Choose the cursor shape.
 settings.interaction.cursor_blinking:
   zh-CN: 光标闪烁
   en: Cursor blinking

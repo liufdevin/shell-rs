@@ -91,7 +91,7 @@ Reads one JSON object from stdin. Every field may be left out; `update` changes 
               credential, password and route (implies protocol \"serial\"):
               {\"device\": \"/dev/ttyUSB0\" | \"COM3\", \"baud\": 115200, \"data_bits\": 5-8,
                \"parity\": \"none\" | \"odd\" | \"even\", \"stop_bits\": 1 | 2,
-               \"flow_control\": \"none\" | \"rts_cts\" | \"xon_xoff\"}   (device required to create)
+               \"flow_control\": \"none\" | \"rts_cts\" | \"xon_xoff\", \"linux_shell\": true | false}   (device required to create)
 What `shellrs hosts show <ID> --json` prints can be edited and passed back as it is.";
 
 const CREDENTIAL_FIELDS: &str = "\

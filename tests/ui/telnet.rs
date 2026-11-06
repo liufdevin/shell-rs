@@ -236,7 +236,7 @@ async fn an_open_telnet_terminal_keeps_its_prompts_and_a_new_one_takes_the_new_o
 }
 
 #[gpui_kit::test]
-async fn a_telnet_terminal_has_no_sftp_and_only_snippets_beside_it(cx: &mut TestAppContext) {
+async fn a_telnet_terminal_offers_linux_tools_but_not_sftp(cx: &mut TestAppContext) {
     let (store, id) = telnet_store();
     let line = Arc::new(FakeTerminalFactory::default());
     let (handle, _) = open_workspace_with_protocols(
@@ -255,15 +255,11 @@ async fn a_telnet_terminal_has_no_sftp_and_only_snippets_beside_it(cx: &mut Test
             Some("Telnet")
         );
         assert!(window.find("tool-snippets").visible());
-        for tool in [
-            "tool-history",
-            "tool-files",
-            "tool-tmux",
-            "tool-processes",
-            "tool-monitor",
-        ] {
+        for tool in ["tool-history", "tool-files", "tool-tmux"] {
             assert!(window.try_find(tool).is_none(), "{tool}");
         }
+        assert!(window.find("tool-processes").visible());
+        assert!(window.find("tool-monitor").visible());
     });
 
     in_frame(cx, handle, |window, cx| {

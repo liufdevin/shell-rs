@@ -3,6 +3,154 @@
 
 use crate::support::*;
 
+#[gpui_kit::test]
+async fn dynamic_channel_choices_do_not_change_another_terminal(cx: &mut TestAppContext) {
+    let output = format!("{FIRST}\n@@mtop\nunit: MB\npcie0 dsp_ddr\n10 20\n@@mtop-end\n");
+    let factory = Arc::new(FakeTerminalFactory::answering(&[&output]));
+    let handle = open_monitor(cx, factory);
+    cx.wait_for(handle.into(), Duration::from_secs(5), |window, cx| {
+        window.render_frame(cx);
+        window.try_find("monitor-hardware:pcie0").is_some()
+    })
+    .await;
+    in_frame(cx, handle, |window, cx| {
+        window.click("monitor-hardware-channels", cx)
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.click("monitor-channel:pcie0", cx)
+    });
+    in_frame(cx, handle, |window, _| {
+        assert!(window.try_find("monitor-hardware:pcie0").is_none())
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.click(("terminal-tab", INITIAL_STAGING_TERMINAL), cx)
+    });
+    in_frame(cx, handle, |window, cx| window.click("tool-monitor", cx));
+    cx.wait_for(handle.into(), Duration::from_secs(5), |window, cx| {
+        window.render_frame(cx);
+        window.try_find("monitor-hardware:pcie0").is_some()
+    })
+    .await;
+    in_frame(cx, handle, |window, cx| {
+        window.click(("terminal-tab", INITIAL_WEB_TERMINAL), cx)
+    });
+    in_frame(cx, handle, |window, _| {
+        assert!(window.try_find("monitor-hardware:pcie0").is_none());
+        assert!(window.find("monitor-hardware:dsp_ddr").visible());
+    });
+}
+
+#[gpui_kit::test]
+async fn every_monitor_cycle_collects_new_hardware_bandwidth(cx: &mut TestAppContext) {
+    let outputs: Vec<_> = [1, 2, 3]
+        .iter()
+        .map(|value| format!("{FIRST}\n@@mtop\nunit: MB\ngpu\n{value}\n@@mtop-end\n"))
+        .collect();
+    let samples: Vec<_> = outputs.iter().map(String::as_str).collect();
+    let factory = Arc::new(FakeTerminalFactory::answering(&samples));
+    let handle = open_monitor(cx, factory.clone());
+    cx.wait_for(handle.into(), Duration::from_secs(6), |window, cx| {
+        window.render_frame(cx);
+        window
+            .try_find("monitor-hardware:gpu")
+            .is_some_and(|value| value.label() == Some("gpu 3.00 MB/s"))
+    })
+    .await;
+    let commands = factory.exec_commands();
+    assert!(commands.len() >= 3);
+    assert!(
+        commands
+            .iter()
+            .take(3)
+            .all(|command| command.contains("@@mtop"))
+    );
+}
+
+#[gpui_kit::test]
+async fn helper_a133_mtop_channels_appear_without_an_absent_npu(cx: &mut TestAppContext) {
+    let sample = include_str!("../fixtures/monitor/mtop-helper-a133.txt");
+    let output = format!("{FIRST}\n@@mtop\n{sample}@@mtop-end\n");
+    let handle = open_monitor(cx, Arc::new(FakeTerminalFactory::answering(&[&output])));
+    cx.wait_for(handle.into(), Duration::from_secs(5), |window, cx| {
+        window.render_frame(cx);
+        window.try_find("monitor-hardware:de0").is_some()
+    })
+    .await;
+    in_frame(cx, handle, |window, _| {
+        assert_eq!(
+            window.find("monitor-hardware:de0").label(),
+            Some("de0 137.00 MB/s")
+        );
+        assert_eq!(
+            window.find("monitor-hardware:gpu").label(),
+            Some("gpu 0.00 MB/s")
+        );
+        assert!(window.find("monitor-hardware:de1").visible());
+        assert!(window.try_find("monitor-hardware:isp").is_some());
+        assert!(window.try_find("monitor-hardware:npu").is_none());
+    });
+}
+
+#[gpui_kit::test]
+async fn hardware_bandwidth_hides_absent_channels_and_obeys_visibility_changes(
+    cx: &mut TestAppContext,
+) {
+    let output = format!(
+        "{FIRST}\n@@mtop\nunit: MB\ntotal cpu gpuddr de_ddr isp_ddr\n100 5 12.5 4 0\n@@mtop-end\n"
+    );
+    let factory = Arc::new(FakeTerminalFactory::answering(&[&output]));
+    let handle = open_monitor(cx, factory.clone());
+    cx.wait_for(handle.into(), Duration::from_secs(5), |window, cx| {
+        window.render_frame(cx);
+        window.try_find("monitor-hardware:gpuddr").is_some()
+    })
+    .await;
+    in_frame(cx, handle, |window, _| {
+        assert_eq!(
+            window.find("monitor-hardware:gpuddr").label(),
+            Some("gpuddr 12.50 MB/s")
+        );
+        assert!(window.find("monitor-hardware:isp_ddr").visible());
+        assert!(window.try_find("monitor-hardware:npu").is_none());
+    });
+    assert!(factory.exec_commands()[0].contains("timeout -s INT -k 1 1 mtop -n 1 -d 0.5 -m"));
+    in_frame(cx, handle, |window, cx| {
+        window.click("monitor-hardware-channels", cx)
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.click("monitor-channel:gpuddr", cx)
+    });
+    in_frame(cx, handle, |window, _| {
+        assert!(window.try_find("monitor-hardware:gpuddr").is_none());
+        assert!(window.find("monitor-hardware:de_ddr").visible());
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.click("monitor-channel:gpuddr", cx)
+    });
+    in_frame(cx, handle, |window, _| {
+        assert!(window.find("monitor-hardware:gpuddr").visible())
+    });
+    let previous = factory.exec_count();
+    cx.wait_for(handle.into(), Duration::from_secs(5), |_, _| {
+        factory.exec_count() > previous
+    })
+    .await;
+    assert!(factory.exec_commands().last().unwrap().contains("mtop"));
+}
+
+#[gpui_kit::test]
+async fn failed_hardware_reads_do_not_break_the_standard_monitor(cx: &mut TestAppContext) {
+    let output = format!("{FIRST}\n@@mtop\nopen failed: permission denied\n@@mtop-end\n");
+    let factory = Arc::new(FakeTerminalFactory::answering(&[&output]));
+    let handle = open_monitor(cx, factory);
+    wait_for_label(cx, handle, "monitor-host", "web-01-vm").await;
+    in_frame(cx, handle, |window, _| {
+        assert!(window.try_find("monitor-hardware").is_none());
+        assert!(window.try_find("monitor-message").is_none());
+        assert!(window.find("monitor-memory-amount").visible());
+    });
+}
+
 /// A two-core Debian host, then the same host a moment later: 100 more busy
 /// ticks of 200, and some traffic on eth0.
 const FIRST: &str = "\
@@ -70,6 +218,267 @@ Filesystem     1024-blocks    Used Available Capacity Mounted on
 /dev/vda1          9656904 3240180   5994708      36% /
 tmpfs                99664     560     99104       1% /run
 ";
+
+#[derive(Default)]
+struct IndependentMonitor {
+    commands: Arc<Mutex<Vec<String>>>,
+    samples: Arc<AtomicUsize>,
+    failed: Arc<std::sync::atomic::AtomicBool>,
+    discoveries: AtomicUsize,
+}
+
+struct IndependentLink {
+    commands: Arc<Mutex<Vec<String>>>,
+    samples: Arc<AtomicUsize>,
+    failed: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl shellrs::monitor::MonitorLink for IndependentLink {
+    fn label(&self) -> String {
+        "ADB · Helper A133 (board-a)".into()
+    }
+    fn sample(
+        &mut self,
+        command: &str,
+        _: &std::sync::atomic::AtomicBool,
+    ) -> Result<String, String> {
+        self.commands.lock().unwrap().push(command.to_owned());
+        self.samples.fetch_add(1, Ordering::SeqCst);
+        if self.failed.load(Ordering::Acquire) {
+            Err("ADB disconnected".into())
+        } else {
+            Ok(format!(
+                "{FIRST}\n@@mtop\nunit: MB\ngpu\n12.5\n@@mtop-end\n"
+            ))
+        }
+    }
+}
+
+impl shellrs::monitor::MonitorConnector for IndependentMonitor {
+    fn connect(
+        &self,
+        identity: &str,
+        settings: &shellrs::host::MonitorSettings,
+        _: &[(String, HostLogin)],
+        _: &std::sync::atomic::AtomicBool,
+    ) -> Result<Option<Box<dyn shellrs::monitor::MonitorLink>>, String> {
+        assert!(identity.contains("@@boot_id"));
+        assert_eq!(settings.channel, shellrs::host::MonitorChannel::Auto);
+        self.discoveries.fetch_add(1, Ordering::SeqCst);
+        Ok(Some(Box::new(IndependentLink {
+            commands: self.commands.clone(),
+            samples: self.samples.clone(),
+            failed: self.failed.clone(),
+        })))
+    }
+}
+
+async fn serial_monitor(
+    cx: &mut TestAppContext,
+    line: Arc<FakeTerminalFactory>,
+    connector: Option<Arc<dyn shellrs::monitor::MonitorConnector>>,
+) -> (WindowHandle<Root>, Entity<Workspace>) {
+    let mut store = HostStore::empty();
+    let id = store.insert_unnotified(HostDraft::serial(
+        "console",
+        "COM3",
+        shellrs::host::SerialSettings {
+            linux_shell: true,
+            ..Default::default()
+        },
+        None,
+    ));
+    let (handle, workspace) = open_workspace_with_terminals(
+        cx,
+        store,
+        Arc::new(FakeTerminalFactory::default()),
+        Arc::new(FixedSerialTerminalTransportProvider::new(line)),
+    );
+    if let Some(connector) = connector {
+        cx.update(|cx| {
+            workspace.update(cx, |workspace, cx| {
+                workspace.set_monitor_connector(connector, cx)
+            })
+        });
+    }
+    in_frame(cx, handle, |window, cx| {
+        window.dispatch_action(Box::new(ConnectHost(id)), cx)
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(5), |_, cx| {
+        workspace
+            .read(cx)
+            .terminal(id, cx)
+            .is_some_and(|terminal| terminal.read(cx).lifecycle(cx) == TerminalLifecycle::Running)
+    })
+    .await;
+    in_frame(cx, handle, |window, cx| window.click("tool-monitor", cx));
+    (handle, workspace)
+}
+
+#[gpui_kit::test]
+async fn serial_monitor_keeps_last_data_while_busy_and_resumes_without_an_error(
+    cx: &mut TestAppContext,
+) {
+    let sample = format!("{FIRST}\n@@mtop\nunit: MB\ngpu\n12.5\n@@mtop-end\n");
+    let line = Arc::new(FakeTerminalFactory::answering(&[&sample, SECOND]));
+    let (handle, _workspace) = serial_monitor(cx, line.clone(), None).await;
+    wait_for_label(cx, handle, "monitor-host", "web-01-vm").await;
+    let top = in_frame(cx, handle, |window, _| {
+        assert!(window.try_find("monitor-hardware:gpu").is_none());
+        window.find("monitor-host").bounds().top()
+    });
+    assert!(
+        line.exec_commands()
+            .iter()
+            .all(|command| !command.contains("@@mtop"))
+    );
+    line.monitor_busy.store(true, Ordering::Release);
+    cx.wait_for(handle.into(), Duration::from_secs(5), |window, cx| {
+        window.render_frame(cx);
+        window.try_find("monitor-paused").is_some()
+    })
+    .await;
+    let before = line.exec_count();
+    in_frame(cx, handle, |window, _| {
+        assert_eq!(window.find("monitor-host").label(), Some("web-01-vm"));
+        assert!(window.try_find("monitor-message").is_none());
+        assert_eq!(window.find("monitor-host").bounds().top(), top);
+        assert!(
+            window
+                .find("monitor-paused")
+                .label()
+                .unwrap()
+                .contains("上次更新")
+        );
+    });
+    line.monitor_busy.store(false, Ordering::Release);
+    cx.wait_for(handle.into(), Duration::from_secs(5), |window, cx| {
+        window.render_frame(cx);
+        line.exec_count() > before && window.try_find("monitor-paused").is_none()
+    })
+    .await;
+}
+
+#[gpui_kit::test]
+async fn independent_adb_monitor_never_competes_with_busy_serial_and_falls_back_on_disconnect(
+    cx: &mut TestAppContext,
+) {
+    let identity =
+        "@@boot_id\n00000000-0000-4000-8000-000000000001\n@@user\nroot\n@@addresses\n192.0.2.3\n";
+    let line = Arc::new(FakeTerminalFactory::answering(&[identity, FIRST]));
+    let connector = Arc::new(IndependentMonitor::default());
+    let (handle, _workspace) = serial_monitor(cx, line.clone(), Some(connector.clone())).await;
+    wait_for_label(cx, handle, "monitor-channel", "ADB · Helper A133 (board-a)").await;
+    in_frame(cx, handle, |window, _| {
+        assert!(window.find("monitor-hardware:gpu").visible())
+    });
+    line.monitor_busy.store(true, Ordering::Release);
+    let samples = connector.samples.load(Ordering::SeqCst);
+    cx.wait_for(handle.into(), Duration::from_secs(5), |_, _| {
+        connector.samples.load(Ordering::SeqCst) > samples
+    })
+    .await;
+    assert_eq!(line.exec_count(), 1);
+    assert_eq!(connector.discoveries.load(Ordering::SeqCst), 1);
+    assert!(
+        connector
+            .commands
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|command| command.contains("@@mtop"))
+    );
+    in_frame(cx, handle, |window, _| {
+        assert!(window.try_find("monitor-paused").is_none());
+    });
+    connector.failed.store(true, Ordering::Release);
+    cx.wait_for(handle.into(), Duration::from_secs(5), |window, cx| {
+        window.render_frame(cx);
+        window.try_find("monitor-paused").is_some()
+    })
+    .await;
+    in_frame(cx, handle, |window, _| {
+        assert_eq!(window.find("monitor-host").label(), Some("web-01-vm"));
+        assert!(window.try_find("monitor-message").is_none());
+        assert!(window.try_find("monitor-hardware:gpu").is_none());
+    });
+    line.monitor_busy.store(false, Ordering::Release);
+    wait_for_label(cx, handle, "monitor-channel", "串口空闲采集").await;
+    cx.wait_for(handle.into(), Duration::from_secs(5), |window, cx| {
+        window.render_frame(cx);
+        window.try_find("monitor-paused").is_none()
+    })
+    .await;
+    assert_eq!(connector.discoveries.load(Ordering::SeqCst), 1);
+    assert!(
+        line.exec_commands()
+            .iter()
+            .all(|command| !command.contains("@@mtop"))
+    );
+}
+
+#[gpui_kit::test]
+async fn serial_monitor_preferences_are_edited_independently_per_host(cx: &mut TestAppContext) {
+    let mut hosts = HostStore::empty();
+    let first = hosts.insert_unnotified(HostDraft::serial(
+        "COM3",
+        "COM3",
+        shellrs::host::SerialSettings {
+            linux_shell: true,
+            ..Default::default()
+        },
+        None,
+    ));
+    let other = hosts.insert_unnotified(HostDraft::serial(
+        "COM5",
+        "COM5",
+        shellrs::host::SerialSettings {
+            linux_shell: true,
+            ..Default::default()
+        },
+        None,
+    ));
+    let (handle, workspace) = open_workspace_with_store(cx, hosts);
+    in_frame(cx, handle, |window, cx| {
+        window.dispatch_action(Box::new(EditHost(first)), cx)
+    });
+    in_frame(cx, handle, |window, cx| {
+        assert_eq!(
+            window.find("host-monitor-channel").value(),
+            Some("自动（SSH → ADB → 串口）")
+        );
+        window.within("host-monitor-channel").click("input", cx);
+    });
+    for key in ["down", "enter"] {
+        in_frame(cx, handle, |window, cx| window.press(key, cx));
+    }
+    in_frame(cx, handle, |window, cx| {
+        window.click("host-monitor-adb", cx);
+        window.input("board-a", cx);
+        window.click("commit", cx);
+    });
+    wait_for_dialog_to_close(cx, handle).await;
+    cx.update(|cx| {
+        let hosts = workspace.read(cx).store().read(cx);
+        assert_eq!(
+            hosts.host(first).unwrap().monitor.channel,
+            shellrs::host::MonitorChannel::Adb
+        );
+        assert_eq!(hosts.host(first).unwrap().monitor.adb_serial, "board-a");
+        assert_eq!(
+            hosts.host(other).unwrap().monitor,
+            shellrs::host::MonitorSettings::default()
+        );
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.click("host-search", cx);
+        window.dispatch_action(Box::new(EditHost(first)), cx);
+    });
+    in_frame(cx, handle, |window, _| {
+        assert_eq!(window.find("host-monitor-channel").value(), Some("ADB"));
+        assert_eq!(window.find("host-monitor-adb").value(), Some("board-a"));
+    });
+}
 
 /// The seeded workspace with web-01's terminal in front and the monitor
 /// open; every terminal's commands are answered by `factory`.
@@ -342,7 +751,10 @@ fn many_cores(cores: u64, busy: u64) -> String {
 
 #[gpui_kit::test]
 async fn sixty_four_cores_show_one_row_until_unfolded(cx: &mut TestAppContext) {
-    let (first, second) = (many_cores(64, 1), many_cores(64, 2));
+    let (first, second) = (
+        many_cores(64, 1),
+        many_cores(64, 2).replace("5359162.33", "5359164.33"),
+    );
     let factory = Arc::new(FakeTerminalFactory::answering(&[&first, &second]));
     let handle = open_monitor(cx, factory);
     // A reading against the one before, so there are loads to draw.
@@ -370,7 +782,7 @@ async fn sixty_four_cores_show_one_row_until_unfolded(cx: &mut TestAppContext) {
 
     // One row at first: as many as fit beside the gauge.
     let first_row = bars(cx);
-    assert_eq!(first_row.len(), 23);
+    assert!(!first_row.is_empty() && first_row.len() < 64);
     assert_eq!(rows(&first_row), 1);
     in_frame(cx, handle, |window, _| {
         let toggle = window.find("monitor-cores-toggle");

@@ -20,6 +20,7 @@ pub struct Reading {
     pub default_route: Option<String>,
     /// Read every half minute or so.
     pub disks: Option<Vec<DiskUsage>>,
+    pub(super) hardware: Option<Vec<super::hardware::Bandwidth>>,
 }
 
 /// What does not change while connected.
@@ -158,9 +159,12 @@ pub struct Tracker {
 
 impl Tracker {
     pub fn update(&mut self, reading: Reading, at: Instant) -> Snapshot {
-        let before = self.last.take().and_then(|(reading, then)| {
-            let elapsed = at.checked_duration_since(then)?;
-            (!elapsed.is_zero() && elapsed <= STALE).then_some((reading, elapsed))
+        let before = self.last.take().and_then(|(previous, then)| {
+            let elapsed = match (reading.uptime, previous.uptime) {
+                (Some(now), Some(before)) => now.checked_sub(before)?,
+                _ => at.checked_duration_since(then)?,
+            };
+            (!elapsed.is_zero() && elapsed <= STALE).then_some((previous, elapsed))
         });
         let snapshot = snapshot(&reading, before.as_ref().map(|(r, e)| (r, *e)));
         self.last = Some((reading, at));
@@ -369,6 +373,40 @@ mod tests {
     #[test]
     fn rates_read_naturally() {
         assert_eq!(format_rate(5570.), "5.44 KB/s");
+    }
+
+    #[test]
+    fn network_rates_use_sample_uptime_not_mtop_completion_delay() {
+        let mut tracker = Tracker::default();
+        let start = Instant::now();
+        let mut first = reading((100, 900), 1000);
+        first.uptime = Some(Duration::from_secs(100));
+        tracker.update(first, start + Duration::from_secs(1));
+        let mut second = reading((125, 975), 1000 + 4096);
+        second.uptime = Some(Duration::from_secs(102));
+        let snapshot = tracker.update(second, start + Duration::from_secs(2));
+        assert_eq!(snapshot.interfaces[0].received, Some(2048.));
+        assert_eq!(snapshot.interfaces[0].transmitted, Some(1024.));
+        let mut third = reading((150, 1050), 1000 + 8192);
+        third.uptime = Some(Duration::from_secs(104));
+        let snapshot = tracker.update(third, start + Duration::from_secs(8));
+        assert_eq!(snapshot.interfaces[0].received, Some(2048.));
+    }
+
+    #[test]
+    fn nonadvancing_or_rebooted_sample_uptime_does_not_produce_rates() {
+        for uptime in [50, 100, 111] {
+            let mut tracker = Tracker::default();
+            let start = Instant::now();
+            let mut first = reading((100, 900), 1000);
+            first.uptime = Some(Duration::from_secs(100));
+            tracker.update(first, start);
+            let mut next = reading((125, 975), 1000 + 4096);
+            next.uptime = Some(Duration::from_secs(uptime));
+            let snapshot = tracker.update(next, start + Duration::from_secs(2));
+            assert_eq!(snapshot.interfaces[0].received, None);
+            assert_eq!(snapshot.cpu, None);
+        }
     }
 
     #[test]

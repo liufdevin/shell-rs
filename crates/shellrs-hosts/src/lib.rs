@@ -17,6 +17,7 @@ mod forward;
 mod login;
 mod mark;
 mod model;
+mod monitor_settings;
 mod node;
 mod private_key;
 mod protocol;
@@ -42,6 +43,7 @@ pub use login::{
 };
 pub use mark::mark_color;
 pub use model::*;
+pub use monitor_settings::*;
 pub use node::{HostNode, NodeDrop};
 pub use private_key::{
     GeneratedKey, KeyAlgorithm, PastedKey, PastedKeyError, read_public_key, read_small,

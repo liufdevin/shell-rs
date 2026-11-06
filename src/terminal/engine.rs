@@ -143,6 +143,7 @@ pub struct TerminalEngine {
     event_task: Option<gpui_kit::Task<()>>,
     io: Arc<SessionIo>,
     remote: bool,
+    shared_shell: bool,
     serial_name: Option<String>,
     reconnect_allowed: bool,
     reconnect_task: Option<gpui_kit::Task<()>>,
@@ -171,6 +172,7 @@ impl TerminalEngine {
         let TerminalOptions {
             encoding,
             remote,
+            shared_shell,
             serial,
             log,
             reconnect,
@@ -178,6 +180,7 @@ impl TerminalEngine {
         let (serial_name, modes) = serial
             .map(|(name, modes)| (Some(name), modes))
             .unwrap_or_default();
+        let shared_shell = shared_shell || serial_name.is_some();
         io.receive_hex.store(modes.receive_hex, Ordering::Release);
         io.send_hex.store(modes.send_hex, Ordering::Release);
         if let Some(log) = log {
@@ -221,6 +224,7 @@ impl TerminalEngine {
         });
         let mut this = Self {
             encoding,
+            shared_shell,
             factory,
             runtime,
             lifecycle: TerminalLifecycle::Starting,
@@ -319,6 +323,9 @@ impl TerminalEngine {
         }
 
         match event.kind {
+            TerminalUiEventKind::ConnectSsh(command) => {
+                return Some(TerminalEvent::ConnectSsh(command));
+            }
             TerminalUiEventKind::Started => {
                 self.lifecycle = TerminalLifecycle::Running;
                 self.reconnect_task = None;
@@ -891,7 +898,62 @@ impl TerminalEngine {
         if !matches!(self.lifecycle, TerminalLifecycle::Running) {
             return None;
         }
+        if self.shared_shell
+            && (self.mode().contains(TermMode::ALT_SCREEN)
+                || self.runtime.transferring()
+                || self.io.displays_hex()
+                || self.sends_hex())
+        {
+            let (reply, answer) = mpsc::channel();
+            let _ = reply.send(Err(t!("serial.shell.busy").to_string()));
+            return Some(answer);
+        }
         self.runtime.exec(command)
+    }
+
+    pub fn monitor(&self, command: String) -> Option<mpsc::Receiver<ExecResult>> {
+        if !matches!(self.lifecycle, TerminalLifecycle::Running) {
+            return None;
+        }
+        let (reply, answer) = mpsc::channel();
+        if self.mode().contains(TermMode::ALT_SCREEN)
+            || self.runtime.transferring()
+            || self.io.displays_hex()
+            || self.sends_hex()
+        {
+            let _ = reply.send(Err(super::transport::MONITOR_PAUSED.into()));
+        } else {
+            self.runtime
+                .commands
+                .send(TerminalTransportCommand::Monitor(ExecRequest {
+                    command,
+                    reply,
+                }))
+                .ok()?;
+        }
+        Some(answer)
+    }
+
+    pub fn serial_transfer(&self, command: String) -> Option<mpsc::Receiver<ExecResult>> {
+        if !matches!(self.lifecycle, TerminalLifecycle::Running) || self.serial_name.is_none() {
+            return None;
+        }
+        if self.io.displays_hex()
+            || self.sends_hex()
+            || self.runtime.transferring()
+            || self.mode().contains(TermMode::ALT_SCREEN)
+        {
+            return None;
+        }
+        let (reply, answer) = mpsc::channel();
+        self.runtime
+            .commands
+            .send(TerminalTransportCommand::SerialTransfer(ExecRequest {
+                command,
+                reply,
+            }))
+            .ok()?;
+        Some(answer)
     }
 
     /// Take up an `exec --terminal` run (see [`super::TerminalRun`]): ^C to
@@ -1127,6 +1189,7 @@ impl Drop for TerminalEngine {
 
 #[derive(Clone, Debug)]
 pub enum TerminalEvent {
+    ConnectSsh(super::SshCommand),
     InputRejected(SharedString),
     RecordingFailed(String),
     /// Emitted only by TerminalView for direct user input, never by the engine.
@@ -1261,6 +1324,9 @@ impl TerminalRuntime {
                         }
                     };
                     match event {
+                        TerminalTransportEvent::ConnectSsh(command) => {
+                            parser.proxy.send(TerminalUiEventKind::ConnectSsh(command));
+                        }
                         TerminalTransportEvent::Started => {
                             parser.proxy.send(TerminalUiEventKind::Started);
                         }
@@ -1574,6 +1640,7 @@ struct TerminalUiEvent {
 }
 
 enum TerminalUiEventKind {
+    ConnectSsh(super::SshCommand),
     InputRejected(SharedString),
     Started,
     Wakeup,
@@ -1843,7 +1910,9 @@ fn encode_command(
     if mode.contains(TermMode::ALT_SCREEN) {
         return Err(t!("terminal.command.full_screen"));
     }
-    if !run && command.contains('\n') && !mode.contains(TermMode::BRACKETED_PASTE) {
+    let normalized = command.replace("\r\n", "\n").replace('\r', "\n");
+    let multiline = normalized.contains('\n');
+    if !run && multiline && !mode.contains(TermMode::BRACKETED_PASTE) {
         return Err(t!("terminal.command.multiline"));
     }
     let mut bytes = if replace {
@@ -1851,7 +1920,11 @@ fn encode_command(
     } else {
         Vec::new()
     };
-    bytes.extend(encode_paste(command, mode));
+    if multiline {
+        bytes.extend(encode_paste(&normalized, mode));
+    } else {
+        bytes.extend_from_slice(normalized.as_bytes());
+    }
     if run {
         bytes.push(b'\r');
     }
@@ -2705,7 +2778,7 @@ mod tests {
     fn a_command_takes_the_place_of_the_input_line_and_runs_on_enter() {
         assert_eq!(
             encode_command("ls -l", false, true, TermMode::BRACKETED_PASTE),
-            Ok(b"\x05\x15\x1b[200~ls -l\x1b[201~".to_vec())
+            Ok(b"\x05\x15ls -l".to_vec())
         );
         assert_eq!(
             encode_command("ls -l", true, true, TermMode::default()),
@@ -2723,6 +2796,31 @@ mod tests {
         assert!(encode_command(lines, true, true, TermMode::default()).is_ok());
         // vim and less have the keys to themselves.
         assert!(encode_command("ls", true, true, TermMode::ALT_SCREEN).is_err());
+    }
+
+    #[test]
+    fn single_line_snippets_do_not_depend_on_stale_bracketed_paste_mode() {
+        for mode in [TermMode::default(), TermMode::BRACKETED_PASTE] {
+            assert_eq!(
+                encode_command("root", false, false, mode),
+                Ok(b"root".to_vec())
+            );
+            assert_eq!(
+                encode_command("root", true, false, mode),
+                Ok(b"root\r".to_vec())
+            );
+            assert_eq!(
+                encode_command("~root", true, false, mode),
+                Ok(b"~root\r".to_vec())
+            );
+        }
+        for command in ["first\rsecond", "first\r\nsecond", "first\nsecond"] {
+            assert!(encode_command(command, false, false, TermMode::default()).is_err());
+            assert_eq!(
+                encode_command(command, false, false, TermMode::BRACKETED_PASTE),
+                Ok(b"\x1b[200~first\nsecond\x1b[201~".to_vec())
+            );
+        }
     }
 
     /// Sends its events, then stays quiet until shut down, as a shell does

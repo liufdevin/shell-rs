@@ -9,8 +9,8 @@ pub use describe::*;
 pub use local::*;
 pub use shellrs_ssh::sftp::*;
 pub use transport::{
-    SftpEvent, SftpRoute, SftpTransport, SftpTransportProvider, SharedSftpTransportProvider,
-    SshSftpTransportProvider,
+    FileTransportSource, SftpEvent, SftpRoute, SftpTransport, SftpTransportProvider,
+    SharedSftpTransportProvider, SshSftpTransportProvider,
 };
 
 /// Why the editor could not open a file, as the app tells it.

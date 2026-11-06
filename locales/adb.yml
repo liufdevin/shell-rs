@@ -1,0 +1,61 @@
+_version: 2
+adb.missing:
+  zh-CN: 未找到 adb，请安装 Android SDK Platform-Tools 并加入 PATH，或放在程序旁的 platform-tools 目录。
+  en: adb was not found. Install Android SDK Platform-Tools in PATH or the app's platform-tools folder.
+adb.unavailable:
+  zh-CN: 没有已授权且在线的 ADB 设备，请连接设备并确认 USB 调试授权。
+  en: No authorized online ADB devices. Connect a device and authorize debugging.
+adb.invalid_response:
+  zh-CN: ADB 返回了无效或不完整的数据。
+  en: ADB returned invalid or incomplete data.
+adb.pty_base64_missing:
+  zh-CN: 此设备的 ADB 仅支持 PTY，兼容模式需要设备提供 base64 命令。请安装该工具或更新设备的 adbd。
+  en: This device only supports PTY ADB shells. Compatibility mode requires base64 on the device. Install it or update the device's adbd.
+adb.invalid_path:
+  zh-CN: 无效的文件路径。
+  en: Invalid file path.
+adb.device_changed:
+  zh-CN: ADB 设备已重启或改变，请重新检测并确认目标设备。
+  en: The ADB device restarted or changed. Detect and confirm it again.
+adb.start_failed:
+  zh-CN: 无法启动 adb。
+  en: Could not start adb.
+adb.command_failed:
+  zh-CN: "ADB 命令失败（%{status}）。请检查设备授权、权限及 Platform-Tools 安装是否完整。"
+  en: "ADB command failed (%{status}). Check device authorization, permissions and the Platform-Tools installation."
+adb.interrupted:
+  zh-CN: ADB 操作已取消、超时或超过数据限制。
+  en: ADB operation was cancelled, timed out or exceeded its data limit.
+adb.choose:
+  zh-CN: 选择 ADB 设备
+  en: Choose an ADB device
+adb.choose_note:
+  zh-CN: 无法自动确认哪台设备对应当前串口。请选择正确的开发板，避免传错文件。
+  en: The current serial board could not be matched automatically. Choose the correct device to avoid transferring to another target.
+adb.device_label:
+  zh-CN: "%{name}（%{serial}）"
+  en: "%{name} (%{serial})"
+adb.connected:
+  zh-CN: "ADB 文件传输：%{serial}"
+  en: "ADB file transfer: %{serial}"
+adb.unsupported:
+  zh-CN: ADB 暂不支持此操作。
+  en: This operation is not supported over ADB.
+adb.transfer_active:
+  zh-CN: 请先关闭现有文件连接并处理未完成传输，再切换设备。
+  en: Close the existing file connection and resolve unfinished transfers before switching devices.
+adb.conflict:
+  zh-CN: 目标文件已存在，是否覆盖？
+  en: The destination file exists. Overwrite it?
+adb.limit:
+  zh-CN: 文件数量或目录层级超过安全限制。
+  en: File count or directory depth exceeds the safety limit.
+adb.link:
+  zh-CN: 为避免越界，ADB 传输暂不跟随符号链接或目录联接。
+  en: ADB transfers do not follow symbolic links or directory junctions.
+adb.type_conflict:
+  zh-CN: 目标文件类型不匹配，未覆盖。
+  en: Destination type differs; nothing was overwritten.
+adb.file_changed:
+  zh-CN: 传输期间文件已改变，未覆盖原文件，请刷新后重试。
+  en: The file changed during transfer. The original was not overwritten; refresh and retry.

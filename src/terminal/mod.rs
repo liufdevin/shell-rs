@@ -2,6 +2,7 @@
 
 mod box_drawing;
 mod broadcast;
+mod command_terminal;
 mod directory;
 mod directory_setup;
 mod encoding;
@@ -24,6 +25,7 @@ mod run;
 mod scrollbar;
 mod search;
 mod session_io;
+mod shell_query;
 mod terminal_panel;
 mod terminal_view;
 mod theme;
@@ -31,6 +33,7 @@ mod transport;
 mod zmodem;
 
 pub(crate) use broadcast::BroadcastSelection;
+pub use command_terminal::{SshCommand, command_terminal_factory};
 pub use directory::ReportedDirectory;
 pub use directory_setup::{
     FollowCheck, FollowSetup, check_command as directory_check_command,
@@ -65,6 +68,7 @@ pub use run::{
 pub use search::{SearchDirection, SearchMark, SearchPosition, TerminalFindOption};
 pub use session_io::default_log_directory;
 pub use session_io::{SerialDataModes, SerialPreferences, TerminalConnectionSettings};
+pub(crate) use shell_query::Shell as ShellQuery;
 pub(crate) use terminal_panel::TerminalCopy;
 pub use terminal_panel::{TerminalPanel, TerminalPanelEvent};
 pub(crate) use terminal_view::terminal_key_bindings;
@@ -73,6 +77,7 @@ pub use terminal_view::{
     TerminalView,
 };
 pub use theme::{TerminalColors, TerminalTheme, import_xshell_schemes};
+pub(crate) use transport::MONITOR_PAUSED;
 pub(crate) use transport::send_event;
 pub use transport::{
     ChannelStream, ExecRequest, ExecResult, FixedLocalTerminalTransportProvider,

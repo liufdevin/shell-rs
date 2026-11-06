@@ -24,6 +24,7 @@ use super::{
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LocalTerminalPanelEvent {
+    ConnectSsh(LocalTerminalId, super::SshCommand),
     Input(LocalTerminalId, super::TerminalInputEvent),
     Activated(LocalTerminalId),
     Closed(LocalTerminalId),
@@ -49,6 +50,7 @@ pub struct SavedName {
 
 /// A local login-shell Dock tab backed by the shared terminal view.
 pub struct LocalTerminalPanel {
+    command_terminal: bool,
     id: LocalTerminalId,
     /// Its name in 项目, for a terminal kept there.
     name: Option<SavedName>,
@@ -84,6 +86,9 @@ impl LocalTerminalPanel {
             cx.subscribe(
                 &terminal,
                 move |_, _, event: &TerminalEvent, cx| match event {
+                    TerminalEvent::ConnectSsh(command) => {
+                        cx.emit(LocalTerminalPanelEvent::ConnectSsh(id, command.clone()));
+                    }
                     TerminalEvent::Input(input) => {
                         cx.emit(LocalTerminalPanelEvent::Input(id, input.clone()));
                     }
@@ -105,6 +110,7 @@ impl LocalTerminalPanel {
         ];
 
         Self {
+            command_terminal: false,
             id,
             name,
             terminal,
@@ -124,6 +130,15 @@ impl LocalTerminalPanel {
 
     pub fn tab_group(&self) -> Option<WeakEntity<TabGroup>> {
         self.tab_group.clone()
+    }
+
+    pub fn set_command_terminal(&mut self, cx: &mut Context<Self>) {
+        self.command_terminal = true;
+        cx.notify();
+    }
+
+    pub fn is_command_terminal(&self) -> bool {
+        self.command_terminal
     }
 
     pub fn terminal(&self) -> &Entity<TerminalView> {

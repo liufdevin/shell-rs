@@ -3,6 +3,61 @@
 
 use crate::support::*;
 
+#[gpui_kit::test]
+async fn authentication_prompt_reuses_a_saved_password(cx: &mut TestAppContext) {
+    let (mut store, id) = one_host_store(AuthKind::Password);
+    let secrets = Arc::new(InMemorySecretStore::default());
+    let credential = store.insert_credential_unnotified(CredentialDraft::new(
+        "开发板通用密码",
+        CredentialKind::Password,
+        "other-user",
+    ));
+    secrets
+        .set(
+            &store.credential(credential).unwrap().password_secret(),
+            "shared-board-password",
+        )
+        .unwrap();
+    let mut factory = PromptTerminalFactory::new(PromptBehavior::Authentication);
+    factory.expected_password = Some("shared-board-password");
+    let factory = Arc::new(factory);
+    let (handle, _) = open_workspace_with_remote_factory(
+        cx,
+        store.with_secrets(secrets.clone()),
+        factory.clone(),
+    );
+    in_frame(cx, handle, |window, cx| {
+        window.dispatch_action(Box::new(ConnectHost(id)), cx)
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, cx| {
+        window.render_frame(cx);
+        window.try_find("ssh-auth-submit").is_some()
+    })
+    .await;
+    in_frame(cx, handle, |window, cx| {
+        window.within("saved-password-picker").click("input", cx)
+    });
+    for key in ["down", "enter"] {
+        in_frame(cx, handle, |window, cx| window.press(key, cx));
+    }
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, cx| {
+        window.render_frame(cx);
+        window.find("saved-password-picker").value() == Some("开发板通用密码")
+            && window.try_find("saved-password-loading").is_none()
+    })
+    .await;
+    in_frame(cx, handle, |window, cx| {
+        assert_eq!(window.find(("ssh-auth-answer", 0usize)).value(), None);
+        window.click(("ssh-auth-answer", 0usize), cx);
+        window.click("ssh-auth-submit", cx);
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(3), |_, _| {
+        factory.accepted.load(Ordering::SeqCst) == 1
+    })
+    .await;
+    assert_eq!(secrets.len(), 1);
+}
+
 #[derive(Clone, Copy)]
 enum PromptBehavior {
     Authentication,
@@ -14,6 +69,7 @@ struct PromptTerminalFactory {
     behavior: PromptBehavior,
     accepted: Arc<AtomicUsize>,
     canceled: Arc<AtomicUsize>,
+    expected_password: Option<&'static str>,
 }
 
 impl PromptTerminalFactory {
@@ -22,6 +78,7 @@ impl PromptTerminalFactory {
             behavior,
             accepted: Arc::new(AtomicUsize::new(0)),
             canceled: Arc::new(AtomicUsize::new(0)),
+            expected_password: None,
         }
     }
 }
@@ -32,6 +89,7 @@ impl TerminalTransportFactory for PromptTerminalFactory {
             behavior: self.behavior,
             accepted: self.accepted.clone(),
             canceled: self.canceled.clone(),
+            expected_password: self.expected_password,
         })
     }
 }
@@ -40,6 +98,7 @@ struct PromptTerminalTransport {
     behavior: PromptBehavior,
     accepted: Arc<AtomicUsize>,
     canceled: Arc<AtomicUsize>,
+    expected_password: Option<&'static str>,
 }
 
 impl TerminalTransport for PromptTerminalTransport {
@@ -92,6 +151,10 @@ impl TerminalTransport for PromptTerminalTransport {
                         if matches!(self.behavior, PromptBehavior::Authentication)
                             && answers.len() == 1 =>
                     {
+                        assert!(
+                            self.expected_password
+                                .is_none_or(|expected| answers[0].expose() == expected)
+                        );
                         self.accepted.fetch_add(1, Ordering::SeqCst);
                         break;
                     }

@@ -433,6 +433,10 @@ impl TransferProgress {
         self.direction = direction;
         self
     }
+    pub fn with_total(mut self, total: usize) -> Self {
+        self.total = total;
+        self
+    }
     /// The batch's bytes so far and in all, for fakes and tests.
     pub fn with_bytes(mut self, completed: u64, total: u64) -> Self {
         self.completed_bytes = completed;

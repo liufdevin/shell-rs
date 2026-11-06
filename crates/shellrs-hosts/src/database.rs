@@ -41,7 +41,7 @@ fn from_sql(id: i64) -> u64 {
 /// command snippets, 15 the serial hosts, 16 the Telnet hosts, 17 each
 /// host's right sidebar, 18 the saved local terminals, 19 their titles, 20
 /// what sync needs, 21 each host's local connection log.
-const SCHEMA_VERSION: i64 = 23;
+const SCHEMA_VERSION: i64 = 25;
 
 /// The whole schema, as a new database gets it.
 ///
@@ -175,6 +175,8 @@ CREATE TABLE hosts (
     auto_reconnect    INTEGER NOT NULL DEFAULT 0 CHECK (auto_reconnect IN (0, 1)),
     reconnect_delay_secs INTEGER NOT NULL DEFAULT 5 CHECK (reconnect_delay_secs BETWEEN 1 AND 3600),
     terminal_encoding TEXT NOT NULL DEFAULT 'utf-8' CHECK (terminal_encoding IN ('utf-8', 'gbk', 'gb18030')),
+    serial_linux_shell INTEGER NOT NULL DEFAULT 0 CHECK (serial_linux_shell IN (0, 1)),
+    monitor_settings TEXT NOT NULL DEFAULT '{}',
     CHECK ((auth = 'credential') = (credential_id IS NOT NULL)),
     CHECK ((auth = 'credential') = (username IS NULL)),
     CHECK ((route = 'proxy') = (proxy_kind IS NOT NULL)),
@@ -295,7 +297,7 @@ enum Step {
 ///
 /// A step is history: it says what that version's change was, and stays as
 /// written when `SCHEMA` changes again.
-const STEPS: [(i64, Step); 10] = [
+const STEPS: [(i64, Step); 12] = [
     (
     13,
     // The command snippets.
@@ -408,6 +410,8 @@ COMMIT;",
     ),
     (21, Step::Code(add_daily_logs)),
     (22, Step::Sql("BEGIN; ALTER TABLE hosts ADD COLUMN terminal_encoding TEXT NOT NULL DEFAULT 'utf-8' CHECK (terminal_encoding IN ('utf-8', 'gbk', 'gb18030')); PRAGMA user_version = 23; COMMIT;")),
+    (23, Step::Sql("BEGIN; ALTER TABLE hosts ADD COLUMN serial_linux_shell INTEGER NOT NULL DEFAULT 0 CHECK (serial_linux_shell IN (0, 1)); PRAGMA user_version = 24; COMMIT;")),
+    (24, Step::Sql("BEGIN; ALTER TABLE hosts ADD COLUMN monitor_settings TEXT NOT NULL DEFAULT '{}'; PRAGMA user_version = 25; COMMIT;")),
 ];
 
 fn add_daily_logs(connection: &Connection) -> rusqlite::Result<()> {
@@ -816,7 +820,7 @@ impl HostDatabase {
                  credential_id, route, proxy_kind, proxy_host, proxy_port, proxy_username, \
                  notes, os, protocol, serial_baud, serial_data_bits, serial_parity, \
                  serial_stop_bits, serial_flow, telnet_user_prompt, telnet_pass_prompt, \
-                 sidebar_tool, edited_ms, log_directory, log_enabled, auto_reconnect, reconnect_delay_secs, terminal_encoding \
+                 sidebar_tool, edited_ms, log_directory, log_enabled, auto_reconnect, reconnect_delay_secs, terminal_encoding, serial_linux_shell, monitor_settings \
                  FROM hosts ORDER BY id",
             )?
             .query_map([], |row| {
@@ -886,10 +890,16 @@ impl HostDatabase {
                 host.log_enabled = row.get(28)?;
                 host.auto_reconnect = row.get(29)?;
                 host.reconnect_delay_secs = row.get(30)?;
+                let monitor: String = row.get(33)?;
+                host.monitor = serde_json::from_str(&monitor).map_err(|error| rusqlite::Error::FromSqlConversionFailure(33, rusqlite::types::Type::Text, Box::new(error)))?;
                 let encoding: String = row.get(31)?;
                 host.terminal_encoding = crate::TerminalEncoding::from_key(&encoding).ok_or_else(|| rusqlite::Error::InvalidColumnType(31, "terminal_encoding".into(), rusqlite::types::Type::Text))?;
                 match protocol.as_str() {
-                    "serial" => host.protocol = Protocol::Serial(serial.settings()),
+                    "serial" => {
+                        let mut settings = serial.settings();
+                        settings.linux_shell = row.get(32)?;
+                        host.protocol = Protocol::Serial(settings);
+                    }
                     "telnet" => host.protocol = Protocol::Telnet(telnet),
                     _ => {}
                 }
@@ -1293,9 +1303,9 @@ impl HostDatabase {
              username, credential_id, route, proxy_kind, proxy_host, proxy_port, \
              proxy_username, notes, os, protocol, serial_baud, serial_data_bits, \
              serial_parity, serial_stop_bits, serial_flow, telnet_user_prompt, \
-             telnet_pass_prompt, sidebar_tool, log_directory, edited_ms, log_enabled, auto_reconnect, reconnect_delay_secs, terminal_encoding) \
+             telnet_pass_prompt, sidebar_tool, log_directory, edited_ms, log_enabled, auto_reconnect, reconnect_delay_secs, terminal_encoding, serial_linux_shell, monitor_settings) \
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, \
-             ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32)",
+             ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34)",
             params![
                 to_sql(host.id.0),
                 host.public_id.as_str(),
@@ -1329,6 +1339,8 @@ impl HostDatabase {
                 host.auto_reconnect,
                 host.reconnect_delay_secs,
                 host.terminal_encoding.key(),
+                host.protocol.serial().is_some_and(|settings| settings.linux_shell),
+                serde_json::to_string(&host.monitor).map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?,
             ],
         )?;
             write_jumps(connection, host)
@@ -1349,7 +1361,7 @@ impl HostDatabase {
              proxy_kind = ?11, proxy_host = ?12, proxy_port = ?13, proxy_username = ?14, \
              notes = ?15, serial_baud = ?16, serial_data_bits = ?17, serial_parity = ?18, \
              serial_stop_bits = ?19, serial_flow = ?20, telnet_user_prompt = ?21, \
-             telnet_pass_prompt = ?22, protocol = ?23, log_directory = ?24, edited_ms = ?25, log_enabled = ?26, auto_reconnect = ?27, reconnect_delay_secs = ?28, terminal_encoding = ?29 \
+             telnet_pass_prompt = ?22, protocol = ?23, log_directory = ?24, edited_ms = ?25, log_enabled = ?26, auto_reconnect = ?27, reconnect_delay_secs = ?28, terminal_encoding = ?29, serial_linux_shell = ?30, monitor_settings = ?31 \
              WHERE id = ?1",
                 params![
                     to_sql(host.id.0),
@@ -1381,6 +1393,8 @@ impl HostDatabase {
                     host.auto_reconnect,
                     host.reconnect_delay_secs,
                     host.terminal_encoding.key(),
+                    host.protocol.serial().is_some_and(|settings| settings.linux_shell),
+                    serde_json::to_string(&host.monitor).map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?,
                 ],
             )?;
             write_jumps(connection, host)
@@ -1928,6 +1942,7 @@ impl SerialColumns {
     fn settings(&self) -> SerialSettings {
         let default = SerialSettings::default();
         SerialSettings {
+            linux_shell: false,
             baud: self.baud.unwrap_or(default.baud),
             data_bits: self
                 .data_bits
@@ -3107,6 +3122,7 @@ INSERT INTO snippets (id, category_id, name, command) VALUES (1, 1, 'ps', 'docke
             parity: Parity::Even,
             stop_bits: StopBits::Two,
             flow: FlowControl::RtsCts,
+            linux_shell: true,
         };
         let mut serial = Host::new(
             HostId(1),
@@ -3350,6 +3366,64 @@ INSERT INTO snippets (id, category_id, name, command) VALUES (1, 1, 'ps', 'docke
     }
 
     #[test]
+    fn monitor_channels_are_local_per_host_and_survive_updates_and_migration() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("monitor.db");
+        {
+            let db = HostDatabase::open(&path).unwrap();
+            db.insert_host(&host(1, "COM3", None)).unwrap();
+            db.insert_host(&host(2, "COM5", None)).unwrap();
+            db.connection
+                .execute_batch(
+                    "ALTER TABLE hosts DROP COLUMN monitor_settings; PRAGMA user_version = 24;",
+                )
+                .unwrap();
+        }
+        let db = HostDatabase::open(&path).unwrap();
+        let mut first = db.load().unwrap().hosts.remove(0);
+        assert_eq!(first.monitor.channel, crate::MonitorChannel::Auto);
+        first.monitor.channel = crate::MonitorChannel::Adb;
+        first.monitor.adb_serial = "board-a".into();
+        first.monitor.ssh_host = "saved-ssh-public-id".into();
+        db.update_host(&first).unwrap();
+        drop(db);
+        let loaded = HostDatabase::open(&path).unwrap().load().unwrap();
+        assert_eq!(loaded.hosts[0].monitor, first.monitor);
+        assert_eq!(loaded.hosts[0].draft().monitor, first.monitor);
+        assert_eq!(loaded.hosts[1].monitor, crate::MonitorSettings::default());
+    }
+
+    #[test]
+    fn version_23_serial_hosts_upgrade_with_linux_shell_disabled() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("serial-shell.db");
+        {
+            let db = HostDatabase::open(&path).unwrap();
+            let serial = Host::new(
+                HostId(1),
+                HostDraft::serial("console", "COM3", SerialSettings::default(), None),
+            );
+            db.insert_host(&serial).unwrap();
+            db.connection
+                .execute_batch(
+                    "ALTER TABLE hosts DROP COLUMN monitor_settings; ALTER TABLE hosts DROP COLUMN serial_linux_shell; PRAGMA user_version = 23;",
+                )
+                .unwrap();
+        }
+        let db = HostDatabase::open(&path).unwrap();
+        let mut serial = db.load().unwrap().hosts.remove(0);
+        assert!(!serial.protocol.serial().unwrap().linux_shell);
+        let mut settings = serial.protocol.serial().unwrap();
+        settings.linux_shell = true;
+        serial.protocol = Protocol::Serial(settings);
+        db.update_host(&serial).unwrap();
+        drop(db);
+        let loaded = HostDatabase::open(&path).unwrap().load().unwrap();
+        assert!(loaded.hosts[0].protocol.serial().unwrap().linux_shell);
+        assert_eq!(loaded.hosts[0].address.as_ref(), "COM3");
+    }
+
+    #[test]
     fn version_22_hosts_upgrade_to_utf8_without_changing_other_settings() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("encoding.db");
@@ -3360,7 +3434,7 @@ INSERT INTO snippets (id, category_id, name, command) VALUES (1, 1, 'ps', 'docke
             db.insert_host(&saved).unwrap();
             db.connection
                 .execute_batch(
-                    "ALTER TABLE hosts DROP COLUMN terminal_encoding; PRAGMA user_version = 22;",
+                    "ALTER TABLE hosts DROP COLUMN monitor_settings; ALTER TABLE hosts DROP COLUMN serial_linux_shell; ALTER TABLE hosts DROP COLUMN terminal_encoding; PRAGMA user_version = 22;",
                 )
                 .unwrap();
         }
@@ -3383,7 +3457,8 @@ INSERT INTO snippets (id, category_id, name, command) VALUES (1, 1, 'ps', 'docke
             db.insert_host(&host(1, "COM3", None)).unwrap();
             db.connection
                 .execute_batch(
-                    "ALTER TABLE hosts DROP COLUMN terminal_encoding;
+                    "ALTER TABLE hosts DROP COLUMN monitor_settings; ALTER TABLE hosts DROP COLUMN serial_linux_shell;
+ALTER TABLE hosts DROP COLUMN terminal_encoding;
 ALTER TABLE hosts DROP COLUMN auto_reconnect;
 ALTER TABLE hosts DROP COLUMN reconnect_delay_secs;
 ALTER TABLE hosts DROP COLUMN log_enabled;

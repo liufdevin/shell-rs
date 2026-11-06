@@ -44,6 +44,7 @@ gpui_kit::actions!(
         ImportTerminalSchemes,
         /// Open a new local login-shell terminal.
         NewLocalTerminal,
+        NewCommandTerminal,
         /// Start 命令广播, which turns terminal tab marks into checkboxes,
         /// or end it.
         ToggleTerminalBroadcast,
@@ -137,6 +138,7 @@ gpui_kit::actions!(
         SelectNextForward,
         /// Show the credential list in the left dock.
         ShowCredentials,
+        OpenAdbDevices,
         /// Open the new-credential dialog.
         NewCredential,
         /// Open the new-credential dialog at a key it generates.
@@ -260,6 +262,7 @@ macro_rules! id_actions {
 }
 
 id_actions! {
+    AdbDeviceAction(crate::adb::DeviceCommand);
     RemoveTerminalScheme(String);
     /// Open a new terminal connection for a host.
     ConnectHost(HostId);
@@ -304,6 +307,9 @@ id_actions! {
     SendSerialHex(RemoteTerminalId);
     ToggleSerialReceiveHex(RemoteTerminalId);
     ToggleSerialSendHex(RemoteTerminalId);
+    AutoSerialFiles(RemoteTerminalId);
+    UploadSerialFile(RemoteTerminalId);
+    DownloadSerialFile(RemoteTerminalId);
     StartTerminalRecording(RemoteTerminalId);
     StopTerminalRecording(RemoteTerminalId);
     ClearTerminalLog(RemoteTerminalId);
@@ -355,6 +361,9 @@ id_actions! {
     InstallDirectoryFollow(RemoteTerminalId);
     /// Unfold a part of the system monitor, or fold it away again.
     ToggleMonitorDetail(MonitorDetail);
+    ToggleMonitorChannel((RemoteTerminalId, String));
+    ChooseAdbDevice(RemoteTerminalId);
+    OpenAdbFiles((RemoteTerminalId, u64, crate::adb::AdbConnection));
     /// Unfold a device of GPU/NPU to its details, or fold them away again,
     /// by its key.
     ToggleGpuDevice(String);
@@ -924,6 +933,33 @@ impl EditorAction {
 #[derive(Action, Clone, PartialEq, Eq)]
 #[action(namespace = shellrs, no_json)]
 pub struct EditorShortcut(pub EditorCommand);
+
+#[derive(Action, Clone, PartialEq, Eq)]
+#[action(namespace = shellrs, no_json)]
+pub struct SerialFileDownload {
+    terminal: RemoteTerminalId,
+    generation: u64,
+    path: String,
+}
+
+impl SerialFileDownload {
+    pub fn new(terminal: RemoteTerminalId, generation: u64, path: String) -> Self {
+        Self {
+            terminal,
+            generation,
+            path,
+        }
+    }
+    pub fn terminal(&self) -> RemoteTerminalId {
+        self.terminal
+    }
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+    pub fn path(&self) -> &str {
+        &self.path
+    }
+}
 
 /// A file-list key binding. The binding carries the pane side, and the
 /// workspace sends it to the explorer that holds focus.

@@ -462,6 +462,8 @@ pub enum FlowControlChoice {
 /// A serial host's device and line, as `hosts show` prints it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SerialDetails {
+    #[serde(default)]
+    pub linux_shell: bool,
     pub device: String,
     pub baud: u32,
     pub data_bits: u8,
@@ -476,6 +478,8 @@ pub struct SerialDetails {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SerialFields {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub linux_shell: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub device: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -66,11 +66,17 @@ pub trait SftpTransport: Send + 'static {
         events: Sender<SftpEvent>,
     ) -> Result<()>;
 }
+pub trait FileTransportSource: Send + Sync + 'static {
+    fn endpoint(&self) -> String;
+    fn create(&self) -> Box<dyn SftpTransport>;
+}
 /// Where a worker's SFTP channel comes from.
 #[derive(Clone)]
 pub enum SftpRoute {
     /// A connection of its own, logged in for the SFTP tab.
     Login,
+    NetworkSidebar,
+    ExternalSidebar(Arc<dyn FileTransportSource>),
     /// A channel beside the shell of a remote terminal, on whichever
     /// connection the terminal has: the right sidebar's 文件. No login and
     /// no questions; it is up when the terminal is.
@@ -101,7 +107,8 @@ impl SshSftpTransportProvider {
 impl SftpTransportProvider for SshSftpTransportProvider {
     fn create(&self, login: &HostLogin, route: SftpRoute) -> Box<dyn SftpTransport> {
         let route = match route {
-            SftpRoute::Login => engine::SftpRoute::Login(login.clone()),
+            SftpRoute::ExternalSidebar(source) => return source.create(),
+            SftpRoute::Login | SftpRoute::NetworkSidebar => engine::SftpRoute::Login(login.clone()),
             SftpRoute::Terminal(channels) => engine::SftpRoute::Channel {
                 endpoint: login.endpoint(),
                 opener: Arc::new(channels),

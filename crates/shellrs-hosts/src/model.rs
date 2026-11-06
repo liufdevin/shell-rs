@@ -363,6 +363,7 @@ pub struct Host {
     pub auto_reconnect: bool,
     pub reconnect_delay_secs: u32,
     pub terminal_encoding: crate::TerminalEncoding,
+    pub monitor: crate::MonitorSettings,
     /// Order among hosts in the same group.
     pub sort_order: i64,
     /// Detected on every successful connection and persisted, so the tree can
@@ -403,6 +404,7 @@ impl Host {
             auto_reconnect: draft.auto_reconnect,
             reconnect_delay_secs: draft.reconnect_delay_secs,
             terminal_encoding: draft.terminal_encoding,
+            monitor: draft.monitor,
             sort_order: 0,
             os: None,
             sidebar_tool: None,
@@ -464,6 +466,7 @@ impl Host {
             auto_reconnect: self.auto_reconnect,
             reconnect_delay_secs: self.reconnect_delay_secs,
             terminal_encoding: self.terminal_encoding,
+            monitor: self.monitor.clone(),
         }
     }
 }
@@ -539,6 +542,7 @@ pub struct HostDraft {
     pub auto_reconnect: bool,
     pub reconnect_delay_secs: u32,
     pub terminal_encoding: crate::TerminalEncoding,
+    pub monitor: crate::MonitorSettings,
 }
 
 impl HostDraft {
@@ -571,6 +575,7 @@ impl HostDraft {
             auto_reconnect: false,
             reconnect_delay_secs: 5,
             terminal_encoding: crate::TerminalEncoding::default(),
+            monitor: crate::MonitorSettings::default(),
         }
     }
 

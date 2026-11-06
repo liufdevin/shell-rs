@@ -4,6 +4,27 @@
 
 One section per version, titled `## [version]`, optionally followed by a date. Each section is written in English here and in Chinese in [CHANGELOG.zh.md](CHANGELOG.zh.md), in the same change. The release workflow (`.github/workflows/release.yml`) takes the section with the tag’s version, as it is, for the GitHub release. The website’s changelog shows this file in English and Japanese and CHANGELOG.zh.md in Chinese (ShellRS’s update dialog opens it with What’s new). Written in Markdown, for users.
 
+## [0.1.19]
+
+### Added
+
+- Serial Linux shell mode provides services, processes, connections and system monitoring alongside the console, with network/ADB file transfer and a ZMODEM file picker as fallback.
+- Configure monitoring channels per host. Auto prefers SSH, then ADB, and finally idle serial sampling; device boot identities prevent silently choosing another board.
+- ADB file browsing and uploads/downloads support Android and Linux boards, including legacy adbd versions that only allocate a PTY.
+- ADB device tools offer separate-window scrcpy mirroring, APK installation and app launching on supported devices, with named device selection. Mirroring requires a complete external scrcpy installation.
+- Reuse saved password credentials in host forms and file-transfer authentication without changing the current username.
+- Ctrl+T opens the ShellLF command terminal for temporary SSH connections; the separate local terminal remains available in the title bar.
+
+### Improved
+
+- Hardware bandwidth channels are discovered dynamically from mtop and are only sampled over connected SSH/ADB channels. Serial sampling skips mtop, pauses quietly during terminal use and keeps the last readings.
+- The monitor uses a compact pause indicator instead of a multiline notice that shifts the data. Unsupported ADB devices show a shorter mirroring message.
+
+### Fixed
+
+- Prevent command snippets from sending bracketed-paste escape sequences to login prompts and other shells that do not support them.
+- Preserve directory records and filenames when legacy ADB PTY sessions convert newlines, without replaying ordinary failed commands.
+
 ## [0.1.18]
 
 ### Added

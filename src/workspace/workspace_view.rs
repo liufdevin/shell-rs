@@ -31,14 +31,15 @@ use crate::app::{
     DeleteGroup, DeleteHost, DisconnectTerminal, DismissTerminalFind, DuplicateHost,
     DuplicateTerminal, EditHost, ExpandAllGroups, ExplorerAction, ExplorerCommand,
     ExplorerShortcut, FindInTerminal, FindNextInTerminal, FindPreviousInTerminal, FocusSearch,
-    InstallAgentSkill, InstallCliCommand, MaximizeWindow, MoveHostNode, NewChildGroup, NewGroup,
-    NewHost, NewHostInGroup, NewLocalTerminal, NewTemporaryConnection, OpenExplorer, OpenSettings,
-    PasteTerminal, QuickConnect, ReconnectTerminal, RefreshCliIntegration, RemoveAgentSkill,
-    RemoveCliCommand, RenameExplorer, RenameGroup, RenameTerminal, RestartLocalTerminal,
-    RestoreWindow, ReturnDetachedTab, SelectAllTerminal, SendBreak, SendSerialHex,
-    SetFileSizeFormat, ShowOrHideApp, StartTerminalRecording, StopTerminalRecording,
-    ToggleHiddenFiles, ToggleHostPanel, ToggleTerminalFindOption, ToggleTheme, ToolKind, ZoomIn,
-    ZoomOut, ZoomReset, ZoomTerminalIn, ZoomTerminalOut, ZoomTerminalReset,
+    InstallAgentSkill, InstallCliCommand, MaximizeWindow, MoveHostNode, NewChildGroup,
+    NewCommandTerminal, NewGroup, NewHost, NewHostInGroup, NewLocalTerminal,
+    NewTemporaryConnection, OpenExplorer, OpenSettings, PasteTerminal, QuickConnect,
+    ReconnectTerminal, RefreshCliIntegration, RemoveAgentSkill, RemoveCliCommand, RenameExplorer,
+    RenameGroup, RenameTerminal, RestartLocalTerminal, RestoreWindow, ReturnDetachedTab,
+    SelectAllTerminal, SendBreak, SendSerialHex, SetFileSizeFormat, ShowOrHideApp,
+    StartTerminalRecording, StopTerminalRecording, ToggleHiddenFiles, ToggleHostPanel,
+    ToggleTerminalFindOption, ToggleTheme, ToolKind, ZoomIn, ZoomOut, ZoomReset, ZoomTerminalIn,
+    ZoomTerminalOut, ZoomTerminalReset,
 };
 use crate::app::{
     ClearTerminalLog, DeleteTerminalLog, ToggleSerialReceiveHex, ToggleSerialSendHex,
@@ -220,6 +221,9 @@ pub struct Workspace {
     local_terminal_provider: SharedLocalTerminalTransportProvider,
     host_terminals: HostTerminalTransports,
     sftp_provider: SharedSftpTransportProvider,
+    pub(super) adb_detector: Arc<dyn crate::adb::AdbDetector>,
+    pub(super) android_manager: Option<Entity<crate::adb::DeviceManager>>,
+    pub(super) android_tools: Arc<dyn crate::adb::AndroidTools>,
     pub(super) local_directory_provider: SharedLocalDirectoryProvider,
     /// Backs the host dialog's 「测试连接」.
     connection_tester: SharedConnectionTester,
@@ -311,6 +315,16 @@ impl Workspace {
             cx,
         );
         this.ssh_dir = dirs::home_dir().map(|home| home.join(".ssh"));
+        this.adb_detector = Arc::new(crate::adb::SystemAdbDetector);
+        this.tools.update(cx, |tools, cx| {
+            tools.set_monitor_connector(
+                Arc::new(crate::monitor::SystemMonitorConnector::new(
+                    this.adb_detector.clone(),
+                    Some(connector.clone()),
+                )),
+                cx,
+            )
+        });
         this.cli_integration.update(cx, |integration, cx| {
             integration.set_paths(IntegrationPaths::system(), cx);
             integration.update_outdated(cx);
@@ -738,6 +752,9 @@ impl Workspace {
             local_terminal_provider,
             host_terminals,
             sftp_provider,
+            adb_detector: Arc::new(crate::adb::NoAdbDetector),
+            android_manager: None,
+            android_tools: Arc::new(crate::adb::SystemAndroidTools),
             local_directory_provider,
             connection_tester,
             next_remote_terminal_id,
@@ -896,6 +913,83 @@ impl Workspace {
         Some(panel)
     }
 
+    pub(super) fn install_serial_network_files(
+        &mut self,
+        terminal: RemoteTerminalId,
+        address: String,
+        user: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.file_sidebar(terminal).is_some() {
+            return;
+        }
+        let draft = crate::host::HostDraft::new(
+            &address,
+            &address,
+            22,
+            user,
+            crate::host::AuthKind::Password,
+            None,
+        );
+        self.install_serial_file_route(terminal, draft, SftpRoute::NetworkSidebar, window, cx);
+    }
+
+    pub(super) fn install_serial_adb_files(
+        &mut self,
+        terminal: RemoteTerminalId,
+        connection: crate::adb::AdbConnection,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let name = format!("ADB · {}", connection.serial());
+        let draft = crate::host::HostDraft::new(
+            &name,
+            "adb",
+            22,
+            "shell",
+            crate::host::AuthKind::NoPassword,
+            None,
+        );
+        self.install_serial_file_route(
+            terminal,
+            draft,
+            SftpRoute::ExternalSidebar(Arc::new(connection)),
+            window,
+            cx,
+        );
+    }
+
+    fn install_serial_file_route(
+        &mut self,
+        terminal: RemoteTerminalId,
+        draft: crate::host::HostDraft,
+        route: SftpRoute,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.file_sidebar(terminal).is_some() {
+            return;
+        }
+        let host_id = self
+            .store
+            .update(cx, |store, cx| store.insert_temporary(draft, None, cx));
+        let (host, login) = {
+            let store = self.store.read(cx);
+            (
+                store.host(host_id).unwrap().clone(),
+                store.login(host_id).unwrap(),
+            )
+        };
+        let id = ExplorerId(self.next_explorer_id);
+        self.next_explorer_id += 1;
+        let (panel, subscription) = new_explorer_panel(self, id, host, login, route, window, cx);
+        self._subscriptions.push(subscription);
+        self.explorers.insert(id, panel.clone());
+        self.file_sidebars.insert(terminal, id);
+        self.sync_tool_sidebar(window, cx);
+    }
+
     /// End a terminal's 文件 with the terminal. Its `Closed` does the rest,
     /// as for an SFTP tab: its editors, its place in the registers.
     fn close_file_sidebar(
@@ -906,6 +1000,8 @@ impl Workspace {
     ) {
         // It logs in nowhere, so no question of its own can be waiting.
         if let Some(panel) = self.file_sidebar(terminal).cloned() {
+            let owner = PromptOwner::Sftp(panel.read(cx).id(), panel.read(cx).generation());
+            self.cancel_prompts_for_owner(owner, window, cx);
             panel.update(cx, |panel, cx| panel.close(window, cx));
         }
     }
@@ -916,6 +1012,23 @@ impl Workspace {
 
     pub fn settings_tab(&self) -> Option<&Entity<SettingsPanel>> {
         self.settings_tab.as_ref()
+    }
+
+    pub fn set_adb_detector(&mut self, detector: Arc<dyn crate::adb::AdbDetector>) {
+        self.adb_detector = detector;
+    }
+
+    pub fn set_android_tools(&mut self, tools: Arc<dyn crate::adb::AndroidTools>) {
+        self.android_tools = tools;
+    }
+
+    pub fn set_monitor_connector(
+        &mut self,
+        connector: Arc<dyn crate::monitor::MonitorConnector>,
+        cx: &mut Context<Self>,
+    ) {
+        self.tools
+            .update(cx, |tools, cx| tools.set_monitor_connector(connector, cx));
     }
 
     pub fn settings(&self) -> &Entity<SettingsStore> {
@@ -1170,7 +1283,13 @@ impl Workspace {
                 } else {
                     title.clone().into()
                 };
-                let form = cx.new(|cx| AuthenticationPromptForm::new(fields, window, cx));
+                let passwords = matches!(
+                    prompt.request(),
+                    crate::connection::AuthenticationRequest::Password { .. }
+                )
+                .then(|| self.store.clone());
+                let form =
+                    cx.new(|cx| AuthenticationPromptForm::new(fields, passwords, window, cx));
                 window.open_dialog(cx, move |dialog, _, _| {
                     dialog
                         .title(dialog_title.clone())
@@ -1190,8 +1309,11 @@ impl Workspace {
                             let answer = answer.clone();
                             let form = form.clone();
                             move |_, window, cx| {
-                                let answers =
-                                    form.update(cx, |form, cx| form.take_answers(window, cx));
+                                let Some(answers) =
+                                    form.update(cx, |form, cx| form.take_answers(window, cx))
+                                else {
+                                    return false;
+                                };
                                 answer(ConnectionPromptReply::Answers(answers), cx);
                                 true
                             }
@@ -1461,6 +1583,41 @@ impl Workspace {
     ) {
         self.open_local_terminal(None, window, cx);
         self.count(Counter::LocalTerminal);
+    }
+
+    fn on_new_command_terminal(
+        &mut self,
+        _: &NewCommandTerminal,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let id = LocalTerminalId(self.next_local_terminal_id);
+        self.next_local_terminal_id += 1;
+        let name = Some(SavedName {
+            name: "ShellLF".into(),
+            fixed: true,
+            title: None,
+        });
+        let (panel, subscription) = new_local_terminal_panel(
+            id,
+            crate::terminal::command_terminal_factory(),
+            name,
+            window,
+            cx,
+        );
+        panel.update(cx, |panel, cx| panel.set_command_terminal(cx));
+        self._subscriptions.push(subscription);
+        let focus = panel.read(cx).focus_handle(cx);
+        self._subscriptions.push(follow_focus(
+            CenterTab::LocalTerminal(id),
+            &focus,
+            window,
+            cx,
+        ));
+        self.local_terminals.insert(id, panel.clone());
+        self.dock_area.update(cx, |area, cx| {
+            area.add_panel_view(panel_handle(panel), DockPlacement::Center, None, window, cx);
+        });
     }
 
     /// Open a local terminal tab: in the home folder, or a saved terminal's
@@ -2126,7 +2283,11 @@ impl Workspace {
                 .get(&action.0)
                 .and_then(|id| self.store.read(cx).saved_terminal(*id))
                 .cloned();
-            let factory = self.local_terminal_factory(saved.as_ref(), false, cx);
+            let factory = if panel.read(cx).is_command_terminal() {
+                crate::terminal::command_terminal_factory()
+            } else {
+                self.local_terminal_factory(saved.as_ref(), false, cx)
+            };
             panel.update(cx, |panel, cx| panel.restart(factory, window, cx));
         }
     }
@@ -2859,6 +3020,7 @@ fn new_terminal_panel(
                     .get(terminal_id)
                     .is_none_or(|panel| !panel.read(cx).host().is_ssh())
                 {
+                    this.sync_tool_sidebar(window, cx);
                     return;
                 }
                 // A new connection, maybe to another machine: its folder is
@@ -2917,15 +3079,17 @@ fn new_terminal_panel(
 
 struct AuthenticationPromptForm {
     fields: Vec<(ConnectionPromptField, Entity<InputState>)>,
+    password_picker: Option<Entity<crate::shared::SavedPasswordPicker>>,
 }
 
 impl AuthenticationPromptForm {
     fn new(
         fields: Vec<ConnectionPromptField>,
+        passwords: Option<Entity<HostStore>>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let fields = fields
+        let fields: Vec<_> = fields
             .into_iter()
             .map(|field| {
                 let echo = field.echo();
@@ -2933,39 +3097,68 @@ impl AuthenticationPromptForm {
                 (field, input)
             })
             .collect();
-        Self { fields }
+        let password_picker = passwords.and_then(|store| {
+            fields.first().map(|(_, input)| {
+                cx.new(|cx| {
+                    crate::shared::SavedPasswordPicker::new(store, input.clone(), window, cx)
+                })
+            })
+        });
+        Self {
+            fields,
+            password_picker,
+        }
     }
 
     fn take_answers(
         &mut self,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> Vec<ConnectionSecret> {
-        self.fields
-            .iter()
-            .map(|(_, input)| {
-                let answer = ConnectionSecret::new(input.read(cx).value().to_string());
-                input.update(cx, |input, cx| input.set_value("", window, cx));
-                answer
-            })
-            .collect()
+    ) -> Option<Vec<ConnectionSecret>> {
+        if self
+            .password_picker
+            .as_ref()
+            .and_then(|picker| picker.read(cx).problem())
+            .is_some()
+        {
+            return None;
+        }
+        if let Some(picker) = &self.password_picker {
+            picker.update(cx, |picker, _| picker.cancel());
+        }
+        Some(
+            self.fields
+                .iter()
+                .map(|(_, input)| {
+                    let answer = ConnectionSecret::new(input.read(cx).value().to_string());
+                    input.update(cx, |input, cx| input.set_value("", window, cx));
+                    answer
+                })
+                .collect(),
+        )
     }
 }
 
 impl Render for AuthenticationPromptForm {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        Form::new().children(
-            self.fields
-                .iter()
-                .enumerate()
-                .map(|(index, (field, input))| {
-                    let mut input = Input::new(input).id(("ssh-auth-answer", index)).small();
-                    if !field.echo() {
-                        input = input.content_type(InputContentType::Password).mask_toggle();
-                    }
-                    Field::new().label(field.label().to_string()).child(input)
-                }),
-        )
+        Form::new()
+            .children(
+                self.fields
+                    .iter()
+                    .enumerate()
+                    .map(|(index, (field, input))| {
+                        let mut input = Input::new(input).id(("ssh-auth-answer", index)).small();
+                        if !field.echo() {
+                            input = input.content_type(InputContentType::Password).mask_toggle();
+                        }
+                        Field::new().label(field.label().to_string()).child(input)
+                    }),
+            )
+            .children(
+                self.password_picker
+                    .clone()
+                    .map(|picker| Field::new().child(picker)),
+            )
     }
 }
 
@@ -3038,6 +3231,8 @@ fn new_explorer_panel(
                     this.store
                         .update(cx, |store, cx| store.record_connection(*host_id, cx));
                 }
+                let id = *id;
+                cx.defer_in(window, move |this, window, cx| this.fallback_serial_network(id, window, cx));
             },
             ExplorerPanelEvent::StatusChanged(id) => {
                 if this.active_tab == Some(CenterTab::Explorer(*id)) {
@@ -3071,6 +3266,19 @@ fn new_local_terminal_panel(
         &panel,
         window,
         |this, panel, event: &LocalTerminalPanelEvent, window, cx| match event {
+            LocalTerminalPanelEvent::ConnectSsh(id, command) => {
+                if !panel.read(cx).is_command_terminal() {
+                    return;
+                }
+                let host = this.store.update(cx, |store, cx| {
+                    store.insert_temporary(command.draft(), None, cx)
+                });
+                this.connect_host(host, window, cx);
+                let id = *id;
+                cx.defer_in(window, move |this, window, cx| {
+                    this.on_close_local_terminal(&CloseLocalTerminal(id), window, cx);
+                });
+            }
             LocalTerminalPanelEvent::Input(id, input) => {
                 this.broadcast_input(CenterTab::LocalTerminal(*id), input, cx);
             }
@@ -3142,7 +3350,12 @@ impl Workspace {
             Some(CenterTab::LocalTerminal(id)) => self
                 .local_terminals
                 .get(&id)
-                .map(|panel| WorkspaceStatus::Local(panel.read(cx).status(cx)))
+                .map(|panel| {
+                    WorkspaceStatus::Local(
+                        panel.read(cx).status(cx),
+                        panel.read(cx).is_command_terminal(),
+                    )
+                })
                 .unwrap_or(WorkspaceStatus::Host(None, None)),
             // An SFTP tab tells its own connection, and what went wrong in it.
             Some(CenterTab::Explorer(id)) => match self.explorers.get(&id) {
@@ -3194,6 +3407,7 @@ impl Workspace {
             .on_action(cx.listener(Self::on_new_temporary_connection))
             .on_action(cx.listener(Self::on_quick_connect))
             .on_action(cx.listener(Self::on_new_local_terminal))
+            .on_action(cx.listener(Self::on_new_command_terminal))
             .on_action(cx.listener(Self::on_toggle_terminal_broadcast))
             .on_action(cx.listener(Self::on_set_broadcast_target))
             .on_action(cx.listener(Self::on_toggle_compose_pane))
@@ -3296,6 +3510,14 @@ impl Workspace {
             .on_action(cx.listener(Self::on_show_or_hide_app))
             .on_action(cx.listener(Self::on_toggle_tool_sidebar))
             .on_action(cx.listener(Self::on_toggle_tool))
+            .on_action(cx.listener(Self::on_auto_serial_files))
+            .on_action(cx.listener(Self::on_upload_serial_file))
+            .on_action(cx.listener(Self::on_download_serial_file))
+            .on_action(cx.listener(Self::on_serial_file_download))
+            .on_action(cx.listener(Self::on_choose_adb_device))
+            .on_action(cx.listener(Self::on_open_adb_devices))
+            .on_action(cx.listener(Self::on_adb_device_action))
+            .on_action(cx.listener(Self::on_open_adb_files))
             .on_action(cx.listener(Self::on_refresh_gpu))
             .on_action(cx.listener(Self::on_toggle_gpu_device))
             .on_action(cx.listener(Self::on_toggle_all_gpu_devices))
@@ -3308,6 +3530,7 @@ impl Workspace {
             .on_action(cx.listener(Self::on_toggle_directory_follow))
             .on_action(cx.listener(Self::on_install_directory_follow))
             .on_action(cx.listener(Self::on_toggle_monitor_detail))
+            .on_action(cx.listener(Self::on_toggle_monitor_channel))
             .on_action(cx.listener(Self::on_refresh_connections))
             .on_action(cx.listener(Self::on_refresh_processes))
             .on_action(cx.listener(Self::on_sort_processes))

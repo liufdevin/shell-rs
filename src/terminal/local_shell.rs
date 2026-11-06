@@ -149,7 +149,7 @@ pub fn installed_shells() -> Vec<String> {
 // Each platform uses only its own; the tests use both everywhere.
 #[cfg_attr(not(test), allow(dead_code))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Quoting {
+pub(super) enum Quoting {
     /// As a POSIX shell reads them: single quotes, double quotes, and
     /// backslashes that take the next character as it is.
     Posix,
@@ -165,7 +165,7 @@ const QUOTING: Quoting = Quoting::Windows;
 
 /// The words of `line`, split at blanks outside quotes. `None` when a
 /// quote is left open.
-fn split_command(line: &str, quoting: Quoting) -> Option<Vec<String>> {
+pub(super) fn split_command(line: &str, quoting: Quoting) -> Option<Vec<String>> {
     let posix = quoting == Quoting::Posix;
     let mut words = Vec::new();
     let mut word = String::new();

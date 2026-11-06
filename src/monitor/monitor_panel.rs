@@ -1,11 +1,16 @@
 use std::cell::Cell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 use std::time::{Duration, Instant};
 
 use gpui_kit::component::{
     ActiveTheme as _, Icon, IconName, Sizable as _,
     button::{Button, ButtonVariants as _},
+    checkbox::Checkbox,
     h_flex,
     progress::Progress,
     scroll::ScrollableElement as _,
@@ -17,11 +22,14 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use super::MonitorDetail;
+use super::hardware::Bandwidth;
 use super::linux::{self, Parsed, Parts};
 use super::model::{
     DiskUsage, InterfaceRate, Memory, Snapshot, SystemInfo, Tracker, bars_per_row, format_rate,
 };
-use crate::app::{CatalogIcon, ToggleMonitorDetail};
+use super::{MonitorConnector, MonitorLink};
+use crate::app::{CatalogIcon, ToggleMonitorChannel, ToggleMonitorDetail};
+use crate::host::{HostId, HostStore, MonitorChannel, MonitorSettings};
 use crate::i18n::{t, tn};
 use crate::shared::{
     amount, card, format_bytes, format_duration, format_percent, gauge, load_color, meter, numeric,
@@ -47,6 +55,10 @@ const DISK_INTERVAL: Duration = Duration::from_secs(30);
 /// each terminal's host showed last is kept, so coming back to a terminal
 /// shows its numbers at once.
 pub struct MonitorPanel {
+    store: Entity<HostStore>,
+    connector: Option<Arc<dyn MonitorConnector>>,
+    serial: Option<(HostId, MonitorSettings)>,
+    native_ssh: bool,
     target: Option<ExecTarget>,
     active: bool,
     hosts: HashMap<RemoteTerminalId, HostState>,
@@ -61,10 +73,16 @@ pub struct MonitorPanel {
     /// they work whatever is focused.
     dispatch: FocusHandle,
     sampling: Option<Task<()>>,
+    channels_unfolded: bool,
 }
 
 #[derive(Default)]
 struct HostState {
+    hardware_enabled: bool,
+    generation: u64,
+    paused: bool,
+    source: String,
+    updated: Option<String>,
     tracker: Tracker,
     snapshot: Option<Snapshot>,
     /// With the terminal's connection it was read on: a reconnect may land
@@ -73,6 +91,8 @@ struct HostState {
     /// With when they were read.
     disks: Option<(Instant, Vec<DiskUsage>)>,
     problem: Option<Problem>,
+    hardware: Vec<Bandwidth>,
+    hidden_channels: HashSet<String>,
 }
 
 impl HostState {
@@ -105,11 +125,41 @@ enum Problem {
 enum Outcome {
     Output(ExecResult),
     NotConnected,
+    Paused,
+}
+
+struct SamplingGuard(Arc<AtomicBool>);
+impl Drop for SamplingGuard {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Release);
+    }
+}
+
+struct SerialRoute {
+    link: Option<Box<dyn MonitorLink>>,
+    identity: Option<String>,
+    retry_at: Instant,
+    problem: Option<String>,
+}
+
+impl Default for SerialRoute {
+    fn default() -> Self {
+        Self {
+            link: None,
+            identity: None,
+            retry_at: Instant::now(),
+            problem: None,
+        }
+    }
 }
 
 impl MonitorPanel {
-    pub fn new(dispatch: FocusHandle) -> Self {
+    pub fn new(dispatch: FocusHandle, store: Entity<HostStore>, _: &mut Context<Self>) -> Self {
         Self {
+            store,
+            connector: None,
+            serial: None,
+            native_ssh: false,
             target: None,
             active: false,
             hosts: HashMap::new(),
@@ -118,6 +168,7 @@ impl MonitorPanel {
             interfaces_unfolded: false,
             dispatch,
             sampling: None,
+            channels_unfolded: false,
         }
     }
 
@@ -127,20 +178,55 @@ impl MonitorPanel {
         let unfolded = match detail {
             MonitorDetail::Cores => &mut self.cores_unfolded,
             MonitorDetail::Interfaces => &mut self.interfaces_unfolded,
+            MonitorDetail::HardwareChannels => &mut self.channels_unfolded,
         };
         *unfolded = !*unfolded;
         cx.notify();
     }
 
     /// Read `target`'s host while `active`, the panel showing it.
-    pub fn set_target(&mut self, target: Option<ExecTarget>, active: bool, cx: &mut Context<Self>) {
-        if self.target == target && self.active == active {
+    pub fn set_target(
+        &mut self,
+        target: Option<ExecTarget>,
+        serial: Option<(HostId, MonitorSettings)>,
+        native_ssh: bool,
+        active: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if self.target == target
+            && self.serial == serial
+            && self.native_ssh == native_ssh
+            && self.active == active
+        {
             return;
         }
         self.target = target;
+        self.serial = serial;
+        self.native_ssh = native_ssh;
         self.active = active;
         self.restart(cx);
         cx.notify();
+    }
+
+    pub fn set_connector(&mut self, connector: Arc<dyn MonitorConnector>, cx: &mut Context<Self>) {
+        self.connector = Some(connector);
+        self.restart(cx);
+    }
+
+    pub fn toggle_channel(
+        &mut self,
+        terminal: RemoteTerminalId,
+        name: &str,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(host) = self.hosts.get_mut(&terminal)
+            && host.hardware.iter().any(|value| value.name == name)
+        {
+            if !host.hidden_channels.remove(name) {
+                host.hidden_channels.insert(name.to_owned());
+            }
+            cx.notify();
+        }
     }
 
     /// Start reading the target's host over, or stop when there is nothing
@@ -151,9 +237,22 @@ impl MonitorPanel {
         let Some(target) = self.target.clone().filter(|_| self.active) else {
             return;
         };
+        let serial = self.serial.clone();
+        let native_ssh = self.native_ssh;
+        if !native_ssh && let Some(host) = self.hosts.get_mut(&target.terminal) {
+            host.hardware_enabled = false;
+            host.hardware.clear();
+        }
+        let connector = self.connector.clone();
+        let store = self.store.clone();
+        let guard = SamplingGuard(Arc::new(AtomicBool::new(false)));
         self.sampling = Some(cx.spawn(async move |this, cx| {
+            let guard = guard;
+            let mut route = SerialRoute::default();
+            let mut generation = None;
             let mut first = true;
             loop {
+                let started = cx.background_executor().now();
                 let request = this.update(cx, |this, cx| {
                     let view = target.view.upgrade()?;
                     let view = view.read(cx);
@@ -166,28 +265,192 @@ impl MonitorPanel {
                         },
                         |host| host.parts_due(connection, now),
                     );
-                    let reply = view.exec(linux::command(parts), cx)?;
-                    Some((reply, connection))
+                    Some((
+                        parts,
+                        connection,
+                        view.lifecycle(cx) == crate::terminal::TerminalLifecycle::Running,
+                    ))
                 });
                 let Ok(request) = request else { break };
-                let (outcome, connection) = match request {
-                    None => (Outcome::NotConnected, 0),
-                    Some((reply, connection)) => (
-                        exec_answer(reply, cx)
+                let Some((mut parts, connection, running)) = request else {
+                    break;
+                };
+                if generation != Some(connection) {
+                    route = SerialRoute::default();
+                    generation = Some(connection);
+                    parts = Parts {
+                        system: true,
+                        disks: true,
+                    };
+                }
+                let mut source = String::new();
+                let mut hardware_enabled = native_ssh && running;
+                let outcome = if !running {
+                    route = SerialRoute::default();
+                    Outcome::NotConnected
+                } else if let Some((_, settings)) = &serial {
+                    let discover = connector.is_some()
+                        && settings.channel != MonitorChannel::Serial
+                        && route.link.is_none()
+                        && Instant::now() >= route.retry_at;
+                    let mut paused = false;
+                    if discover {
+                        let identity = match serial_command(
+                            &target,
+                            crate::serial::files::NETWORK_COMMAND.into(),
+                            cx,
+                        )
+                        .await
+                        {
+                            Outcome::Output(Ok(identity)) => {
+                                route.identity = Some(identity.clone());
+                                Some(identity)
+                            }
+                            Outcome::Paused => {
+                                paused = route.identity.is_none();
+                                route.identity.clone()
+                            }
+                            Outcome::NotConnected => {
+                                route.identity = None;
+                                paused = true;
+                                None
+                            }
+                            Outcome::Output(Err(error)) => {
+                                route.problem = Some(error);
+                                route.retry_at = Instant::now() + Duration::from_secs(30);
+                                None
+                            }
+                        };
+                        if let Some(identity) = identity {
+                            let candidates = store.read_with(cx, |store, _| {
+                                store
+                                    .hosts()
+                                    .iter()
+                                    .filter(|host| host.is_ssh())
+                                    .filter_map(|host| {
+                                        store.login(host.id).map(|login| {
+                                            (host.public_id.as_str().to_owned(), login)
+                                        })
+                                    })
+                                    .collect::<Vec<_>>()
+                            });
+                            let connector = connector.clone().unwrap();
+                            let settings = settings.clone();
+                            let cancel = guard.0.clone();
+                            let result = cx
+                                .background_spawn(async move {
+                                    connector.connect(&identity, &settings, &candidates, &cancel)
+                                })
+                                .await;
+                            route.retry_at = Instant::now() + Duration::from_secs(30);
+                            match result {
+                                Ok(link) => {
+                                    route.link = link;
+                                    route.problem = None;
+                                }
+                                Err(error) => route.problem = Some(error),
+                            }
+                            parts = Parts {
+                                system: true,
+                                disks: true,
+                            };
+                        }
+                    }
+                    let command = linux::command_with_hardware(parts, route.link.is_some());
+                    if let Some(mut link) = route.link.take() {
+                        hardware_enabled = true;
+                        source = link.label();
+                        let cancel = guard.0.clone();
+                        let (link, result) = cx
+                            .background_spawn(async move {
+                                let result = link.sample(&command, &cancel);
+                                (link, result)
+                            })
+                            .await;
+                        match result {
+                            Ok(output) => {
+                                route.link = Some(link);
+                                Outcome::Output(Ok(output))
+                            }
+                            Err(error) => {
+                                hardware_enabled = false;
+                                route.problem = Some(error.clone());
+                                route.retry_at = Instant::now() + Duration::from_secs(30);
+                                if settings.channel == MonitorChannel::Auto {
+                                    source = t!("monitor.route.serial").to_string();
+                                    serial_command(
+                                        &target,
+                                        linux::command_with_hardware(
+                                            Parts {
+                                                system: true,
+                                                disks: true,
+                                            },
+                                            false,
+                                        ),
+                                        cx,
+                                    )
+                                    .await
+                                } else {
+                                    Outcome::Output(Err(error))
+                                }
+                            }
+                        }
+                    } else if paused {
+                        source = t!("monitor.route.serial").to_string();
+                        Outcome::Paused
+                    } else if matches!(
+                        settings.channel,
+                        MonitorChannel::Auto | MonitorChannel::Serial
+                    ) {
+                        source = t!("monitor.route.serial").to_string();
+                        serial_command(&target, command, cx).await
+                    } else {
+                        Outcome::Output(Err(route
+                            .problem
+                            .clone()
+                            .unwrap_or_else(|| t!("monitor.route.unavailable").to_string())))
+                    }
+                } else {
+                    let reply = target
+                        .view
+                        .update(cx, |view, cx| {
+                            view.exec(linux::command_with_hardware(parts, native_ssh), cx)
+                        })
+                        .ok()
+                        .flatten();
+                    match reply {
+                        Some(reply) => exec_answer(reply, cx)
                             .await
                             .map_or(Outcome::NotConnected, Outcome::Output),
-                        connection,
-                    ),
+                        None => Outcome::NotConnected,
+                    }
                 };
                 if this
                     .update(cx, |this, cx| {
-                        this.record(target.terminal, connection, outcome, cx)
+                        if target
+                            .view
+                            .upgrade()
+                            .is_some_and(|view| view.read(cx).generation(cx) == connection)
+                        {
+                            this.record(
+                                target.terminal,
+                                connection,
+                                source,
+                                hardware_enabled,
+                                outcome,
+                                cx,
+                            )
+                        }
                     })
                     .is_err()
                 {
                     break;
                 }
-                let pause = if first { SECOND_READING } else { INTERVAL };
+                let elapsed = cx
+                    .background_executor()
+                    .now()
+                    .saturating_duration_since(started);
+                let pause = sample_pause(first, elapsed);
                 first = false;
                 cx.background_executor().timer(pause).await;
             }
@@ -198,16 +461,37 @@ impl MonitorPanel {
         &mut self,
         terminal: RemoteTerminalId,
         connection: u64,
+        source: String,
+        hardware_enabled: bool,
         outcome: Outcome,
         cx: &mut Context<Self>,
     ) {
         let now = cx.background_executor().now();
         let host = self.hosts.entry(terminal).or_default();
+        if host.generation != connection {
+            let hidden_channels = std::mem::take(&mut host.hidden_channels);
+            *host = HostState {
+                generation: connection,
+                hidden_channels,
+                ..Default::default()
+            };
+        }
+        host.source = source;
+        host.hardware_enabled = hardware_enabled;
+        if !hardware_enabled {
+            host.hardware.clear();
+        }
+        host.paused = matches!(outcome, Outcome::Paused);
         host.problem = match outcome {
+            Outcome::Paused => None,
             Outcome::NotConnected => Some(Problem::NotConnected),
             Outcome::Output(Err(error)) => Some(Problem::Failed(error)),
             Outcome::Output(Ok(output)) => match linux::parse(&output) {
                 Parsed::Reading(mut reading) => {
+                    host.updated = Some(chrono::Local::now().format("%H:%M:%S").to_string());
+                    if let Some(hardware) = reading.hardware.take().filter(|_| hardware_enabled) {
+                        host.hardware = hardware;
+                    }
                     if let Some(system) = reading.system.take() {
                         host.system = Some((connection, system));
                     }
@@ -220,8 +504,32 @@ impl MonitorPanel {
                 Parsed::Unsupported(system) => Some(Problem::Unsupported(system)),
             },
         };
+        if host.problem.is_some() {
+            host.hardware.clear();
+        }
         cx.notify();
     }
+}
+
+async fn serial_command(target: &ExecTarget, command: String, cx: &mut AsyncApp) -> Outcome {
+    let reply = target
+        .view
+        .update(cx, |view, cx| view.monitor(command, cx))
+        .ok()
+        .flatten();
+    match reply {
+        Some(reply) => match exec_answer(reply, cx).await {
+            Some(Err(error)) if error == crate::terminal::MONITOR_PAUSED => Outcome::Paused,
+            Some(result) => Outcome::Output(result),
+            None => Outcome::NotConnected,
+        },
+        None => Outcome::NotConnected,
+    }
+}
+
+fn sample_pause(first: bool, elapsed: Duration) -> Duration {
+    let interval = if first { SECOND_READING } else { INTERVAL };
+    interval.saturating_sub(elapsed)
 }
 
 impl Render for MonitorPanel {
@@ -234,6 +542,9 @@ impl Render for MonitorPanel {
         let system = host.and_then(|host| host.system.as_ref().map(|(_, system)| system));
         let disks = host.and_then(|host| host.disks.as_ref().map(|(_, disks)| disks.as_slice()));
         let problem = host.and_then(|host| host.problem.clone());
+        let hardware: Vec<_> = host.into_iter().flat_map(|host| &host.hardware).collect();
+        let hidden = host.map(|host| &host.hidden_channels);
+        let hardware_terminal = self.target.as_ref().map(|target| target.terminal);
         let interfaces_unfolded = self.interfaces_unfolded;
         let cores = CoresLayout {
             unfolded: self.cores_unfolded,
@@ -252,6 +563,48 @@ impl Render for MonitorPanel {
             .size_full()
             .p_3()
             .gap_3()
+            .when_some(
+                host.filter(|host| !host.source.is_empty()),
+                |panel, host| {
+                    let message = t!(
+                        "monitor.route.paused",
+                        time = host.updated.as_deref().unwrap_or("—")
+                    );
+                    panel.child(
+                        h_flex()
+                            .h_5()
+                            .gap_2()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .truncate()
+                                    .id("monitor-channel")
+                                    .test_support()
+                                    .aria_label(host.source.clone())
+                                    .child(host.source.clone()),
+                            )
+                            .when(host.paused, |row| {
+                                row.child(
+                                    div()
+                                        .id("monitor-paused")
+                                        .test_support()
+                                        .flex_shrink_0()
+                                        .aria_label(message.clone())
+                                        .tooltip(move |window, cx| {
+                                            Tooltip::new(message.clone()).build(window, cx)
+                                        })
+                                        .child(t!("monitor.route.paused_short")),
+                                )
+                            })
+                            .when(!host.paused, |row| {
+                                row.child(div().flex_shrink_0().child(t!("monitor.route.live")))
+                            }),
+                    )
+                },
+            )
             .map(|panel| match (snapshot, problem) {
                 // Numbers from before a failed reading still say something;
                 // the failure goes above them.
@@ -264,9 +617,20 @@ impl Render for MonitorPanel {
                     })
                     .child(render_cpu(system, snapshot, &cores, dispatch, cx))
                     .child(render_memory(&snapshot.memory, cx))
+                    .when(!hardware.is_empty(), |panel| {
+                        panel.child(render_hardware(
+                            &hardware,
+                            hidden.unwrap(),
+                            hardware_terminal.unwrap(),
+                            self.channels_unfolded,
+                            dispatch,
+                            cx,
+                        ))
+                    })
                     .child(render_network(snapshot, interfaces_unfolded, dispatch, cx))
                     .when_some(disks, |panel, disks| panel.child(render_disks(disks, cx))),
                 (_, Some(problem)) => panel.child(render_problem(&problem, cx)),
+                (None, None) if host.is_some_and(|host| host.paused) => panel,
                 (None, None) => panel.child(
                     h_flex()
                         .id("monitor-loading")
@@ -287,6 +651,81 @@ impl Render for MonitorPanel {
             .size_full()
             .child(content)
     }
+}
+
+fn render_hardware(
+    values: &[&Bandwidth],
+    hidden: &HashSet<String>,
+    terminal: RemoteTerminalId,
+    expanded: bool,
+    dispatch: &FocusHandle,
+    cx: &App,
+) -> impl IntoElement {
+    let toggle = dispatch.clone();
+    card(
+        "monitor-hardware",
+        IconName::Cpu,
+        t!("monitor.hardware.title"),
+        Some(
+            Button::new("monitor-hardware-channels")
+                .ghost()
+                .xsmall()
+                .label(t!("monitor.hardware.channels"))
+                .on_click(move |_, window, cx| {
+                    toggle.dispatch_action(
+                        &ToggleMonitorDetail(MonitorDetail::HardwareChannels),
+                        window,
+                        cx,
+                    )
+                })
+                .into_any_element(),
+        ),
+        cx,
+    )
+    .when(expanded, |card| {
+        card.child(
+            h_flex()
+                .flex_wrap()
+                .gap_2()
+                .children(values.iter().map(|value| {
+                    let dispatch = dispatch.clone();
+                    let name = value.name.clone();
+                    Checkbox::new(SharedString::from(format!("monitor-channel:{name}")))
+                        .small()
+                        .label(name.clone())
+                        .checked(!hidden.contains(&name))
+                        .on_click(move |_, window, cx| {
+                            dispatch.dispatch_action(
+                                &ToggleMonitorChannel((terminal, name.clone())),
+                                window,
+                                cx,
+                            )
+                        })
+                })),
+        )
+    })
+    .child(
+        v_flex().gap_2().children(
+            values
+                .iter()
+                .filter(|value| !hidden.contains(&value.name))
+                .map(|value| {
+                    let text = format!("{:.2} {}", value.value, value.unit);
+                    h_flex()
+                        .id(SharedString::from(format!(
+                            "monitor-hardware:{}",
+                            value.name
+                        )))
+                        .test_support()
+                        .aria_label(format!("{} {text}", value.name))
+                        .justify_between()
+                        .gap_3()
+                        .text_sm()
+                        .child(value.name.clone())
+                        .child(numeric(text, cx))
+                }),
+        ),
+    )
 }
 
 fn render_problem(problem: &Problem, cx: &App) -> impl IntoElement {
@@ -758,4 +1197,39 @@ fn render_disks(disks: &[DiskUsage], cx: &App) -> impl IntoElement {
                     .text_color(cx.theme().muted_foreground),
             )
     }))
+}
+
+#[cfg(test)]
+mod polling_tests {
+    use super::sample_pause;
+    use std::time::Duration;
+
+    #[test]
+    fn sampling_time_is_part_of_the_two_second_refresh_period() {
+        assert_eq!(sample_pause(false, Duration::ZERO), Duration::from_secs(2));
+        assert_eq!(
+            sample_pause(false, Duration::from_secs(1)),
+            Duration::from_secs(1)
+        );
+        assert_eq!(
+            sample_pause(false, Duration::from_millis(1500)),
+            Duration::from_millis(500)
+        );
+    }
+
+    #[test]
+    fn slow_samples_do_not_add_another_two_second_delay() {
+        assert_eq!(sample_pause(false, Duration::from_secs(2)), Duration::ZERO);
+        assert_eq!(sample_pause(false, Duration::from_secs(5)), Duration::ZERO);
+    }
+
+    #[test]
+    fn the_initial_cpu_warmup_keeps_its_shorter_interval() {
+        assert_eq!(sample_pause(true, Duration::ZERO), Duration::from_secs(1));
+        assert_eq!(
+            sample_pause(true, Duration::from_millis(500)),
+            Duration::from_millis(500)
+        );
+        assert_eq!(sample_pause(true, Duration::from_secs(2)), Duration::ZERO);
+    }
 }

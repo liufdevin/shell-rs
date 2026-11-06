@@ -39,6 +39,7 @@ pub struct SecretFields {
     /// committing early never deletes anything.
     password_loaded: bool,
     passphrase_loaded: bool,
+    password_picker: Option<Entity<crate::shared::SavedPasswordPicker>>,
     _key_path_subscription: Subscription,
 }
 
@@ -86,6 +87,7 @@ impl SecretFields {
             secrets,
             password_loaded: false,
             passphrase_loaded: false,
+            password_picker: None,
             _key_path_subscription: key_path_subscription,
         }
     }
@@ -250,6 +252,9 @@ impl SecretFields {
     /// Drop the plaintext from the fields. Called as the dialog closes,
     /// rather than waiting for the form to go.
     pub fn clear(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(picker) = &self.password_picker {
+            picker.update(cx, |picker, _| picker.cancel());
+        }
         for input in [&self.password, &self.passphrase] {
             input.update(cx, |input, cx| input.set_value("", window, cx));
         }
@@ -257,6 +262,41 @@ impl SecretFields {
 
     pub fn password_input(&self, id: &'static str) -> Input {
         self.secret_input(&self.password, id)
+    }
+
+    pub(crate) fn enable_password_picker(
+        &mut self,
+        store: Entity<super::HostStore>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.password_picker = Some(cx.new(|cx| {
+            crate::shared::SavedPasswordPicker::new(store, self.password.clone(), window, cx)
+        }));
+    }
+
+    pub(crate) fn password_control(&self, id: &'static str) -> impl IntoElement + use<> {
+        h_flex()
+            .items_start()
+            .gap_2()
+            .w_full()
+            .child(
+                gpui_kit::div()
+                    .flex_1()
+                    .min_w_0()
+                    .child(self.password_input(id)),
+            )
+            .children(
+                self.password_picker
+                    .clone()
+                    .map(|picker| gpui_kit::div().flex_1().min_w_0().child(picker)),
+            )
+    }
+
+    pub(crate) fn password_problem(&self, cx: &App) -> Option<SharedString> {
+        self.password_picker
+            .as_ref()
+            .and_then(|picker| picker.read(cx).problem())
     }
 
     pub fn passphrase_input(&self, id: &'static str) -> Input {

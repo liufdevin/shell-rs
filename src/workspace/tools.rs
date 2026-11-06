@@ -28,8 +28,8 @@ use crate::app::{
     CenterTab, ControlContainers, ControlService, CopyCommand, EndProcess, EnterCommand,
     RefreshConnections, RefreshDocker, RefreshGpu, RefreshHistory, RefreshProcesses,
     RefreshServices, RemoveDockerObject, ShowDockerObject, ShowProcess, ShowService, SortProcesses,
-    ToggleAllGpuDevices, ToggleDockerProject, ToggleGpuDevice, ToggleMonitorDetail, ToggleTool,
-    ToggleToolSidebar, ToolKind,
+    ToggleAllGpuDevices, ToggleDockerProject, ToggleGpuDevice, ToggleMonitorChannel,
+    ToggleMonitorDetail, ToggleTool, ToggleToolSidebar, ToolKind,
 };
 use crate::docker::{
     self, ContainerCommand, ContainerSubject, DockerObject, open_container_dialog,
@@ -120,9 +120,26 @@ impl Workspace {
             id,
             host: panel.host_id(),
             name: panel.host().name.clone(),
-            os: panel.host().os,
+            os: if panel
+                .host()
+                .protocol
+                .serial()
+                .is_some_and(|settings| settings.linux_shell)
+            {
+                Some(HostOs::Linux)
+            } else {
+                panel.host().os
+            },
             shell_only: panel.shell_only(),
             serial: panel.host().is_serial(),
+            ssh: panel.host().is_ssh(),
+            monitor_settings: self
+                .store
+                .read(cx)
+                .host(panel.host_id())
+                .unwrap_or(panel.host())
+                .monitor
+                .clone(),
             view: panel.terminal().downgrade(),
         })
     }
@@ -133,7 +150,8 @@ impl Workspace {
             ToolTarget::Remote(_) => self.tool_terminal(cx).map(SidebarTarget::Remote),
             ToolTarget::Local(id) => self
                 .local_terminals
-                .contains_key(&id)
+                .get(&id)
+                .is_some_and(|panel| !panel.read(cx).is_command_terminal())
                 .then_some(SidebarTarget::Local(id)),
         }
     }
@@ -154,6 +172,11 @@ impl Workspace {
                 .collect(),
             Some(SidebarTarget::Remote(terminal)) => {
                 let (os, shell_only) = (terminal.os, terminal.shell_only);
+                let telnet = self
+                    .store
+                    .read(cx)
+                    .host(terminal.host)
+                    .is_some_and(|host| host.protocol.is_telnet());
                 ToolKind::ALL
                     .into_iter()
                     .filter(|tool| {
@@ -161,6 +184,26 @@ impl Workspace {
                             && (*tool != ToolKind::Serial || terminal.serial)
                             && shown.shows(*tool)
                             && tool.works_on(os)
+                            && (!telnet
+                                || matches!(
+                                    tool,
+                                    ToolKind::Snippets
+                                        | ToolKind::Monitor
+                                        | ToolKind::Services
+                                        | ToolKind::Processes
+                                        | ToolKind::Connections
+                                ))
+                            && (!terminal.serial
+                                || matches!(
+                                    tool,
+                                    ToolKind::Snippets
+                                        | ToolKind::Serial
+                                        | ToolKind::Files
+                                        | ToolKind::Services
+                                        | ToolKind::Processes
+                                        | ToolKind::Connections
+                                        | ToolKind::Monitor
+                                ))
                             && !(shell_only && tool.runs_commands())
                     })
                     .collect()
@@ -329,6 +372,17 @@ impl Workspace {
         let detail = action.0;
         self.tools
             .update(cx, |tools, cx| tools.toggle_monitor_detail(detail, cx));
+    }
+
+    pub(super) fn on_toggle_monitor_channel(
+        &mut self,
+        action: &ToggleMonitorChannel,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.tools.update(cx, |tools, cx| {
+            tools.toggle_monitor_channel(action.0.0, &action.0.1, cx)
+        });
     }
 
     /// 网络连接's 刷新: read the host's sockets again.
@@ -828,6 +882,29 @@ impl Workspace {
                 .update(cx, |tools, cx| tools.show(tool, window, cx));
         }
         let open = tool.is_some();
+        let serial_probe = target.as_ref().and_then(|target| {
+            let SidebarTarget::Remote(terminal) = target else {
+                return None;
+            };
+            if !terminal.serial
+                || tool != Some(ToolKind::Files)
+                || self.file_sidebar(terminal.id).is_some()
+            {
+                return None;
+            }
+            let view = terminal.view.upgrade()?;
+            if !matches!(
+                view.read(cx).lifecycle(cx),
+                crate::terminal::TerminalLifecycle::Running
+            ) {
+                return None;
+            }
+            let generation = view.read(cx).generation(cx);
+            self.tools
+                .read(cx)
+                .serial_probe_needed(terminal.id, generation)
+                .then_some((terminal.id, generation))
+        });
         // A terminal's 文件 is made the first time it is shown, and kept.
         // 目录跟随's check goes first: the terminal's channels open one at a
         // time, so it is answered before 文件's opens and 文件 starts out in
@@ -836,7 +913,9 @@ impl Workspace {
             Some(SidebarTarget::Remote(terminal))
                 if open && self.tools.read(cx).tool() == ToolKind::Files =>
             {
-                self.check_directory_follow(terminal.id, window, cx);
+                if !terminal.serial {
+                    self.check_directory_follow(terminal.id, window, cx);
+                }
                 self.ensure_file_sidebar(terminal.id, window, cx)
             }
             _ => None,
@@ -861,6 +940,21 @@ impl Workspace {
         }
         // 撰写窗格 sends to the same terminal.
         self.sync_compose(window, cx);
+        if let Some((id, generation)) = serial_probe {
+            cx.defer_in(window, move |this, window, cx| {
+                if this.tool_showing(cx) == Some(ToolKind::Files)
+                    && this.tool_terminal(cx).is_some_and(|terminal| {
+                        terminal.id == id
+                            && terminal
+                                .view
+                                .upgrade()
+                                .is_some_and(|view| view.read(cx).generation(cx) == generation)
+                    })
+                {
+                    this.on_auto_serial_files(&crate::app::AutoSerialFiles(id), window, cx);
+                }
+            });
+        }
         // The switch comes and goes with the terminal, and marks the tool.
         cx.notify();
     }

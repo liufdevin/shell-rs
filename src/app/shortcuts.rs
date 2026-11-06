@@ -85,7 +85,7 @@ macro_rules! shortcut {
 }
 
 /// The shortcuts of 设置 › 键盘快捷键, in the order the page lists them.
-pub static SHORTCUTS: [Shortcut; 30] = [
+pub static SHORTCUTS: [Shortcut; 31] = [
     shortcut!(
         "new-host",
         "app.shortcut.new_host",
@@ -224,9 +224,18 @@ pub static SHORTCUTS: [Shortcut; 30] = [
         "app.shortcut.new_local_terminal",
         Tabs,
         &[],
+        "",
+        "",
+        NewLocalTerminal
+    ),
+    shortcut!(
+        "new-command-terminal",
+        "app.shortcut.new_command_terminal",
+        Tabs,
+        &[],
         "cmd-t",
         "ctrl-t",
-        NewLocalTerminal
+        NewCommandTerminal
     ),
     shortcut!(
         "close-tab",
@@ -848,7 +857,10 @@ fn key_bindings(overrides: &ShortcutOverrides) -> Vec<KeyBinding> {
 fn shell_keys_in_terminal(anywhere: &[KeyBinding]) -> Vec<KeyBinding> {
     anywhere
         .iter()
-        .filter(|binding| !binding.action().as_any().is::<NewLocalTerminal>())
+        .filter(|binding| {
+            !binding.action().as_any().is::<NewLocalTerminal>()
+                && !binding.action().as_any().is::<NewCommandTerminal>()
+        })
         .filter_map(|binding| {
             let [keystroke] = binding.keystrokes() else {
                 return None;
@@ -1333,6 +1345,7 @@ mod tests {
     fn ctrl_with_a_letter_stays_the_shells_in_a_terminal() {
         let mut overrides = ShortcutOverrides::default();
         overrides.set(shortcut("new-local-terminal"), "ctrl-t".into());
+        overrides.disable(shortcut("new-command-terminal"));
         overrides.set(shortcut("toggle-sidebar"), "ctrl-shift-b".into());
         overrides.set(shortcut("terminal-copy"), "ctrl-c".into());
         let bindings = described(&key_bindings(&overrides));
@@ -1418,10 +1431,10 @@ mod tests {
         assert_eq!(check(paste, "insert"), Err(Refusal::NeedsModifier));
         assert_eq!(check(paste, "shift-up"), Err(Refusal::NeedsModifier));
         // Taken by another shortcut working anywhere.
-        let terminal = shortcut("new-local-terminal");
+        let terminal = shortcut("new-command-terminal");
         assert_eq!(
             check(new_host, terminal.default_keys()),
-            Err(Refusal::UsedBy("new-local-terminal"))
+            Err(Refusal::UsedBy("new-command-terminal"))
         );
         // A text field's key.
         assert_eq!(check(new_host, &primary("z")), Err(Refusal::Reserved));

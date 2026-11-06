@@ -337,3 +337,21 @@ terminal.zmodem.cancelled:
 terminal.zmodem.busy:
   zh-CN: 终端正在用 ZMODEM 传输文件
   en: The terminal is transferring files with ZMODEM.
+terminal.command.welcome:
+  zh-CN: ShellLF 命令终端 · 输入 ssh 用户名@地址 连接，不保存到主机列表；help 查看用法
+  en: ShellLF command terminal · Connect with ssh user@host without saving a host; type help for usage
+terminal.command.title:
+  zh-CN: ShellLF 命令终端
+  en: ShellLF command terminal
+terminal.command.starting:
+  zh-CN: 正在启动命令终端…
+  en: Starting command terminal…
+terminal.command.failed:
+  zh-CN: 命令终端启动失败
+  en: Command terminal failed
+terminal.command.closed:
+  zh-CN: 命令终端已关闭
+  en: Command terminal closed
+terminal.command.usage:
+  zh-CN: 用法：ssh 用户名@地址 [-p 端口] 或 ssh -l 用户名 地址；exit 退出命令提示符
+  en: "Usage: ssh user@host [-p port] or ssh -l user host; exit ends the command prompt"

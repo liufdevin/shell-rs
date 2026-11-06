@@ -8,6 +8,7 @@
 //! `secrets` (系统钥匙串), `settings` (设置), `cli` (外部 CLI), `update` (在线升级), `analytics`
 //! (匿名使用统计), `connection` 与 `shared` (跨模块共用), `i18n` (多语言), `workspace` (窗口壳), `app` (动作、快捷键、资源).
 
+pub mod adb;
 pub mod analytics;
 pub mod app;
 pub mod app_lock;

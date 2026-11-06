@@ -168,12 +168,12 @@ impl SshTerminalTransport {
                         }).await;
                         return Ok(());
                     }
-                    Some(TerminalTransportCommand::Exec(request)) if shell_only => {
+                    Some(TerminalTransportCommand::Exec(request) | TerminalTransportCommand::Monitor(request)) if shell_only => {
                         // The answer for a terminal that carries nothing
                         // beside the shell.
                         let _ = request.reply.send(Err(describe_channel_error(&ChannelError::ShellOnly)));
                     }
-                    Some(TerminalTransportCommand::Exec(request)) => {
+                    Some(TerminalTransportCommand::Exec(request) | TerminalTransportCommand::Monitor(request)) => {
                         side_queue.push_back(Box::pin(answer_exec(&handle, request)));
                     }
                     Some(TerminalTransportCommand::OpenSftp(request)) if shell_only => {
@@ -183,6 +183,7 @@ impl SshTerminalTransport {
                         side_queue.push_back(Box::pin(answer_sftp(&handle, fingerprint.clone(), request)));
                     }
                     Some(TerminalTransportCommand::PromptReply { .. })
+                    | Some(TerminalTransportCommand::SerialTransfer(_))
                     | Some(TerminalTransportCommand::SendBreak) => {}
                 },
                 () = async { side.as_mut().expect("guarded").await }, if side.is_some() => {
@@ -776,6 +777,7 @@ mod tests {
                 TerminalTransportEvent::Failed(error) => panic!("SSH failed: {error}"),
                 TerminalTransportEvent::Exited { .. } => panic!("unexpected early exit"),
                 TerminalTransportEvent::HostOsDetected(_)
+                | TerminalTransportEvent::ConnectSsh(_)
                 | TerminalTransportEvent::Latency(_)
                 | TerminalTransportEvent::WorkingDirectory(_)
                 | TerminalTransportEvent::Replay(_)
@@ -889,6 +891,9 @@ mod tests {
                     ConnectionPromptKind::HostKeyChanged(_) => panic!("unexpected changed key"),
                 },
                 TerminalTransportEvent::Started => started = true,
+                TerminalTransportEvent::ConnectSsh(_) => {
+                    panic!("unexpected command terminal event")
+                }
                 TerminalTransportEvent::HostOsDetected(_)
                 | TerminalTransportEvent::Latency(_)
                 | TerminalTransportEvent::WorkingDirectory(_)

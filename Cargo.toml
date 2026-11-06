@@ -1,6 +1,6 @@
 [package]
 name = "shellrs"
-version = "0.1.18"
+version = "0.1.19"
 edition = "2024"
 publish = false
 description = "SSH client and host manager: terminal, SFTP, port forwarding"
@@ -36,6 +36,7 @@ default-members = [".", "crates/shellrs-sync", "crates/shellrs-ssh", "crates/she
 resolver = "3"
 
 [dependencies]
+tempfile = "3"
 gpui-kit = { version = "0.6.1", features = [
     # The built-in editor's syntax highlighting, for what servers hold most:
     # `tree-sitter` itself brings JSON. Each grammar is compiled C, so the
@@ -149,6 +150,7 @@ windows-sys = { version = "0.61", features = [
     "Win32_Security_Authorization",
     "Win32_Storage_FileSystem",
     "Win32_System_IO",
+    "Win32_System_JobObjects",
     "Win32_System_LibraryLoader",
     "Win32_System_Pipes",
     "Win32_System_Threading",
@@ -169,7 +171,6 @@ winresource = "0.1"
 [dev-dependencies]
 tokio = { version = "1", features = ["process", "test-util"] }
 gpui-kit = { version = "0.6.1", features = ["test-support"] }
-tempfile = "3"
 minisign = "0.7"
 # The portable installer's tests build and unpack zips on every platform.
 zip = { version = "9", default-features = false, features = ["deflate-flate2"] }

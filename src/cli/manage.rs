@@ -174,6 +174,7 @@ pub fn host_details(host: &Host, store: &HostStore) -> HostDetails {
 
 fn serial_details(device: &str, line: SerialSettings) -> SerialDetails {
     SerialDetails {
+        linux_shell: line.linux_shell,
         device: device.to_string(),
         baud: line.baud,
         data_bits: line.data_bits.value(),
@@ -621,6 +622,7 @@ fn plan_serial_host(
         base.unwrap_or_else(|| HostDraft::serial("", "", SerialSettings::default(), None));
     let mut line = draft.protocol.serial().unwrap_or_default();
     let SerialFields {
+        linux_shell,
         device,
         baud,
         data_bits,
@@ -628,6 +630,9 @@ fn plan_serial_host(
         stop_bits,
         flow_control,
     } = fields.serial.unwrap_or_default();
+    if let Some(enabled) = linux_shell {
+        line.linux_shell = enabled;
+    }
     if let Some(device) = device {
         draft.address = device.into();
     }

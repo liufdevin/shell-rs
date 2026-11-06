@@ -140,3 +140,6 @@ app.shortcut_refusal.reserved:
 app.shortcut_refusal.unavailable:
   zh-CN: "%{keys} 不能用作全局快捷键，可能已被其他程序占用。"
   en: "%{keys} can’t be used system-wide. Another app may be using it."
+app.shortcut.new_command_terminal:
+  zh-CN: 新建命令终端
+  en: New command terminal

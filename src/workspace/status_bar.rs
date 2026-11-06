@@ -20,7 +20,7 @@ pub enum WorkspaceStatus {
     /// connection, and its state and size. The start page and the
     /// settings have none.
     Host(Option<(Host, ConnectionState)>, Option<TerminalStatus>),
-    Local(TerminalStatus),
+    Local(TerminalStatus, bool),
     /// An SFTP tab: its own connection and what went wrong in it.
     Explorer(Option<Host>, ExplorerStatus),
     /// An editor: the connection of the SFTP tab a remote file goes through
@@ -144,7 +144,7 @@ impl RenderOnce for WorkspaceStatus {
                 };
                 (text, icon, host.map(|host| host.endpoint()), None)
             }
-            WorkspaceStatus::Local(status) => {
+            WorkspaceStatus::Local(status, command_terminal) => {
                 let lifecycle = status.lifecycle();
                 let icon = match lifecycle {
                     TerminalLifecycle::Running => {
@@ -160,12 +160,21 @@ impl RenderOnce for WorkspaceStatus {
                     }
                 };
                 (
-                    match lifecycle {
-                        TerminalLifecycle::Starting => t!("workspace.status.local_starting"),
-                        TerminalLifecycle::Running => t!("workspace.status.local_running"),
-                        TerminalLifecycle::Exited { .. } => t!("workspace.status.local_exited"),
-                        TerminalLifecycle::Failed(_) => t!("workspace.status.local_failed"),
-                        TerminalLifecycle::Closing => t!("workspace.status.local_closing"),
+                    if command_terminal {
+                        match lifecycle {
+                            TerminalLifecycle::Starting => t!("terminal.command.starting"),
+                            TerminalLifecycle::Running => t!("terminal.command.title"),
+                            TerminalLifecycle::Failed(_) => t!("terminal.command.failed"),
+                            _ => t!("terminal.command.closed"),
+                        }
+                    } else {
+                        match lifecycle {
+                            TerminalLifecycle::Starting => t!("workspace.status.local_starting"),
+                            TerminalLifecycle::Running => t!("workspace.status.local_running"),
+                            TerminalLifecycle::Exited { .. } => t!("workspace.status.local_exited"),
+                            TerminalLifecycle::Failed(_) => t!("workspace.status.local_failed"),
+                            TerminalLifecycle::Closing => t!("workspace.status.local_closing"),
+                        }
                     },
                     icon,
                     None,

@@ -7,8 +7,8 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::app::{
-    CatalogIcon, NewLocalTerminal, NewTemporaryConnection, QuickConnect, ShowCredentials,
-    ShowForwards, ShowHosts, ShowUpdate, ToggleHostPanel, ToggleTheme,
+    CatalogIcon, NewLocalTerminal, NewTemporaryConnection, OpenAdbDevices, QuickConnect,
+    ShowCredentials, ShowForwards, ShowHosts, ShowUpdate, ToggleHostPanel, ToggleTheme,
 };
 use crate::i18n::t;
 use crate::shared::tinted;
@@ -32,6 +32,7 @@ pub fn render_title_bar(
     cx: &App,
 ) -> TitleBar {
     let dark = cx.theme().is_dark();
+    let devices = target.clone();
     let (mode, quick, temporary, new_local, theme, show_update) = (
         target.clone(),
         target.clone(),
@@ -119,6 +120,17 @@ pub fn render_title_bar(
                         .accessibility_label(t!("workspace.title_bar.quick_connect"))
                         .on_click(move |_, window, cx| {
                             quick.dispatch_action(&QuickConnect, window, cx)
+                        }),
+                )
+                .child(
+                    Button::new("open-adb-devices")
+                        .ghost()
+                        .small()
+                        .label("ADB")
+                        .tooltip(t!("android.title"))
+                        .accessibility_label(t!("android.title"))
+                        .on_click(move |_, window, cx| {
+                            devices.dispatch_action(&OpenAdbDevices, window, cx)
                         }),
                 )
                 .child(

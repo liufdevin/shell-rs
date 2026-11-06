@@ -133,8 +133,14 @@ impl ExplorerPanel {
         cx: &mut Context<Self>,
     ) -> Self {
         let host_id = host.id;
-        let endpoint = login.endpoint();
-        let sidebar = matches!(route, SftpRoute::Terminal(_));
+        let endpoint = match &route {
+            SftpRoute::ExternalSidebar(source) => source.endpoint(),
+            _ => login.endpoint(),
+        };
+        let sidebar = matches!(
+            route,
+            SftpRoute::Terminal(_) | SftpRoute::NetworkSidebar | SftpRoute::ExternalSidebar(_)
+        );
         let home = if sidebar {
             local_provider.downloads()
         } else {

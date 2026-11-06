@@ -24,6 +24,8 @@ pub enum TerminalTransportCommand {
     /// Run a command beside the shell. Only a transport with a connection of
     /// its own runs it; the others drop the request.
     Exec(ExecRequest),
+    Monitor(ExecRequest),
+    SerialTransfer(ExecRequest),
     /// Open an SFTP channel beside the shell, for the right sidebar's
     /// 文件. Dropped like `Exec` by a transport without a connection.
     OpenSftp(SftpChannelRequest),
@@ -36,6 +38,7 @@ pub enum TerminalTransportCommand {
 
 /// What a command run beside the shell printed, or why it did not run.
 pub type ExecResult = Result<String, String>;
+pub(crate) const MONITOR_PAUSED: &str = "shelllf:monitor-paused";
 
 /// A command to run beside the shell, on the terminal's own SSH connection:
 /// how the right sidebar's tools read the host, with no login of their own.
@@ -111,6 +114,8 @@ impl std::fmt::Debug for TerminalTransportCommand {
                 .debug_tuple("Exec")
                 .field(&request.command.len())
                 .finish(),
+            Self::SerialTransfer(_) => formatter.write_str("SerialTransfer"),
+            Self::Monitor(_) => formatter.write_str("Monitor"),
             Self::OpenSftp(_) => formatter.write_str("OpenSftp"),
             Self::SendBreak => formatter.write_str("SendBreak"),
             Self::Shutdown => formatter.write_str("Shutdown"),
@@ -121,6 +126,7 @@ impl std::fmt::Debug for TerminalTransportCommand {
 /// Events produced by a terminal byte-stream transport.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TerminalTransportEvent {
+    ConnectSsh(super::SshCommand),
     Started,
     Output(Vec<u8>),
     Prompt(ConnectionPrompt),
