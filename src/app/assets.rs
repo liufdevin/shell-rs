@@ -142,10 +142,15 @@ os_icons! {
 /// Brand marks that Lucide, which draws no brands, cannot stand in for:
 /// Docker's whale on the right sidebar's Docker tool. From Simple Icons (CC0),
 /// single-path and monochrome like the operating-system marks.
-const BRAND_ICONS: &[(&str, &[u8])] = &[(
-    DOCKER_ICON,
-    include_bytes!("../../assets/icons/brand/docker.svg"),
-)];
+pub const ADB_ICON: &str = "icons/brand/adb.svg";
+
+const BRAND_ICONS: &[(&str, &[u8])] = &[
+    (ADB_ICON, include_bytes!("../../assets/icons/brand/adb.svg")),
+    (
+        DOCKER_ICON,
+        include_bytes!("../../assets/icons/brand/docker.svg"),
+    ),
+];
 
 /// Docker's whale, for `Icon::path`.
 pub const DOCKER_ICON: &str = "icons/brand/docker.svg";
@@ -214,6 +219,15 @@ mod tests {
             .expect("in the bundle");
         assert!(bytes.starts_with(b"<svg"));
         assert!(String::from_utf8_lossy(&bytes).contains("<title>Docker</title>"));
+    }
+
+    #[test]
+    fn the_adb_button_has_an_embedded_android_mark() {
+        let bytes = AppAssets
+            .load(super::ADB_ICON)
+            .unwrap()
+            .expect("in the bundle");
+        assert!(String::from_utf8_lossy(&bytes).contains("<title>ADB</title>"));
     }
 
     #[test]

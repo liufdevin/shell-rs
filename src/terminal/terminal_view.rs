@@ -290,6 +290,10 @@ struct HoveredLink {
 
 pub struct TerminalView {
     engine: Entity<TerminalEngine>,
+    tab_active: bool,
+    tab_activated: bool,
+    unread_output: bool,
+    received_output_revision: (u64, u64),
     element_id: ElementId,
     label: TerminalLabel,
     focus_handle: FocusHandle,
@@ -361,9 +365,32 @@ impl TerminalView {
         let engine = cx.new(|cx| TerminalEngine::new_connection(factory, options, cx));
         let focus_handle = cx.focus_handle();
         let subscriptions = vec![
-            cx.observe(&engine, |this, _, cx| {
+            cx.observe(&engine, |this, engine, cx| {
+                let engine = engine.read(cx);
+                if this.tab_active && engine.lifecycle() == &TerminalLifecycle::Running {
+                    this.tab_activated = true;
+                }
+                let revision = engine.received_output_revision();
+                if revision != this.received_output_revision {
+                    let same_connection = revision.0 == this.received_output_revision.0;
+                    this.received_output_revision = revision;
+                    if same_connection
+                        && this.tab_activated
+                        && !this.tab_active
+                        && super::TerminalTabIndicators::is_enabled(cx)
+                    {
+                        this.unread_output = true;
+                    }
+                }
                 this.refresh_log_filter(cx);
                 cx.notify();
+            }),
+            cx.observe_global::<super::TerminalTabIndicators>(|this, cx| {
+                this.received_output_revision = this.engine.read(cx).received_output_revision();
+                if !super::TerminalTabIndicators::is_enabled(cx) {
+                    this.unread_output = false;
+                    cx.notify();
+                }
             }),
             cx.observe_global::<TerminalInteraction>(|this, cx| {
                 this.cursor_visible = true;
@@ -436,6 +463,10 @@ impl TerminalView {
 
         Self {
             engine,
+            tab_active: false,
+            tab_activated: false,
+            unread_output: false,
+            received_output_revision: (1, 0),
             element_id: element_id.into(),
             label: Rc::new(label),
             focus_handle,
@@ -475,6 +506,23 @@ impl TerminalView {
 
     pub fn focus_handle(&self) -> FocusHandle {
         self.focus_handle.clone()
+    }
+
+    pub fn has_unread_output(&self) -> bool {
+        self.unread_output
+    }
+
+    pub(super) fn set_tab_active(&mut self, active: bool, cx: &mut Context<Self>) {
+        if self.tab_active == active && (!active || !self.unread_output) {
+            return;
+        }
+        self.tab_active = active;
+        self.received_output_revision = self.engine.read(cx).received_output_revision();
+        if active {
+            self.tab_activated |= self.engine.read(cx).lifecycle() == &TerminalLifecycle::Running;
+            self.unread_output = false;
+        }
+        cx.notify();
     }
 
     pub(crate) fn observe_detached_focus(

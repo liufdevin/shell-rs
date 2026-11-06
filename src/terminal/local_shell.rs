@@ -17,6 +17,7 @@ use crate::i18n::t;
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct LocalShell {
     command: Option<String>,
+    cmder: Option<PathBuf>,
 }
 
 impl LocalShell {
@@ -25,11 +26,23 @@ impl LocalShell {
         let command = command.trim();
         Self {
             command: (!command.is_empty()).then(|| command.to_string()),
+            cmder: None,
         }
     }
 
     pub fn command(&self) -> Option<&str> {
         self.command.as_deref()
+    }
+
+    pub fn cmder_directory(&self) -> Option<&PathBuf> {
+        self.cmder.as_ref()
+    }
+
+    pub fn cmder(directory: PathBuf) -> Self {
+        Self {
+            command: Some("Cmder".into()),
+            cmder: Some(directory),
+        }
     }
 
     /// What to spawn. Blocking: it looks at the file system, so it runs on
@@ -40,6 +53,37 @@ impl LocalShell {
     /// `~/.zprofile`): portable-pty runs `$SHELL` with a `-` before its
     /// name. Anything else, or a shell with arguments, runs as written.
     pub(super) fn command_builder(&self) -> Result<CommandBuilder> {
+        if let Some(directory) = &self.cmder {
+            let init = directory.join("vendor/init.bat");
+            anyhow::ensure!(
+                cfg!(windows) && init.is_file(),
+                t!("terminal.cmder.missing")
+            );
+            anyhow::ensure!(
+                !init
+                    .to_string_lossy()
+                    .contains(['&', '|', '<', '>', '^', '%', '!', '"', '\n', '\r']),
+                t!("terminal.cmder.invalid_path")
+            );
+            let program = std::env::var_os("COMSPEC").unwrap_or_else(|| "cmd.exe".into());
+            let mut builder = CommandBuilder::new(program);
+            builder.args([
+                OsString::from("/D"),
+                OsString::from("/K"),
+                init.into_os_string(),
+            ]);
+            builder.env("CMDER_ROOT", directory);
+            for variable in [
+                "ConEmuANSI",
+                "ConEmuPID",
+                "ConEmuDir",
+                "ConEmuBaseDir",
+                "ConEmuTask",
+            ] {
+                builder.env_remove(variable);
+            }
+            return Ok(builder);
+        }
         let Some(command) = &self.command else {
             return Ok(default_command());
         };

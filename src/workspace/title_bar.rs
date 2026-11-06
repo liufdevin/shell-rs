@@ -28,11 +28,13 @@ pub fn render_title_bar(
     sidebar: Option<SidebarMode>,
     forwards: usize,
     update: Option<UpdateBadge>,
+    cmder_available: bool,
     target: &FocusHandle,
     cx: &App,
 ) -> TitleBar {
     let dark = cx.theme().is_dark();
     let devices = target.clone();
+    let cmder = target.clone();
     let (mode, quick, temporary, new_local, theme, show_update) = (
         target.clone(),
         target.clone(),
@@ -126,7 +128,7 @@ pub fn render_title_bar(
                     Button::new("open-adb-devices")
                         .ghost()
                         .small()
-                        .label("ADB")
+                        .icon(gpui_kit::component::Icon::default().path(crate::app::ADB_ICON))
                         .tooltip(t!("android.title"))
                         .accessibility_label(t!("android.title"))
                         .on_click(move |_, window, cx| {
@@ -161,6 +163,19 @@ pub fn render_title_bar(
                             new_local.dispatch_action(&NewLocalTerminal, window, cx)
                         }),
                 )
+                .when(cmder_available, |row| {
+                    row.child(
+                        Button::new("new-cmder-terminal")
+                            .ghost()
+                            .small()
+                            .icon(CatalogIcon::SquareTerminal)
+                            .tooltip(t!("workspace.title_bar.new_cmder_terminal"))
+                            .accessibility_label(t!("workspace.title_bar.new_cmder_terminal"))
+                            .on_click(move |_, window, cx| {
+                                cmder.dispatch_action(&crate::app::NewCmderTerminal, window, cx)
+                            }),
+                    )
+                })
                 .children(update.map(|update| {
                     // The one coloured button up here, in the colour of
                     // what it says: the only sign that an update waits.

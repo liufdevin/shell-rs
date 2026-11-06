@@ -95,12 +95,13 @@ impl SettingsPanel {
         integration: Entity<CliIntegration>,
         updater: Entity<Updater>,
         sync: Entity<SyncService>,
+        cmder: Entity<crate::terminal::Cmder>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
         let highlight_rules = cx.new(|cx| HighlightRulesEditor::new(store.clone(), window, cx));
         let shortcuts = cx.new(|cx| ShortcutsEditor::new(store.clone(), window, cx));
-        let local_shell = cx.new(|cx| LocalShellEditor::new(store.clone(), window, cx));
+        let local_shell = cx.new(|cx| LocalShellEditor::new(store.clone(), cmder, window, cx));
         let subscriptions = [
             cx.observe(&store, |_, _, cx| cx.notify()),
             cx.observe(&shortcuts, |_, _, cx| cx.notify()),
@@ -454,6 +455,7 @@ fn local_terminal_group(panel: &SettingsPanel) -> SettingGroup {
     let (editor, reset) = (panel.local_shell.clone(), panel.local_shell.clone());
     let store = panel.store.clone();
     let (reader, writer) = (panel.store.clone(), panel.store.clone());
+    let cmder_editor = panel.local_shell.clone();
     SettingGroup::new()
         .title(t!("settings.local_terminal.title"))
         .items([
@@ -484,6 +486,14 @@ fn local_terminal_group(panel: &SettingsPanel) -> SettingGroup {
             )
             .description(t!("settings.local_terminal.keep_output_description"))
             .keywords(keywords(t!("settings.local_terminal.keep_output_keywords"))),
+            SettingItem::new(
+                t!("settings.local_terminal.cmder"),
+                SettingField::render(move |options, _, cx| {
+                    super::local_shell_editor::cmder_field(&cmder_editor, options, cx)
+                }),
+            )
+            .layout(Axis::Vertical)
+            .description(t!("settings.local_terminal.cmder_description")),
         ])
 }
 
@@ -691,6 +701,14 @@ fn notification_group(store: &Entity<SettingsStore>) -> SettingGroup {
                 switch(|settings| settings.bell, |settings, on| settings.bell = on),
             )
             .description(t!("settings.notifications.bell_description")),
+            SettingItem::new(
+                t!("settings.notifications.tab_output"),
+                switch(
+                    |settings| settings.tab_output,
+                    |settings, on| settings.tab_output = on,
+                ),
+            )
+            .description(t!("settings.notifications.tab_output_description")),
         ])
 }
 

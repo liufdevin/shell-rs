@@ -12,17 +12,14 @@ android.scanning:
   zh-CN: 正在检测设备及 Android 功能…
   en: Checking devices and Android capabilities…
 android.unsupported:
-  zh-CN: 此设备不支持投屏功能
-  en: This device does not support screen mirroring.
-android.sdk:
-  zh-CN: "Android API %{sdk}"
-  en: "Android API %{sdk}"
+  zh-CN: 未检测到受支持的 Android 环境。scrcpy 仅用于 Android，不能用于 Ubuntu / Linux 桌面投屏。
+  en: No supported Android environment was detected. scrcpy mirrors Android devices, not Ubuntu or Linux desktops.
 android.mirror:
-  zh-CN: 镜像投屏
-  en: Screen mirroring
+  zh-CN: 投屏
+  en: Screen control
 android.start_mirror:
-  zh-CN: 开始投屏…
-  en: Start mirroring…
+  zh-CN: 开始投屏
+  en: Start mirroring
 android.stop_mirror:
   zh-CN: 停止投屏
   en: Stop mirroring
@@ -30,14 +27,26 @@ android.choose_scrcpy:
   zh-CN: 选择 scrcpy…
   en: Choose scrcpy…
 android.scrcpy_missing:
-  zh-CN: 未找到 scrcpy。请安装完整工具包并加入 PATH、放在程序旁的 scrcpy 目录，或选择其中的 scrcpy 可执行文件。
-  en: scrcpy was not found. Install the complete bundle in PATH or the app's scrcpy folder, or choose its executable.
+  zh-CN: 未找到官方 scrcpy。请将完整工具包解压到程序旁的 scrcpy 目录，或选择其中的 scrcpy 可执行文件，无需安装 Escrcpy。
+  en: Native scrcpy was not found. Extract the complete official bundle into the app's scrcpy folder, or choose its executable. Escrcpy is not required.
+android.scrcpy_invalid:
+  zh-CN: 请选择官方工具包中的 scrcpy 可执行文件（Windows 为 scrcpy.exe），不要选择 Escrcpy 管理程序、快捷方式或脚本。
+  en: Choose the native scrcpy executable from the official bundle (scrcpy.exe on Windows), not the Escrcpy GUI, a shortcut or a script.
+android.scrcpy_incomplete:
+  zh-CN: scrcpy 工具包不完整，缺少 scrcpy-server。请完整解压官方工具包，保留运行库和服务端文件。
+  en: The scrcpy bundle is incomplete; scrcpy-server is missing. Extract the full official bundle, including its libraries and server file.
 android.mirror_note:
-  zh-CN: 独立窗口、仅镜像、不传音频。关闭此面板不停止投屏，退出 ShellLF 会停止。
-  en: Separate window, view only, without audio. Mirroring continues when this panel closes and stops when ShellLF exits.
+  zh-CN: 可用鼠标和键盘操作安卓设备。关闭此面板不停止投屏，退出 ShellLF 会停止。
+  en: Control the Android device with your mouse and keyboard. Closing this panel keeps mirroring running; exiting ShellLF stops it.
+android.audio:
+  zh-CN: 传输音频
+  en: Forward audio
+android.audio_note:
+  zh-CN: 默认关闭，启动前勾选可传输设备音频；需要 Android 11 或以上，Android 11 启动时需解锁屏幕。投屏中不可修改。
+  en: Off by default. Enable before starting to forward device audio. Requires Android 11 or later; unlock Android 11 devices before starting. Cannot be changed while mirroring.
 android.mirroring:
-  zh-CN: 投屏进程运行中
-  en: Mirroring process is running
+  zh-CN: 投屏运行中
+  en: Mirroring is running
 android.starting:
   zh-CN: 正在启动投屏…
   en: Starting mirroring…
@@ -57,8 +66,8 @@ android.launch:
   zh-CN: 启动
   en: Launch
 android.package_note:
-  zh-CN: 可选择或填写包名；无桌面启动入口的应用无法直接启动。
-  en: Select or enter a package name. Apps without a launcher activity cannot be opened directly.
+  zh-CN: 无桌面入口的应用无法直接启动。
+  en: Apps without a launcher activity cannot be opened directly.
 android.working:
   zh-CN: 正在处理，请稍候…
   en: Working…

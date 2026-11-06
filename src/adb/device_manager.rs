@@ -8,6 +8,7 @@ use gpui_kit::{
     component::{
         ActiveTheme as _, Disableable as _, Sizable as _,
         button::Button,
+        checkbox::Checkbox,
         h_flex,
         input::{Input, InputEvent, InputState},
         searchable_list::SearchableListItem,
@@ -33,6 +34,7 @@ pub enum DeviceCommand {
     Select(String),
     StartMirror,
     StopMirror,
+    SetMirrorAudio(bool),
     InstallApk,
     InstallApkPath(PathBuf),
     RefreshApps,
@@ -85,6 +87,7 @@ struct MirrorState {
     id: u64,
     _cancel: Cancellation,
     running: bool,
+    audio: bool,
 }
 enum Message {
     Scanned(u64, Result<(Vec<DeviceChoice>, Option<PathBuf>), String>),
@@ -110,6 +113,7 @@ pub struct DeviceManager {
     mirrors: HashMap<String, MirrorState>,
     mirror_workers: Vec<std::thread::JoinHandle<()>>,
     scrcpy: Option<PathBuf>,
+    mirror_audio: bool,
     status: Option<SharedString>,
     error: Option<SharedString>,
     sender: mpsc::Sender<Message>,
@@ -213,6 +217,7 @@ impl DeviceManager {
             mirrors: HashMap::new(),
             mirror_workers: Vec::new(),
             scrcpy: None,
+            mirror_audio: false,
             status: None,
             error: None,
             sender,
@@ -258,6 +263,18 @@ impl DeviceManager {
                     self.mirrors.remove(id);
                 }
                 cx.notify();
+            }
+            DeviceCommand::SetMirrorAudio(audio) => {
+                if self.scan.is_none()
+                    && self.selected().is_some_and(|device| {
+                        device.capabilities.is_mirrorable()
+                            && device.capabilities.sdk() >= 30
+                            && !self.mirrors.contains_key(&device.id)
+                    })
+                {
+                    self.mirror_audio = audio;
+                    cx.notify();
+                }
             }
             DeviceCommand::RefreshApps => self.load_apps(cx),
             DeviceCommand::Launch => {
@@ -465,8 +482,13 @@ impl DeviceManager {
                     return;
                 }
                 if scrcpy {
-                    this.scrcpy = Some(path);
-                    this.error = None;
+                    match super::mirror::validate_scrcpy(&path) {
+                        Ok(path) => {
+                            this.scrcpy = Some(path);
+                            this.error = None;
+                        }
+                        Err(error) => this.error = Some(error.to_string().into()),
+                    }
                     cx.notify();
                 } else {
                     let dispatch = this.dispatch.clone();
@@ -501,6 +523,7 @@ impl DeviceManager {
         };
         let device = choice.device.clone();
         let id = choice.id.clone();
+        let audio = self.mirror_audio && choice.capabilities.sdk() >= 30;
         if self.mirrors.contains_key(&id) {
             return;
         }
@@ -520,6 +543,7 @@ impl DeviceManager {
                 id: mirror_id,
                 _cancel: token,
                 running: false,
+                audio,
             },
         );
         let sender = self.sender.clone();
@@ -529,7 +553,7 @@ impl DeviceManager {
             .name("shelllf-scrcpy".into())
             .spawn(move || {
                 let run = || -> Result<()> {
-                    let mut process = tools.mirror(&device, &program, &cancel)?;
+                    let mut process = tools.mirror(&device, &program, audio, &cancel)?;
                     if cancel.load(Ordering::Acquire) {
                         process.stop();
                         return Ok(());
@@ -703,6 +727,8 @@ impl Render for DeviceManager {
                 })
         };
         let mirror = self.selected.as_ref().and_then(|id| self.mirrors.get(id));
+        let audio = mirror.map_or(self.mirror_audio && caps.sdk() >= 30, |state| state.audio);
+        let audio_dispatch = self.dispatch.clone();
         v_flex()
             .id("android-device-manager")
             .test_support()
@@ -739,32 +765,18 @@ impl Render for DeviceManager {
                 )
             })
             .when_some(choice.filter(|_| self.scan.is_none()), |view, device| {
-                view.child(
-                    div()
-                        .text_xs()
-                        .text_color(cx.theme().muted_foreground)
-                        .child(device_label(&device.device)),
-                )
-                .when(!caps.is_supported(), |view| {
+                view.when(!caps.is_supported(), |view| {
+                    let reason = device
+                        .problem
+                        .clone()
+                        .unwrap_or_else(|| t!("android.unsupported").to_string());
                     view.child(
                         div()
                             .id("android-unsupported")
                             .test_support()
+                            .aria_label(reason.clone())
                             .text_sm()
-                            .child(
-                                device
-                                    .problem
-                                    .clone()
-                                    .unwrap_or_else(|| t!("android.unsupported").to_string()),
-                            ),
-                    )
-                })
-                .when(caps.is_supported(), |view| {
-                    view.child(
-                        div()
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(t!("android.sdk", sdk = caps.sdk())),
+                            .child(reason),
                     )
                 })
             })
@@ -778,33 +790,45 @@ impl Render for DeviceManager {
                             .child(
                                 action(
                                     "android-mirror",
-                                    t!("android.start_mirror"),
-                                    DeviceCommand::StartMirror,
+                                    if mirror.is_some() {
+                                        t!("android.stop_mirror")
+                                    } else {
+                                        t!("android.start_mirror")
+                                    },
+                                    if mirror.is_some() {
+                                        DeviceCommand::StopMirror
+                                    } else {
+                                        DeviceCommand::StartMirror
+                                    },
                                 )
-                                .disabled(mirror.is_some() || self.scrcpy.is_none()),
+                                .disabled(mirror.is_none() && self.scrcpy.is_none())
+                                .tooltip(t!("android.mirror_note")),
                             )
                             .child(
-                                action(
-                                    "android-stop-mirror",
-                                    t!("android.stop_mirror"),
-                                    DeviceCommand::StopMirror,
-                                )
-                                .disabled(mirror.is_none()),
+                                Checkbox::new("android-mirror-audio")
+                                    .small()
+                                    .label(t!("android.audio"))
+                                    .checked(audio)
+                                    .disabled(mirror.is_some() || caps.sdk() < 30)
+                                    .tooltip(t!("android.audio_note"))
+                                    .on_change(move |audio, window, cx| {
+                                        audio_dispatch.dispatch_action(
+                                            &AdbDeviceAction(DeviceCommand::SetMirrorAudio(*audio)),
+                                            window,
+                                            cx,
+                                        );
+                                    }),
                             )
-                            .child(
-                                action(
-                                    "android-scrcpy-choose",
-                                    t!("android.choose_scrcpy"),
-                                    DeviceCommand::ChooseScrcpy,
+                            .when(self.scrcpy.is_none() || self.error.is_some(), |row| {
+                                row.child(
+                                    action(
+                                        "android-scrcpy-choose",
+                                        t!("android.choose_scrcpy"),
+                                        DeviceCommand::ChooseScrcpy,
+                                    )
+                                    .disabled(busy || mirror.is_some()),
                                 )
-                                .disabled(busy),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(t!("android.mirror_note")),
+                            }),
                     )
                     .when(self.scrcpy.is_none(), |view| {
                         view.child(
@@ -813,14 +837,6 @@ impl Render for DeviceManager {
                                 .test_support()
                                 .text_sm()
                                 .child(t!("android.scrcpy_missing")),
-                        )
-                    })
-                    .when_some(self.scrcpy.as_ref(), |view, path| {
-                        view.child(
-                            div()
-                                .text_xs()
-                                .truncate()
-                                .child(path.to_string_lossy().into_owned()),
                         )
                     })
                     .when_some(mirror, |view, state| {
@@ -845,12 +861,14 @@ impl Render for DeviceManager {
             })
             .when(caps.is_installable() && self.scan.is_none(), |view| {
                 view.child(
-                    action(
-                        "android-install",
-                        t!("android.install"),
-                        DeviceCommand::InstallApk,
-                    )
-                    .disabled(busy),
+                    h_flex().child(
+                        action(
+                            "android-install",
+                            t!("android.install"),
+                            DeviceCommand::InstallApk,
+                        )
+                        .disabled(busy),
+                    ),
                 )
             })
             .when(caps.is_launchable() && self.scan.is_none(), |view| {

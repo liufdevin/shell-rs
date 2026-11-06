@@ -260,6 +260,7 @@ mod tests {
         let off = NotificationSettings {
             programs: false,
             bell: false,
+            ..NotificationSettings::default()
         };
         assert_eq!(delivery(&program(None), off, false, false), Delivery::None);
         assert_eq!(delivery(&bell(), off, false, false), Delivery::None);

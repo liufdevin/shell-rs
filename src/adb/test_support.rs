@@ -220,7 +220,7 @@ impl Runner for FakeAdb {
             .into_bytes());
         }
         let marker = script
-            .rsplit_once("printf '\\n")
+            .rsplit_once("printf '\\000")
             .ok_or_else(|| anyhow!("missing marker"))?
             .1
             .split("%s")
@@ -283,7 +283,7 @@ impl Runner for FakeAdb {
         } else {
             bail!("unsupported fake shell script: {script}");
         }
-        output.extend_from_slice(format!("\n{marker}0\n").as_bytes());
+        output.extend_from_slice(format!("\0{marker}0\n").as_bytes());
         Ok(output)
     }
 }

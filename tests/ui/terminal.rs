@@ -1857,6 +1857,286 @@ fn print_into(cx: &mut TestAppContext, workspace: &Entity<Workspace>, id: u64, t
     });
 }
 
+#[gpui_kit::test]
+async fn tab_output_indicator_marks_only_unread_background_output(cx: &mut TestAppContext) {
+    let (handle, workspace) =
+        open_running_local_terminal(cx, Arc::new(FakeTerminalFactory::default())).await;
+    print_into(cx, &workspace, 1, "foreground-output");
+    cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
+        local_screen(&workspace, cx).contains("foreground-output")
+    })
+    .await;
+    in_frame(cx, handle, |window, cx| {
+        assert!(
+            window
+                .within(("local-terminal-tab", 1u64))
+                .try_find("new-output")
+                .is_none()
+        );
+        window.click("new-local-terminal", cx);
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
+        workspace
+            .read(cx)
+            .local_terminal(LocalTerminalId(2))
+            .is_some_and(|panel| {
+                panel.read(cx).status(cx).lifecycle() == &TerminalLifecycle::Running
+            })
+    })
+    .await;
+    let settings = cx.update(|cx| workspace.read(cx).settings().clone());
+    cx.update(|cx| {
+        settings.update(cx, |store, cx| {
+            store.update(|settings| settings.terminal_font.size = 16., cx)
+        })
+    });
+    in_frame(cx, handle, |window, _| {
+        assert!(
+            window
+                .within(("local-terminal-tab", 1u64))
+                .try_find("new-output")
+                .is_none()
+        );
+    });
+    print_into(cx, &workspace, 1, "background-output");
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, cx| {
+        window.render_frame(cx);
+        window
+            .within(("local-terminal-tab", 1u64))
+            .try_find("new-output")
+            .is_some()
+    })
+    .await;
+    in_frame(cx, handle, |window, cx| {
+        let dot = window
+            .within(("local-terminal-tab", 1u64))
+            .find("new-output");
+        assert_eq!(dot.label(), Some("有新输出"));
+        let title = window.find(("local-terminal-tab", 1u64)).bounds();
+        assert!(dot.bounds().center().x < title.center().x);
+        assert!(dot.bounds().center().y < title.center().y);
+        window.click(("local-terminal-tab", 1u64), cx);
+    });
+    in_frame(cx, handle, |window, cx| {
+        assert!(
+            window
+                .within(("local-terminal-tab", 1u64))
+                .try_find("new-output")
+                .is_none()
+        );
+        window.click(("local-terminal-tab", 2u64), cx);
+    });
+    print_into(cx, &workspace, 1, "another-background-output");
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, cx| {
+        window.render_frame(cx);
+        window
+            .within(("local-terminal-tab", 1u64))
+            .try_find("new-output")
+            .is_some()
+    })
+    .await;
+    cx.update(|cx| {
+        settings.update(cx, |store, cx| {
+            store.update(|settings| settings.notifications.tab_output = false, cx)
+        })
+    });
+    in_frame(cx, handle, |window, _| {
+        assert!(
+            window
+                .within(("local-terminal-tab", 1u64))
+                .try_find("new-output")
+                .is_none()
+        );
+    });
+    print_into(cx, &workspace, 1, "disabled-output");
+    cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
+        local_screen(&workspace, cx).contains("disabled-output")
+    })
+    .await;
+    cx.update(|cx| {
+        settings.update(cx, |store, cx| {
+            store.update(|settings| settings.notifications.tab_output = true, cx)
+        })
+    });
+    in_frame(cx, handle, |window, _| {
+        assert!(
+            window
+                .within(("local-terminal-tab", 1u64))
+                .try_find("new-output")
+                .is_none()
+        );
+    });
+    print_into(cx, &workspace, 1, "enabled-again");
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, cx| {
+        window.render_frame(cx);
+        window
+            .within(("local-terminal-tab", 1u64))
+            .try_find("new-output")
+            .is_some()
+    })
+    .await;
+    in_frame(cx, handle, |window, cx| {
+        window.click(("close-local-terminal", 1u64), cx)
+    });
+    in_frame(cx, handle, |window, _| {
+        assert!(window.try_find(("local-terminal-tab", 1u64)).is_none());
+    });
+}
+
+#[gpui_kit::test]
+async fn tab_output_indicator_does_not_reappear_for_an_idle_cli_redraw(cx: &mut TestAppContext) {
+    let (handle, workspace) =
+        open_running_local_terminal(cx, Arc::new(FakeTerminalFactory::default())).await;
+    let finished = "\x1b[?2026h\x1b[2J\x1b[HFinished answer\r\n> \x1b[?2026l";
+    print_into(cx, &workspace, 1, finished);
+    cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
+        local_screen(&workspace, cx).contains("Finished answer")
+    })
+    .await;
+    in_frame(cx, handle, |window, cx| {
+        window.click("new-local-terminal", cx)
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
+        workspace
+            .read(cx)
+            .local_terminal(LocalTerminalId(2))
+            .is_some_and(|panel| {
+                panel.read(cx).status(cx).lifecycle() == &TerminalLifecycle::Running
+            })
+    })
+    .await;
+    for (title, redraw) in [
+        ("idle-cursor", "\x1b[?25l\x1b[H\x1b[?25h"),
+        ("idle-redraw", finished),
+    ] {
+        print_into(cx, &workspace, 1, &format!("{redraw}\x1b]0;{title}\x07"));
+        cx.wait_for(handle.into(), Duration::from_secs(3), |window, cx| {
+            window.render_frame(cx);
+            window.find(("local-terminal-tab", 1u64)).label() == Some(title)
+        })
+        .await;
+        in_frame(cx, handle, |window, _| {
+            assert!(
+                window
+                    .within(("local-terminal-tab", 1u64))
+                    .try_find("new-output")
+                    .is_none()
+            );
+        });
+    }
+    let new_answer = "\x1b[?2026h\x1b[2J\x1b[HAnother answer\r\n> \x1b[?2026l";
+    print_into(cx, &workspace, 1, new_answer);
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, cx| {
+        window.render_frame(cx);
+        window
+            .within(("local-terminal-tab", 1u64))
+            .try_find("new-output")
+            .is_some()
+    })
+    .await;
+    print_into(
+        cx,
+        &workspace,
+        1,
+        &format!("{new_answer}\x1b]0;answer-finished\x07"),
+    );
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, cx| {
+        window.render_frame(cx);
+        window.find(("local-terminal-tab", 1u64)).label() == Some("answer-finished")
+    })
+    .await;
+    in_frame(cx, handle, |window, cx| {
+        assert!(
+            window
+                .within(("local-terminal-tab", 1u64))
+                .try_find("new-output")
+                .is_some()
+        );
+        window.click(("local-terminal-tab", 1u64), cx);
+    });
+    in_frame(cx, handle, |window, cx| {
+        assert!(
+            window
+                .within(("local-terminal-tab", 1u64))
+                .try_find("new-output")
+                .is_none()
+        );
+        window.click(("local-terminal-tab", 2u64), cx);
+    });
+    print_into(
+        cx,
+        &workspace,
+        1,
+        &format!("{new_answer}\x1b]0;idle-after-reading\x07"),
+    );
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, cx| {
+        window.render_frame(cx);
+        window.find(("local-terminal-tab", 1u64)).label() == Some("idle-after-reading")
+    })
+    .await;
+    in_frame(cx, handle, |window, _| {
+        assert!(
+            window
+                .within(("local-terminal-tab", 1u64))
+                .try_find("new-output")
+                .is_none()
+        );
+    });
+}
+
+#[gpui_kit::test]
+async fn tab_output_indicator_also_tracks_remote_terminals(cx: &mut TestAppContext) {
+    let (store, host) = one_host_store(AuthKind::Password);
+    let (handle, workspace) =
+        open_workspace_with_remote_factory(cx, store, Arc::new(FakeTerminalFactory::default()));
+    in_frame(cx, handle, |window, cx| {
+        window.dispatch_action(Box::new(ConnectHost(host)), cx)
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
+        workspace
+            .read(cx)
+            .remote_terminal(RemoteTerminalId(1))
+            .is_some_and(|panel| panel.read(cx).lifecycle(cx) == TerminalLifecycle::Running)
+    })
+    .await;
+    in_frame(cx, handle, |window, cx| {
+        window.click("new-local-terminal", cx)
+    });
+    cx.update(|cx| {
+        let terminal = workspace
+            .read(cx)
+            .remote_terminal(RemoteTerminalId(1))
+            .unwrap()
+            .read(cx)
+            .terminal()
+            .clone();
+        terminal.update(cx, |terminal, cx| {
+            terminal
+                .enter_command("remote-background-output", false, false, cx)
+                .unwrap();
+        });
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, cx| {
+        window.render_frame(cx);
+        window
+            .within(("terminal-tab", 1u64))
+            .try_find("new-output")
+            .is_some()
+    })
+    .await;
+    in_frame(cx, handle, |window, cx| {
+        window.click(("terminal-tab", 1u64), cx)
+    });
+    in_frame(cx, handle, |window, _| {
+        assert!(
+            window
+                .within(("terminal-tab", 1u64))
+                .try_find("new-output")
+                .is_none()
+        );
+    });
+}
+
 /// The system notifications shown once there are `count` of them.
 async fn system_notifications(
     cx: &mut TestAppContext,

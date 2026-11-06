@@ -18,7 +18,9 @@ pub struct Parts {
 }
 
 /// The parts asked once per connection.
-const SYSTEM: &str = "echo @@host; uname -n; echo @@arch; uname -m; \
+const SYSTEM: &str = "echo @@host; uname -n; echo @@arch; \
+arch=$(getprop ro.product.cpu.abi 2>/dev/null); \
+if test -n \"$arch\"; then echo \"$arch\"; else uname -m; fi; \
 echo @@os; (. /etc/os-release && echo \"$PRETTY_NAME\") 2>/dev/null || uname -sr; \
 echo @@cpu; grep -E \"^(model name|Hardware|Processor|cpu model)\" /proc/cpuinfo | head -n 1; ";
 
@@ -422,6 +424,83 @@ tmpfs               498304       0    498304       0% /dev/shm
             disks: true,
         });
         assert!(full.contains("@@host") && full.contains("@@df"));
+        assert!(full.contains("getprop ro.product.cpu.abi"));
+        assert!(!light.contains("getprop"));
+    }
+
+    #[test]
+    fn android_architecture_uses_its_abi_instead_of_the_kernel_machine_name() {
+        let script = format!(
+            "getprop() {{ test \"$1\" = ro.product.cpu.abi && echo arm64-v8a; }}; \
+             uname() {{ case \"$1\" in -m) echo aarch64;; -n) echo android-board;; *) echo Linux;; esac; }}; \
+             {SYSTEM} echo @@stat; echo \"cpu 1 0 0 1\";"
+        );
+        let output = architecture_script(&script);
+        assert!(output.status.success());
+        let Parsed::Reading(reading) = parse(&String::from_utf8(output.stdout).unwrap()) else {
+            panic!("expected system information");
+        };
+        assert_eq!(reading.system.unwrap().arch, "arm64-v8a");
+    }
+
+    #[test]
+    fn linux_and_missing_android_properties_keep_the_kernel_architecture() {
+        for property in ["return 127", "return 0"] {
+            for machine in ["aarch64", "x86_64"] {
+                let script = format!(
+                    "getprop() {{ {property}; }}; \
+                     uname() {{ case \"$1\" in -m) echo {machine};; -n) echo linux-board;; *) echo Linux;; esac; }}; \
+                     {SYSTEM} echo @@stat; echo \"cpu 1 0 0 1\";"
+                );
+                let output = architecture_script(&script);
+                assert!(output.status.success());
+                let Parsed::Reading(reading) = parse(&String::from_utf8(output.stdout).unwrap())
+                else {
+                    panic!("expected system information");
+                };
+                assert_eq!(reading.system.unwrap().arch, machine);
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "reads system information from an explicitly selected connected ADB device"]
+    fn connected_device_reports_its_system_architecture() {
+        let program = std::env::var_os("SHELLRS_TEST_ADB").expect("SHELLRS_TEST_ADB is required");
+        let serial =
+            std::env::var("SHELLRS_TEST_ADB_SERIAL").expect("SHELLRS_TEST_ADB_SERIAL is required");
+        let expected = std::env::var("SHELLRS_TEST_EXPECTED_ARCH")
+            .expect("SHELLRS_TEST_EXPECTED_ARCH is required");
+        let device = crate::adb::AdbConnection::new(program.into(), serial).unwrap();
+        let output = device
+            .monitor_command(
+                &command(Parts {
+                    system: true,
+                    disks: false,
+                }),
+                &std::sync::atomic::AtomicBool::new(false),
+            )
+            .unwrap();
+        let Parsed::Reading(reading) = parse(&output) else {
+            panic!("expected system information");
+        };
+        let arch = reading.system.unwrap().arch;
+        assert_eq!(arch, expected);
+        println!("Architecture: {arch}");
+    }
+
+    fn architecture_script(script: &str) -> std::process::Output {
+        #[cfg(unix)]
+        {
+            crate::testing::sh(script, None)
+        }
+        #[cfg(windows)]
+        {
+            std::process::Command::new("sh")
+                .args(["-c", script])
+                .output()
+                .expect("sh runs")
+        }
     }
 
     /// The script run for real by `sh`, against `/proc` files laid out in a

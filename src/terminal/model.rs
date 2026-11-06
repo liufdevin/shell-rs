@@ -189,6 +189,24 @@ impl Default for TerminalInteraction {
 
 impl Global for TerminalInteraction {}
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TerminalTabIndicators {
+    enabled: bool,
+}
+
+impl Global for TerminalTabIndicators {}
+
+impl TerminalTabIndicators {
+    pub fn new(enabled: bool) -> Self {
+        Self { enabled }
+    }
+
+    pub(super) fn is_enabled(cx: &App) -> bool {
+        cx.try_global::<Self>()
+            .is_none_or(|settings| settings.enabled)
+    }
+}
+
 impl TerminalInteraction {
     /// What the terminals do now.
     pub fn current(cx: &App) -> Self {

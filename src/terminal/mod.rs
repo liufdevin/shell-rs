@@ -2,6 +2,7 @@
 
 mod box_drawing;
 mod broadcast;
+mod cmder;
 mod command_terminal;
 mod directory;
 mod directory_setup;
@@ -33,6 +34,7 @@ mod transport;
 mod zmodem;
 
 pub(crate) use broadcast::BroadcastSelection;
+pub use cmder::Cmder;
 pub use command_terminal::{SshCommand, command_terminal_factory};
 pub use directory::ReportedDirectory;
 pub use directory_setup::{
@@ -56,6 +58,7 @@ pub use kept_output::KEPT_LINES;
 pub use local_pty::LocalPtyTransportProvider;
 pub use local_shell::{LocalLaunch, LocalShell, default_shell_name, installed_shells, quote_word};
 pub use local_terminal_panel::{LocalTerminalPanel, LocalTerminalPanelEvent, SavedName};
+pub use model::TerminalTabIndicators;
 pub use model::{
     LocalTerminalId, MiddleClick, RemoteTerminalId, RightClick, TerminalCursorStyle,
     TerminalInteraction, TerminalLifecycle, TerminalSize, TerminalStatus,

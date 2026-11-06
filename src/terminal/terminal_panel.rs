@@ -711,6 +711,8 @@ impl BasePanel for TerminalPanel {
     }
 
     fn set_active(&mut self, active: bool, window: &mut Window, cx: &mut Context<Self>) {
+        self.terminal
+            .update(cx, |terminal, cx| terminal.set_tab_active(active, cx));
         if !active {
             return;
         }
@@ -759,6 +761,7 @@ impl Panel for TerminalPanel {
             .small(),
         );
         ClosableTabTitle::new(("terminal-tab", id.0), mark, self.tab_title(cx))
+            .unread(self.terminal.read(cx).has_unread_output())
             .connection_state(state)
             .closable(("close-terminal", id.0), Box::new(CloseTerminal(id)))
             .context_menu(move |menu, _, cx| tab_menu.build(menu, cx))

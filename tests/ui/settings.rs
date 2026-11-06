@@ -2,6 +2,156 @@
 
 use crate::support::*;
 
+#[cfg(windows)]
+#[gpui_kit::test]
+async fn cmder_settings_choose_a_directory_and_return_to_auto_detection(cx: &mut TestAppContext) {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::create_dir(root.path().join("vendor")).unwrap();
+    std::fs::write(root.path().join("vendor/init.bat"), b"@echo off").unwrap();
+    let (handle, workspace) = open_workspace(cx);
+    in_frame(cx, handle, |window, cx| window.click("open-settings", cx));
+    in_frame(cx, handle, |window, cx| {
+        window.within("settings").click("0-1", cx)
+    });
+    let position = in_frame(cx, handle, |window, _| {
+        window.find("terminal-font-preview").bounds().center()
+    });
+    for _ in 0..5 {
+        in_frame(cx, handle, |window, cx| {
+            window.dispatch_event(
+                gpui_kit::ScrollWheelEvent {
+                    position,
+                    delta: gpui_kit::ScrollDelta::Pixels(point(px(0.), px(-550.))),
+                    modifiers: gpui_kit::Modifiers::default(),
+                    touch_phase: gpui_kit::TouchPhase::Moved,
+                }
+                .to_platform_input(),
+                cx,
+            );
+        });
+    }
+    cx.wait_for(handle.into(), Duration::from_secs(5), |window, cx| {
+        window.render_frame(cx);
+        window.try_find("cmder-directory").is_some()
+    })
+    .await;
+    in_frame(cx, handle, |window, cx| {
+        assert_eq!(window.find("cmder-directory").value(), Some(""));
+        window.click("browse-cmder", cx);
+    });
+    cx.simulate_path_prompt_response(|options| {
+        assert!(options.directories && !options.files);
+        Some(vec![root.path().to_path_buf()])
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(5), |window, cx| {
+        window.render_frame(cx);
+        window.try_find("new-cmder-terminal").is_some()
+            && workspace
+                .read(cx)
+                .settings()
+                .read(cx)
+                .settings()
+                .local_terminal
+                .cmder_directory
+                .as_deref()
+                == Some(root.path())
+    })
+    .await;
+    in_frame(cx, handle, |window, cx| window.click("cmder-automatic", cx));
+    cx.update(|cx| {
+        assert!(
+            workspace
+                .read(cx)
+                .settings()
+                .read(cx)
+                .settings()
+                .local_terminal
+                .cmder_directory
+                .is_none()
+        )
+    });
+}
+
+#[gpui_kit::test]
+fn tab_output_indicator_can_be_changed_from_terminal_notifications(cx: &mut TestAppContext) {
+    let (handle, workspace) = open_workspace(cx);
+    in_frame(cx, handle, |window, cx| window.click("open-settings", cx));
+    in_frame(cx, handle, |window, cx| {
+        window.within("settings").click("0-1", cx);
+    });
+    let position = in_frame(cx, handle, |window, _| {
+        window.find("terminal-font-preview").bounds().center()
+    });
+    for _ in 0..3 {
+        in_frame(cx, handle, |window, cx| {
+            window.dispatch_event(
+                gpui_kit::ScrollWheelEvent {
+                    position,
+                    delta: gpui_kit::ScrollDelta::Pixels(point(px(0.), px(-550.))),
+                    modifiers: gpui_kit::Modifiers::default(),
+                    touch_phase: gpui_kit::TouchPhase::Moved,
+                }
+                .to_platform_input(),
+                cx,
+            );
+        });
+    }
+    in_frame(cx, handle, |window, cx| {
+        assert_eq!(
+            window
+                .within("settings")
+                .within("group-3")
+                .within("item-2")
+                .find("check")
+                .checked(),
+            Some(true)
+        );
+        window
+            .within("settings")
+            .within("group-3")
+            .within("item-2")
+            .click("check", cx);
+    });
+    cx.update(|cx| {
+        assert!(
+            !workspace
+                .read(cx)
+                .settings()
+                .read(cx)
+                .settings()
+                .notifications
+                .tab_output
+        )
+    });
+    in_frame(cx, handle, |window, cx| {
+        assert_eq!(
+            window
+                .within("settings")
+                .within("group-3")
+                .within("item-2")
+                .find("check")
+                .checked(),
+            Some(false)
+        );
+        window
+            .within("settings")
+            .within("group-3")
+            .within("item-2")
+            .click("check", cx);
+    });
+    cx.update(|cx| {
+        assert!(
+            workspace
+                .read(cx)
+                .settings()
+                .read(cx)
+                .settings()
+                .notifications
+                .tab_output
+        )
+    });
+}
+
 #[gpui_kit::test]
 async fn xshell_schemes_import_apply_update_and_delete_in_settings(cx: &mut TestAppContext) {
     let dir = tempfile::tempdir().unwrap();

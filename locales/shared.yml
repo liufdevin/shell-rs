@@ -46,3 +46,6 @@ shared.tab_menu.close_others:
 shared.tab_menu.close_all:
   zh-CN: 关闭全部
   en: Close all
+shared.tab.new_output:
+  zh-CN: 有新输出
+  en: New output

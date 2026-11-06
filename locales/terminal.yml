@@ -1,4 +1,10 @@
 _version: 2
+terminal.cmder.missing:
+  zh-CN: Cmder 不可用，请在设置中选择包含 vendor/init.bat 的安装目录。
+  en: Cmder is unavailable. Choose its installation folder containing vendor/init.bat in Settings.
+terminal.cmder.invalid_path:
+  zh-CN: Cmder 安装路径包含不支持的命令字符，请使用普通目录路径。
+  en: The Cmder installation path contains unsupported command characters. Use a plain folder path.
 terminal.encoding.unrepresentable:
   zh-CN: "输入内容包含 %{encoding} 无法表示的字符，未发送任何内容。请使用 GB18030 或 UTF-8，修改后重新连接。"
   en: "The input contains characters that %{encoding} cannot represent. Nothing was sent. Choose GB18030 or UTF-8 and reconnect."

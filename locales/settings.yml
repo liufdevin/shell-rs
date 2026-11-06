@@ -1,4 +1,19 @@
 _version: 2
+settings.local_terminal.cmder:
+  zh-CN: Cmder 目录
+  en: Cmder directory
+settings.local_terminal.cmder_description:
+  zh-CN: 留空自动检测；检测成功后在标题栏显示新建 Cmder 终端按钮，不影响普通本地终端。
+  en: Leave empty to detect automatically. A new Cmder terminal button appears in the title bar when found, without changing regular local terminals.
+settings.local_terminal.cmder_browse:
+  zh-CN: 选择目录…
+  en: Choose folder…
+settings.local_terminal.cmder_missing:
+  zh-CN: 未找到 Cmder，标题栏入口已隐藏
+  en: Cmder not found; title bar button is hidden
+settings.local_terminal.cmder_found:
+  zh-CN: "已找到：%{path}"
+  en: "Found: %{path}"
 settings.sidebar_tools.serial:
   zh-CN: 串口的 HEX 接收和 HEX 发送，按标签独立配置。
   en: Configure hex receive and send independently for each serial tab.
@@ -299,6 +314,12 @@ settings.notifications.bell:
 settings.notifications.bell_description:
   zh-CN: 终端就在当前标签时不提示。
   en: Not when the terminal is the current tab.
+settings.notifications.tab_output:
+  zh-CN: 标签新输出提示
+  en: New output indicator
+settings.notifications.tab_output_description:
+  zh-CN: 后台终端有新输出时，在标签左上角显示红点；切回标签后清除。
+  en: Show a red dot at the top left of a background terminal tab when new output arrives. Clear it when you return to the tab.
 
 # 终端 › 本地终端.
 settings.local_terminal.title:

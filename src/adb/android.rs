@@ -74,6 +74,7 @@ pub trait AndroidTools: Send + Sync + 'static {
         &self,
         device: &AdbConnection,
         program: &Path,
+        audio: bool,
         cancel: &AtomicBool,
     ) -> Result<Box<dyn MirrorProcess>>;
     fn scrcpy(&self) -> Option<PathBuf> {
@@ -150,11 +151,12 @@ impl AndroidTools for SystemAndroidTools {
         &self,
         device: &AdbConnection,
         program: &Path,
+        audio: bool,
         cancel: &AtomicBool,
     ) -> Result<Box<dyn MirrorProcess>> {
         verify(device, cancel)?;
         Ok(Box::new(super::mirror::ScrcpyProcess::start(
-            device, program,
+            device, program, audio,
         )?))
     }
 }
@@ -286,13 +288,13 @@ mod tests {
                 return Ok(output.into_bytes());
             }
             let marker = script
-                .rsplit_once("printf '\\n")
+                .rsplit_once("printf '\\000")
                 .unwrap()
                 .1
                 .split("%s")
                 .next()
                 .unwrap();
-            Ok(format!("{output}\n{marker}0\n").into_bytes())
+            Ok(format!("{output}\0{marker}0\n").into_bytes())
         }
     }
 

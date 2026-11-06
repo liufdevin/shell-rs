@@ -1,9 +1,11 @@
 use crate::support::*;
 use anyhow::{Result, bail};
+use gpui_kit::Window;
 use shellrs::adb::{
     AdbConnection, AdbDetection, AdbDetector, AndroidApp, AndroidCapabilities, AndroidTools,
-    MirrorProcess,
+    DeviceCommand, MirrorProcess,
 };
+use shellrs::app::AdbDeviceAction;
 use std::{
     path::{Path, PathBuf},
     sync::atomic::AtomicBool,
@@ -89,6 +91,7 @@ impl AndroidTools for Tools {
         Ok(match device.serial() {
             "ubuntu" => AndroidCapabilities::default(),
             "old" => AndroidCapabilities::new(19, true, true, true),
+            "android10" => AndroidCapabilities::new(29, true, true, true),
             _ => AndroidCapabilities::new(35, true, true, true),
         })
     }
@@ -113,9 +116,10 @@ impl AndroidTools for Tools {
         &self,
         device: &AdbConnection,
         _: &Path,
+        audio: bool,
         cancel: &AtomicBool,
     ) -> Result<Box<dyn MirrorProcess>> {
-        self.record(format!("mirror:{}", device.serial()));
+        self.record(format!("mirror:{}:audio={audio}", device.serial()));
         self.result(cancel)?;
         Ok(Box::new(Mirror(self.stops.clone())))
     }
@@ -176,6 +180,16 @@ fn select(cx: &mut TestAppContext, handle: WindowHandle<Root>, keys: &[&str]) {
     }
 }
 
+fn press_space(window: &mut Window, cx: &mut App) {
+    window.press("space", cx);
+    window.dispatch_event(
+        gpui_kit::PlatformInput::KeyUp(gpui_kit::KeyUpEvent {
+            keystroke: gpui_kit::Keystroke::parse("space").unwrap(),
+        }),
+        cx,
+    );
+}
+
 #[gpui_kit::test]
 async fn android_actions_follow_the_named_device_and_hide_unsupported_capabilities(
     cx: &mut TestAppContext,
@@ -212,6 +226,13 @@ async fn android_actions_follow_the_named_device_and_hide_unsupported_capabiliti
             Some("Ubuntu Board（ubuntu）")
         );
         assert!(window.find("android-unsupported").visible());
+        assert!(
+            window
+                .find("android-unsupported")
+                .label()
+                .unwrap_or_default()
+                .contains("Android")
+        );
         for id in ["android-mirror", "android-install", "android-launch"] {
             assert!(window.try_find(id).is_none());
         }
@@ -277,10 +298,11 @@ async fn mirror_survives_dialog_close_and_stops_on_request(cx: &mut TestAppConte
     let (handle, _workspace) = open(cx, vec![("android", "Helper A133")], tools.clone());
     detected(cx, handle).await;
     in_frame(cx, handle, |window, cx| window.click("android-mirror", cx));
-    message(cx, handle, "android-mirror-status", "投屏进程运行中").await;
+    message(cx, handle, "android-mirror-status", "投屏运行中").await;
     in_frame(cx, handle, |window, cx| {
-        assert!(!enabled(&window.find("android-mirror")));
-        window.click("android-mirror", cx);
+        assert_eq!(window.find("android-mirror").label(), Some("停止投屏"));
+        assert!(!enabled(&window.find("android-mirror-audio")));
+        window.dispatch_action(Box::new(AdbDeviceAction(DeviceCommand::StartMirror)), cx);
         window.press("escape", cx);
     });
     wait_for_dialog_to_close(cx, handle).await;
@@ -292,7 +314,7 @@ async fn mirror_survives_dialog_close_and_stops_on_request(cx: &mut TestAppConte
     detected(cx, handle).await;
     in_frame(cx, handle, |window, cx| {
         assert!(window.find("android-mirror-status").visible());
-        window.click("android-stop-mirror", cx);
+        window.click("android-mirror", cx);
     });
     cx.wait_for(handle.into(), Duration::from_secs(5), |_, _| {
         tools.stops.load(Ordering::SeqCst) == 1
@@ -317,17 +339,171 @@ async fn missing_scrcpy_can_be_selected_without_blocking_apk_actions(cx: &mut Te
         assert!(enabled(&window.find("android-install")));
         window.click("android-scrcpy-choose", cx);
     });
-    cx.simulate_path_prompt_response(|_| Some(vec![PathBuf::from("chosen-scrcpy")]));
+    let bundle = tempfile::tempdir().unwrap();
+    let executable = bundle.path().join(if cfg!(windows) {
+        "scrcpy.exe"
+    } else {
+        "scrcpy"
+    });
+    std::fs::write(&executable, b"injected scrcpy").unwrap();
+    std::fs::write(bundle.path().join("scrcpy-server"), b"injected server").unwrap();
+    cx.simulate_path_prompt_response(|_| Some(vec![executable]));
     cx.wait_for(handle.into(), Duration::from_secs(5), |window, cx| {
         window.render_frame(cx);
         window.try_find("android-scrcpy-missing").is_none()
     })
     .await;
     in_frame(cx, handle, |window, cx| window.click("android-mirror", cx));
-    message(cx, handle, "android-mirror-status", "投屏进程运行中").await;
+    message(cx, handle, "android-mirror-status", "投屏运行中").await;
+    in_frame(cx, handle, |window, cx| window.click("android-mirror", cx));
+}
+
+#[gpui_kit::test]
+async fn screen_control_is_compact_and_audio_is_off_by_default(cx: &mut TestAppContext) {
+    let tools = Arc::new(Tools::default());
+    let (handle, _workspace) = open(cx, vec![("android", "A523 PRO")], tools.clone());
+    detected(cx, handle).await;
     in_frame(cx, handle, |window, cx| {
-        window.click("android-stop-mirror", cx)
+        assert_eq!(window.find("android-mirror").label(), Some("开始投屏"));
+        assert_eq!(window.find("android-mirror-audio").checked(), Some(false));
+        assert_eq!(
+            window.find("android-mirror").bounds().center().y,
+            window.find("android-mirror-audio").bounds().center().y
+        );
+        assert!(
+            window.find("android-install").bounds().size.width
+                < window.find("android-device-manager").bounds().size.width
+        );
+        assert!(window.try_find("android-scrcpy-choose").is_none());
+        assert!(window.try_find("android-stop-mirror").is_none());
+        window.click("android-mirror", cx);
     });
+    message(cx, handle, "android-mirror-status", "投屏运行中").await;
+    assert!(
+        tools
+            .calls
+            .lock()
+            .unwrap()
+            .contains(&"mirror:android:audio=false".into())
+    );
+    in_frame(cx, handle, |window, cx| window.click("android-mirror", cx));
+}
+
+#[gpui_kit::test]
+async fn audio_can_be_selected_by_keyboard_and_is_fixed_until_mirroring_stops(
+    cx: &mut TestAppContext,
+) {
+    let tools = Arc::new(Tools::default());
+    let (handle, _workspace) = open(cx, vec![("android", "A523 PRO")], tools.clone());
+    detected(cx, handle).await;
+    in_frame(cx, handle, |window, cx| {
+        window.click("android-mirror-audio", cx)
+    });
+    in_frame(cx, handle, |window, cx| {
+        for _ in 0..32 {
+            if window.find("android-mirror-audio").focused() == Some(true) {
+                break;
+            }
+            window.focus_next(cx);
+            window.render_frame(cx);
+        }
+        assert_eq!(window.find("android-mirror-audio").focused(), Some(true));
+        press_space(window, cx);
+    });
+    in_frame(cx, handle, |window, cx| {
+        assert_eq!(window.find("android-mirror-audio").checked(), Some(false));
+        press_space(window, cx);
+    });
+    in_frame(cx, handle, |window, cx| {
+        assert_eq!(window.find("android-mirror-audio").checked(), Some(true));
+        window.click("android-mirror", cx);
+    });
+    message(cx, handle, "android-mirror-status", "投屏运行中").await;
+    assert!(
+        tools
+            .calls
+            .lock()
+            .unwrap()
+            .contains(&"mirror:android:audio=true".into())
+    );
+    in_frame(cx, handle, |window, cx| {
+        assert!(!enabled(&window.find("android-mirror-audio")));
+        window.dispatch_action(
+            Box::new(AdbDeviceAction(DeviceCommand::SetMirrorAudio(false))),
+            cx,
+        );
+    });
+    in_frame(cx, handle, |window, cx| {
+        assert_eq!(window.find("android-mirror-audio").checked(), Some(true));
+        window.click("android-mirror", cx);
+    });
+    in_frame(cx, handle, |window, cx| {
+        assert_eq!(window.find("android-mirror").label(), Some("开始投屏"));
+        assert!(enabled(&window.find("android-mirror-audio")));
+        window.click("android-mirror-audio", cx);
+    });
+    in_frame(cx, handle, |window, cx| window.click("android-mirror", cx));
+    message(cx, handle, "android-mirror-status", "投屏运行中").await;
+    assert!(
+        tools
+            .calls
+            .lock()
+            .unwrap()
+            .contains(&"mirror:android:audio=false".into())
+    );
+    in_frame(cx, handle, |window, cx| window.click("android-mirror", cx));
+}
+
+#[gpui_kit::test]
+async fn android10_can_be_controlled_but_cannot_enable_audio(cx: &mut TestAppContext) {
+    let tools = Arc::new(Tools::default());
+    let (handle, _workspace) = open(cx, vec![("android10", "Android 10 device")], tools.clone());
+    detected(cx, handle).await;
+    in_frame(cx, handle, |window, cx| {
+        assert!(enabled(&window.find("android-mirror")));
+        assert!(!enabled(&window.find("android-mirror-audio")));
+        window.dispatch_action(
+            Box::new(AdbDeviceAction(DeviceCommand::SetMirrorAudio(true))),
+            cx,
+        );
+    });
+    in_frame(cx, handle, |window, cx| {
+        assert_eq!(window.find("android-mirror-audio").checked(), Some(false));
+        window.click("android-mirror", cx);
+    });
+    message(cx, handle, "android-mirror-status", "投屏运行中").await;
+    assert!(
+        tools
+            .calls
+            .lock()
+            .unwrap()
+            .contains(&"mirror:android10:audio=false".into())
+    );
+    in_frame(cx, handle, |window, cx| window.click("android-mirror", cx));
+}
+
+#[gpui_kit::test]
+async fn choosing_escrcpy_does_not_enable_or_start_mirroring(cx: &mut TestAppContext) {
+    let tools = Arc::new(Tools {
+        missing_scrcpy: true,
+        ..Default::default()
+    });
+    let (handle, _workspace) = open(cx, vec![("android", "Helper A133")], tools.clone());
+    detected(cx, handle).await;
+    in_frame(cx, handle, |window, cx| {
+        window.click("android-scrcpy-choose", cx);
+    });
+    let bundle = tempfile::tempdir().unwrap();
+    let executable = bundle.path().join("Escrcpy.exe");
+    std::fs::write(&executable, b"injected GUI").unwrap();
+    cx.simulate_path_prompt_response(|_| Some(vec![executable]));
+    message(cx, handle, "android-error", "Escrcpy").await;
+    in_frame(cx, handle, |window, cx| {
+        assert!(!enabled(&window.find("android-mirror")));
+        assert!(enabled(&window.find("android-install")));
+        window.click("android-mirror", cx);
+    });
+    assert_eq!(tools.count("mirror:"), 0);
 }
 
 #[gpui_kit::test]

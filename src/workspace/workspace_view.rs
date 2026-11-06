@@ -191,6 +191,8 @@ pub struct Workspace {
     /// 目录跟随: what each terminal's current connection was found to be.
     pub(super) directory_follow: HashMap<RemoteTerminalId, super::follow::FollowState>,
     pub(super) local_terminals: HashMap<LocalTerminalId, Entity<LocalTerminalPanel>>,
+    cmder: Entity<crate::terminal::Cmder>,
+    cmder_terminals: HashMap<LocalTerminalId, crate::terminal::LocalLaunch>,
     /// The local terminals kept in 项目, by the tab each is open in.
     pub(super) saved_terminals: HashMap<LocalTerminalId, SavedTerminalId>,
     /// The saved terminal's tab in front last, for the next launch to put
@@ -458,6 +460,12 @@ impl Workspace {
         window.focus(&panel_focus, cx);
         // Before the first frame, so a dark theme never starts out light.
         crate::settings::apply(settings.read(cx).settings(), window, cx);
+        let cmder = cx.new(|cx| {
+            crate::terminal::Cmder::new(
+                settings.read(cx).settings().local_terminal.cmder_directory,
+                cx,
+            )
+        });
 
         let mut sidebar_width = dock_area.read(cx).dock_size(DockPlacement::Left);
         let mut subscriptions = vec![
@@ -512,6 +520,9 @@ impl Workspace {
             ),
             cx.observe_in(&settings, window, |this, settings, window, cx| {
                 crate::settings::apply(settings.read(cx).settings(), window, cx);
+                let directory = settings.read(cx).settings().local_terminal.cmder_directory;
+                this.cmder
+                    .update(cx, |cmder, cx| cmder.set_directory(directory, cx));
                 if !settings.read(cx).settings().local_terminal.keep_output {
                     this.store.read(cx).forget_kept_outputs();
                 }
@@ -721,6 +732,7 @@ impl Workspace {
         // arrives as events, once the workspace is there to show it.
         forwards.update(cx, |forwards, cx| forwards.start_automatic(cx));
 
+        subscriptions.push(cx.observe(&cmder, |_, _, cx| cx.notify()));
         let this = Self {
             primary_window: window.window_handle(),
             detached_windows: Vec::new(),
@@ -739,6 +751,8 @@ impl Workspace {
             file_sidebars: HashMap::new(),
             directory_follow: HashMap::new(),
             local_terminals,
+            cmder,
+            cmder_terminals: HashMap::new(),
             saved_terminals,
             front_saved_terminal,
             settings_tab: None,
@@ -1585,6 +1599,46 @@ impl Workspace {
         self.count(Counter::LocalTerminal);
     }
 
+    fn on_new_cmder_terminal(
+        &mut self,
+        _: &crate::app::NewCmderTerminal,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(directory) = self
+            .cmder
+            .read(cx)
+            .directory()
+            .map(std::path::Path::to_path_buf)
+        else {
+            return;
+        };
+        let launch =
+            crate::terminal::LocalLaunch::new(crate::terminal::LocalShell::cmder(directory));
+        let factory = self.local_terminal_provider.factory_for(&launch);
+        let id = LocalTerminalId(self.next_local_terminal_id);
+        self.next_local_terminal_id += 1;
+        let name = Some(SavedName {
+            name: "Cmder".into(),
+            fixed: true,
+            title: None,
+        });
+        let (panel, subscription) = new_local_terminal_panel(id, factory, name, window, cx);
+        self._subscriptions.push(subscription);
+        let focus = panel.read(cx).focus_handle(cx);
+        self._subscriptions.push(follow_focus(
+            CenterTab::LocalTerminal(id),
+            &focus,
+            window,
+            cx,
+        ));
+        self.local_terminals.insert(id, panel.clone());
+        self.cmder_terminals.insert(id, launch);
+        self.dock_area.update(cx, |area, cx| {
+            area.add_panel_view(panel_handle(panel), DockPlacement::Center, None, window, cx);
+        });
+    }
+
     fn on_new_command_terminal(
         &mut self,
         _: &NewCommandTerminal,
@@ -1671,7 +1725,9 @@ impl Workspace {
         integration.update(cx, |integration, cx| integration.refresh(cx));
         let updater = self.updater.clone();
         let sync = self.sync.clone();
-        let panel = cx.new(|cx| SettingsPanel::new(store, integration, updater, sync, window, cx));
+        let cmder = self.cmder.clone();
+        let panel =
+            cx.new(|cx| SettingsPanel::new(store, integration, updater, sync, cmder, window, cx));
         let subscription = cx.subscribe_in(
             &panel,
             window,
@@ -2285,6 +2341,8 @@ impl Workspace {
                 .cloned();
             let factory = if panel.read(cx).is_command_terminal() {
                 crate::terminal::command_terminal_factory()
+            } else if let Some(launch) = self.cmder_terminals.get(&action.0) {
+                self.local_terminal_provider.factory_for(launch)
             } else {
                 self.local_terminal_factory(saved.as_ref(), false, cx)
             };
@@ -3290,6 +3348,7 @@ fn new_local_terminal_panel(
                 this.finish_detached_tab(CenterTab::LocalTerminal(*id), cx);
                 this.keep_what_it_shows(*id, panel, cx);
                 this.local_terminals.remove(id);
+                this.cmder_terminals.remove(id);
                 this.saved_terminals.remove(id);
                 if this.front_saved_terminal == Some(*id) {
                     this.front_saved_terminal = None;
@@ -3407,6 +3466,7 @@ impl Workspace {
             .on_action(cx.listener(Self::on_new_temporary_connection))
             .on_action(cx.listener(Self::on_quick_connect))
             .on_action(cx.listener(Self::on_new_local_terminal))
+            .on_action(cx.listener(Self::on_new_cmder_terminal))
             .on_action(cx.listener(Self::on_new_command_terminal))
             .on_action(cx.listener(Self::on_toggle_terminal_broadcast))
             .on_action(cx.listener(Self::on_set_broadcast_target))
@@ -3626,6 +3686,7 @@ impl Workspace {
                         sidebar,
                         running_forwards,
                         self.updater.read(cx).snapshot().badge(),
+                        self.cmder.read(cx).directory().is_some(),
                         &self.focus_handle,
                         cx,
                     ))

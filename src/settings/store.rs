@@ -134,7 +134,7 @@ fn write(path: &Path, settings: &AppSettings) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     // Not `super::*`: it brings in `gpui_kit::*`, whose `test` shadows `#[test]`.
-    use std::fs;
+    use std::{fs, path::PathBuf};
 
     use super::{SettingsProblem, SettingsStore};
     use crate::settings::{AppSettings, Appearance, InterfaceLanguage};
@@ -173,6 +173,8 @@ mod tests {
             settings.terminal_interaction.cursor_style = crate::terminal::TerminalCursorStyle::Beam;
             settings.terminal_interaction.cursor_blinking = false;
             settings.terminal_interaction.hide_ai_citations = true;
+            settings.notifications.tab_output = false;
+            settings.local_terminal.cmder_directory = Some(PathBuf::from("D:/Cmder installation"));
             settings.terminal_interaction.right_click = crate::terminal::RightClick::Enter;
             settings.terminal_interaction.middle_click = crate::terminal::MiddleClick::Paste;
             settings.snippet_shortcuts.set(
@@ -199,6 +201,11 @@ mod tests {
         );
         assert!(!reloaded.settings().terminal_interaction.cursor_blinking);
         assert!(reloaded.settings().terminal_interaction.hide_ai_citations);
+        assert!(!reloaded.settings().notifications.tab_output);
+        assert_eq!(
+            reloaded.settings().local_terminal.cmder_directory,
+            Some(PathBuf::from("D:/Cmder installation"))
+        );
         assert_eq!(
             reloaded.settings().terminal_interaction.right_click,
             crate::terminal::RightClick::Enter

@@ -86,6 +86,11 @@ pub fn apply(settings: AppSettings, window: &mut Window, cx: &mut App) {
     if cx.try_global::<TerminalInteraction>() != Some(&settings.terminal_interaction) {
         cx.set_global(settings.terminal_interaction);
     }
+    let tab_indicators =
+        crate::terminal::TerminalTabIndicators::new(settings.notifications.tab_output);
+    if cx.try_global::<crate::terminal::TerminalTabIndicators>() != Some(&tab_indicators) {
+        cx.set_global(tab_indicators);
+    }
     if cx.try_global::<crate::terminal::SerialPreferences>() != Some(&settings.serial_preferences) {
         cx.set_global(settings.serial_preferences);
     }

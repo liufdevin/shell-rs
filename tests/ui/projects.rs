@@ -77,6 +77,83 @@ fn launch(directory: Option<&str>) -> LocalLaunch {
     }
 }
 
+#[cfg(windows)]
+#[gpui_kit::test]
+async fn cmder_has_its_own_entry_launch_and_restart_without_changing_the_local_shell(
+    cx: &mut TestAppContext,
+) {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::create_dir(root.path().join("vendor")).unwrap();
+    std::fs::write(root.path().join("vendor/init.bat"), b"@echo off").unwrap();
+    let local = fake_local_terminals();
+    let (handle, workspace) = open_with_local(cx, HostStore::empty(), local.clone());
+    let settings = cx.update(|cx| workspace.read(cx).settings().clone());
+    cx.update(|cx| {
+        settings.update(cx, |store, cx| {
+            store.update(
+                |settings| {
+                    settings.local_terminal.shell = Some("powershell.exe -NoLogo".into());
+                    settings.local_terminal.cmder_directory = Some(root.path().to_path_buf());
+                },
+                cx,
+            )
+        })
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(5), |window, cx| {
+        window.render_frame(cx);
+        window.try_find("new-cmder-terminal").is_some()
+    })
+    .await;
+    in_frame(cx, handle, |window, cx| {
+        let local_bounds = window.find("new-local-terminal").bounds();
+        let cmder_bounds = window.find("new-cmder-terminal").bounds();
+        assert_eq!(local_bounds.center().y, cmder_bounds.center().y);
+        assert!(cmder_bounds.origin.x >= local_bounds.origin.x + local_bounds.size.width);
+        window.click("new-cmder-terminal", cx);
+    });
+    assert_eq!(local.launches().len(), 1);
+    assert_eq!(
+        local.launches()[0].shell.cmder_directory(),
+        Some(&dunce::canonicalize(root.path()).unwrap())
+    );
+    in_frame(cx, handle, |window, cx| {
+        window.dispatch_action(Box::new(RestartLocalTerminal(LocalTerminalId(1))), cx);
+    });
+    assert_eq!(local.launches()[0], local.launches()[1]);
+    in_frame(cx, handle, |window, cx| {
+        window.click("new-local-terminal", cx)
+    });
+    assert_eq!(
+        local.launches().last().unwrap().shell.command(),
+        Some("powershell.exe -NoLogo")
+    );
+    cx.update(|cx| {
+        settings.update(cx, |store, cx| {
+            store.update(
+                |settings| {
+                    settings.local_terminal.cmder_directory = Some(root.path().join("missing"));
+                },
+                cx,
+            )
+        })
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(5), |window, cx| {
+        window.render_frame(cx);
+        window.try_find("new-cmder-terminal").is_none()
+    })
+    .await;
+    in_frame(cx, handle, |window, cx| {
+        let before = local.launches().len();
+        window.dispatch_action(Box::new(shellrs::app::NewCmderTerminal), cx);
+        assert_eq!(local.launches().len(), before);
+        assert_eq!(window.find("open-adb-devices").label(), Some("ADB 设备"));
+        assert_eq!(
+            window.find("open-adb-devices").bounds().size,
+            window.find("new-local-terminal").bounds().size
+        );
+    });
+}
+
 fn saved(workspace: &Entity<Workspace>, cx: &mut TestAppContext) -> Vec<SavedTerminalTab> {
     cx.update(|cx| {
         workspace

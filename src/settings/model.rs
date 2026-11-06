@@ -373,11 +373,13 @@ fn readable_rules<'de, D: Deserializer<'de>>(
 /// 终端 → 本地终端.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
+#[non_exhaustive]
 pub struct LocalTerminalSettings {
     /// The program new and restarted local terminals run, a path or a
     /// command with any arguments, as typed. `None` is the system's default
     /// shell, found anew each time.
     pub shell: Option<String>,
+    pub cmder_directory: Option<std::path::PathBuf>,
     /// 保留终端内容: a 项目 terminal's last lines of output, kept when it
     /// closes and drawn again when it opens. On until the user turns it off.
     pub keep_output: bool,
@@ -387,20 +389,23 @@ impl Default for LocalTerminalSettings {
     fn default() -> Self {
         Self {
             shell: None,
+            cmder_directory: None,
             keep_output: true,
         }
     }
 }
 
 /// 终端 → 通知: what a terminal may tell the user about while they look
-/// elsewhere. Both on until the user turns them off.
+/// elsewhere. Enabled until the user turns them off.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
+#[non_exhaustive]
 pub struct NotificationSettings {
     /// 程序发送的通知: OSC 9 and 777.
     pub programs: bool,
     /// 响铃时通知.
     pub bell: bool,
+    pub tab_output: bool,
 }
 
 impl Default for NotificationSettings {
@@ -408,6 +413,7 @@ impl Default for NotificationSettings {
         Self {
             programs: true,
             bell: true,
+            tab_output: true,
         }
     }
 }
@@ -984,9 +990,16 @@ mod tests {
     fn notifications_are_on_unless_the_file_says_otherwise() {
         let settings: AppSettings = serde_json::from_str("{}").unwrap();
         assert!(settings.notifications.programs && settings.notifications.bell);
+        assert!(settings.notifications.tab_output);
         let settings: AppSettings =
             serde_json::from_str(r#"{"notifications":{"bell":false}}"#).unwrap();
         assert!(settings.notifications.programs && !settings.notifications.bell);
+        assert!(settings.notifications.tab_output);
+        let settings: AppSettings =
+            serde_json::from_str(r#"{"notifications":{"tab_output":false}}"#).unwrap();
+        let restored: AppSettings =
+            serde_json::from_str(&serde_json::to_string(&settings).unwrap()).unwrap();
+        assert!(!restored.notifications.tab_output);
     }
 
     #[test]

@@ -1,6 +1,7 @@
 use std::cell::RefCell;
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -111,6 +112,7 @@ pub struct TerminalEngine {
     encoding: TerminalEncoding,
     factory: SharedTerminalTransportFactory,
     runtime: TerminalRuntime,
+    output_activity: RefCell<OutputActivity>,
     lifecycle: TerminalLifecycle,
     title: Option<String>,
     /// The connection's latest round trip, while one is running.
@@ -245,6 +247,7 @@ impl TerminalEngine {
             reconnect_on_enter: false,
             generation,
             output_revision: 0,
+            output_activity: RefCell::default(),
             size,
             event_sender,
             event_task: None,
@@ -785,6 +788,23 @@ impl TerminalEngine {
         self.output_revision
     }
 
+    pub(super) fn received_output_revision(&self) -> (u64, u64) {
+        let received = (
+            self.generation,
+            self.runtime.received_output.load(Ordering::Acquire),
+        );
+        let mut activity = self.output_activity.borrow_mut();
+        if activity.received != received {
+            activity.observe(
+                received,
+                self.runtime.rewritten_output.load(Ordering::Acquire),
+                self.runtime.synchronized_output.load(Ordering::Acquire),
+                &self.runtime.term.lock(),
+            );
+        }
+        (self.generation, activity.revision)
+    }
+
     /// Focus the next match up (older output) or down (newer output).
     pub fn step_search(&mut self, direction: SearchDirection, cx: &mut gpui_kit::Context<Self>) {
         let mut term = self.runtime.term.lock();
@@ -1221,6 +1241,9 @@ struct TerminalRuntime {
     commands: mpsc::Sender<TerminalTransportCommand>,
     size: Arc<Mutex<TerminalSize>>,
     wakeup_pending: Arc<AtomicBool>,
+    received_output: Arc<AtomicU64>,
+    rewritten_output: Arc<AtomicU64>,
+    synchronized_output: Arc<AtomicBool>,
     /// The `exec --terminal` run this connection carries, which the parser
     /// thread reads the output for. Given up with the connection.
     run: Arc<Mutex<Option<RunHandle>>>,
@@ -1259,12 +1282,18 @@ impl TerminalRuntime {
         let (transport_events, transport_receiver) = async_channel::unbounded();
         let shared_size = Arc::new(Mutex::new(size));
         let wakeup_pending = Arc::new(AtomicBool::new(false));
+        let received_output = Arc::new(AtomicU64::new(0));
+        let rewritten_output = Arc::new(AtomicU64::new(0));
+        let synchronized_output = Arc::new(AtomicBool::new(false));
         let proxy = TerminalEventProxy {
             generation,
             commands: commands.clone(),
             ui_events: ui_events.clone(),
             size: shared_size.clone(),
             wakeup_pending: wakeup_pending.clone(),
+            received_output: received_output.clone(),
+            rewritten_output: rewritten_output.clone(),
+            synchronized_output: synchronized_output.clone(),
             replies: Arc::default(),
             theme,
         };
@@ -1281,6 +1310,7 @@ impl TerminalRuntime {
             term: term.clone(),
             processor: Processor::new(),
             notices: NoticeScanner::default(),
+            rewrites: RewriteScanner::default(),
             watcher: LineWatcher::new(current(&highlights)),
             highlights,
             proxy: parser_proxy,
@@ -1315,6 +1345,11 @@ impl TerminalRuntime {
                                 let mut term = parser.term.lock();
                                 if end_overdue_sync(&mut parser.processor, &mut term) {
                                     parser.proxy.answer(&term);
+                                    parser
+                                        .proxy
+                                        .synchronized_output
+                                        .store(false, Ordering::Release);
+                                    parser.proxy.received_output.fetch_add(1, Ordering::Release);
                                 }
                             }
                             let fed = parser.zmodem.tick(Instant::now());
@@ -1342,6 +1377,9 @@ impl TerminalRuntime {
                                 parser
                                     .processor
                                     .advance(&mut *parser.term.lock(), text.as_bytes());
+                                if !bytes.is_empty() {
+                                    parser.proxy.received_output.fetch_add(1, Ordering::Release);
+                                }
                                 parser.proxy.wakeup();
                                 continue;
                             }
@@ -1405,6 +1443,11 @@ impl TerminalRuntime {
                             parser
                                 .proxy
                                 .send(TerminalUiEventKind::Exited { code, signal });
+                            parser
+                                .proxy
+                                .synchronized_output
+                                .store(false, Ordering::Release);
+                            parser.proxy.received_output.fetch_add(1, Ordering::Release);
                             parser.proxy.wakeup();
                             break;
                         }
@@ -1418,6 +1461,11 @@ impl TerminalRuntime {
                                 &t!("terminal.notice.error", error = error),
                             );
                             parser.proxy.send(TerminalUiEventKind::Failed(error));
+                            parser
+                                .proxy
+                                .synchronized_output
+                                .store(false, Ordering::Release);
+                            parser.proxy.received_output.fetch_add(1, Ordering::Release);
                             parser.proxy.wakeup();
                         }
                     }
@@ -1446,6 +1494,9 @@ impl TerminalRuntime {
             commands,
             size: shared_size,
             wakeup_pending,
+            received_output,
+            rewritten_output,
+            synchronized_output,
             run,
             zmodem,
             transferring,
@@ -1526,6 +1577,9 @@ pub struct TerminalEventProxy {
     ui_events: mpsc::Sender<TerminalUiEvent>,
     size: Arc<Mutex<TerminalSize>>,
     wakeup_pending: Arc<AtomicBool>,
+    received_output: Arc<AtomicU64>,
+    rewritten_output: Arc<AtomicU64>,
+    synchronized_output: Arc<AtomicBool>,
     /// What the output just parsed asks of the terminal, in the order it
     /// asks, until `answer`.
     replies: Arc<Mutex<Vec<Reply>>>,
@@ -1744,6 +1798,7 @@ struct Parser {
     processor: Processor,
     /// Alacritty drops the notifications programs ask for.
     notices: NoticeScanner,
+    rewrites: RewriteScanner,
     watcher: LineWatcher,
     highlights: SharedHighlights,
     proxy: TerminalEventProxy,
@@ -1798,6 +1853,7 @@ impl Parser {
     }
 
     fn parsed_output(&mut self, bytes: &[u8]) {
+        self.rewrites.scan(bytes);
         self.watcher.sync(current(&self.highlights));
         // The lines are only read under the lock; the rules match them
         // once it is let go.
@@ -1813,6 +1869,10 @@ impl Parser {
                 self.watcher.is_watching(),
             );
             self.proxy.answer(&term);
+            self.proxy.synchronized_output.store(
+                self.processor.sync_timeout().pending_timeout(),
+                Ordering::Release,
+            );
             lines
         };
         if let Some(hit) = self.watcher.check(lines, Instant::now()) {
@@ -1825,6 +1885,104 @@ impl Parser {
             self.proxy.send(TerminalUiEventKind::Directory(directory));
         }
         feed_run(&self.run, bytes);
+        if !bytes.is_empty() {
+            self.proxy
+                .rewritten_output
+                .store(self.rewrites.count, Ordering::Release);
+            self.proxy.received_output.fetch_add(1, Ordering::Release);
+        }
+    }
+}
+
+#[derive(Default)]
+struct OutputActivity {
+    received: (u64, u64),
+    fingerprint: Option<u64>,
+    revision: u64,
+    history: usize,
+    rewrites: u64,
+}
+
+impl OutputActivity {
+    fn observe(
+        &mut self,
+        received: (u64, u64),
+        rewrites: u64,
+        synchronized: bool,
+        term: &AlacrittyTerm,
+    ) {
+        if synchronized {
+            return;
+        }
+        let mut fingerprint = DefaultHasher::new();
+        for line in 0..term.screen_lines() as i32 {
+            for cell in &term.grid()[Line(line)] {
+                cell.c.hash(&mut fingerprint);
+            }
+        }
+        let fingerprint = fingerprint.finish();
+        if self.received.0 != received.0 {
+            self.revision = 0;
+        } else if self
+            .fingerprint
+            .is_some_and(|previous| previous != fingerprint)
+            || (self.history != term.history_size() && self.rewrites == rewrites)
+        {
+            self.revision = self.revision.wrapping_add(1);
+        }
+        self.received = received;
+        self.fingerprint = Some(fingerprint);
+        self.history = term.history_size();
+        self.rewrites = rewrites;
+    }
+}
+
+#[derive(Default)]
+struct RewriteScanner {
+    parser: alacritty_terminal::vte::Parser,
+    count: u64,
+}
+
+impl RewriteScanner {
+    fn scan(&mut self, bytes: &[u8]) {
+        struct Counter<'a>(&'a mut u64);
+        impl alacritty_terminal::vte::Perform for Counter<'_> {
+            fn csi_dispatch(
+                &mut self,
+                _: &alacritty_terminal::vte::Params,
+                _: &[u8],
+                ignore: bool,
+                action: char,
+            ) {
+                if !ignore
+                    && matches!(
+                        action,
+                        'A' | 'B'
+                            | 'C'
+                            | 'D'
+                            | 'E'
+                            | 'F'
+                            | 'G'
+                            | 'H'
+                            | 'f'
+                            | 'd'
+                            | 'a'
+                            | 'e'
+                            | '`'
+                            | 'J'
+                            | 'K'
+                            | 'X'
+                            | 'P'
+                            | '@'
+                            | 's'
+                            | 'u'
+                    )
+                {
+                    *self.0 = self.0.wrapping_add(1);
+                }
+            }
+        }
+        self.parser.advance(&mut Counter(&mut self.count), bytes);
     }
 }
 
@@ -1965,6 +2123,76 @@ mod tests {
     use alacritty_terminal::index::{Column, Line};
     use alacritty_terminal::vte::ansi::NamedColor;
 
+    #[test]
+    fn output_activity_ignores_cursor_title_style_and_identical_tui_redraws() {
+        let mut term = test_term(40, 6);
+        let mut processor: Processor = Processor::new();
+        processor.advance(&mut term, b"Finished answer\r\n> ");
+        let mut activity = OutputActivity::default();
+        let mut rewrites = RewriteScanner::default();
+        activity.observe((1, 1), rewrites.count, false, &term);
+        let before = activity.revision;
+        for (index, bytes) in [
+            b"\x1b[?25l\x1b[H\x1b[?25h".as_slice(),
+            b"\x1b]0;Codex idle\x07",
+            b"\x1b[31m\x1b[0m\x1b[6n",
+            b"\x1b[?2026h\x1b[2J\x1b[HFinished answer\r\n> \x1b[?2026l",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            processor.advance(&mut term, bytes);
+            rewrites.scan(bytes);
+            activity.observe(
+                (1, index as u64 + 2),
+                rewrites.count,
+                processor.sync_timeout().pending_timeout(),
+                &term,
+            );
+            assert_eq!(activity.revision, before);
+        }
+        processor.advance(&mut term, b"\x1b[HNew answer");
+        activity.observe((1, 9), rewrites.count + 1, false, &term);
+        assert_ne!(activity.revision, before);
+        activity.observe((2, 0), 0, false, &term);
+        assert_eq!(activity.revision, 0);
+    }
+
+    #[test]
+    fn output_activity_keeps_real_output_that_scrolls_into_history() {
+        let mut term = test_term(20, 2);
+        let mut processor: Processor = Processor::new();
+        processor.advance(&mut term, b"same\r\nsame\r\n");
+        let mut activity = OutputActivity::default();
+        activity.observe((1, 1), 0, false, &term);
+        processor.advance(&mut term, b"same\r\n");
+        activity.observe((1, 2), 0, false, &term);
+        assert_eq!(activity.revision, 1);
+    }
+
+    #[test]
+    fn output_activity_handles_fragmented_synchronized_redraws_and_osc_titles() {
+        let mut term = test_term(40, 6);
+        let mut processor: Processor = Processor::new();
+        processor.advance(&mut term, b"Finished answer\r\n> ");
+        let mut activity = OutputActivity::default();
+        let mut rewrites = RewriteScanner::default();
+        activity.observe((1, 1), rewrites.count, false, &term);
+        let redraw =
+            b"\x1b]0;Codex [H idle\x07\x1b[?2026h\x1b[2J\x1b[HFinished answer\r\n> \x1b[?2026l";
+        for (index, byte) in redraw.iter().enumerate() {
+            processor.advance(&mut term, &[*byte]);
+            rewrites.scan(&[*byte]);
+            activity.observe(
+                (1, index as u64 + 2),
+                rewrites.count,
+                processor.sync_timeout().pending_timeout(),
+                &term,
+            );
+            assert_eq!(activity.revision, 0);
+        }
+    }
+
     fn test_term(columns: usize, rows: usize) -> AlacrittyTerm {
         test_term_with_channels(columns, rows).0
     }
@@ -2006,6 +2234,9 @@ mod tests {
             ui_events,
             size: Arc::new(Mutex::new(size)),
             wakeup_pending: Arc::new(AtomicBool::new(false)),
+            received_output: Arc::new(AtomicU64::new(0)),
+            rewritten_output: Arc::new(AtomicU64::new(0)),
+            synchronized_output: Arc::new(AtomicBool::new(false)),
             replies: Arc::default(),
             theme: Arc::new(Mutex::new(
                 TerminalTheme::default_for(gpui_kit::component::ThemeMode::Light).clone(),

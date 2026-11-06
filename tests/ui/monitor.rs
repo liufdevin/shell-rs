@@ -4,6 +4,20 @@
 use crate::support::*;
 
 #[gpui_kit::test]
+async fn android_system_architecture_shows_the_application_abi(cx: &mut TestAppContext) {
+    let output = FIRST.replace("@@arch\nx86_64", "@@arch\narm64-v8a");
+    let factory = Arc::new(FakeTerminalFactory::answering(&[&output]));
+    let handle = open_monitor(cx, factory);
+    cx.wait_for(handle.into(), Duration::from_secs(5), |window, cx| {
+        window.render_frame(cx);
+        window
+            .try_find("monitor-arch")
+            .is_some_and(|field| field.label() == Some("arm64-v8a"))
+    })
+    .await;
+}
+
+#[gpui_kit::test]
 async fn dynamic_channel_choices_do_not_change_another_terminal(cx: &mut TestAppContext) {
     let output = format!("{FIRST}\n@@mtop\nunit: MB\npcie0 dsp_ddr\n10 20\n@@mtop-end\n");
     let factory = Arc::new(FakeTerminalFactory::answering(&[&output]));

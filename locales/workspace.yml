@@ -1,4 +1,7 @@
 _version: 2
+workspace.title_bar.new_cmder_terminal:
+  zh-CN: 新建 Cmder 终端
+  en: New Cmder terminal
 workspace.detached.return:
   zh-CN: 移回主窗口
   en: Move to main window

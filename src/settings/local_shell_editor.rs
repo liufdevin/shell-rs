@@ -4,7 +4,7 @@
 //! once; a local terminal takes it when it opens or restarts.
 
 use gpui_kit::component::{
-    ActiveTheme as _, Icon, IconName, Sizable as _,
+    ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _,
     button::{Button, ButtonVariants as _},
     h_flex,
     input::{Input, InputEvent, InputState},
@@ -24,10 +24,12 @@ use super::SettingsStore;
 pub struct LocalShellEditor {
     store: Entity<SettingsStore>,
     input: Entity<InputState>,
+    cmder_input: Entity<InputState>,
+    cmder: Entity<crate::terminal::Cmder>,
     /// What 自动检测 runs here, and the shells installed; `None` until the
     /// look in the background comes back.
     found: Option<FoundShells>,
-    _subscriptions: [Subscription; 3],
+    _subscriptions: Vec<Subscription>,
     _scan: Task<()>,
 }
 
@@ -37,14 +39,45 @@ struct FoundShells {
 }
 
 impl LocalShellEditor {
-    pub fn new(store: Entity<SettingsStore>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        store: Entity<SettingsStore>,
+        cmder: Entity<crate::terminal::Cmder>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let shell = stored(&store, cx).unwrap_or_default();
         let input = cx.new(|cx| {
             InputState::new(window, cx)
                 .placeholder(t!("settings.local_terminal.automatic_unknown"))
                 .default_value(shell)
         });
-        let subscriptions = [
+        let cmder_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(t!("settings.local_terminal.automatic_unknown"))
+                .default_value(
+                    store
+                        .read(cx)
+                        .settings()
+                        .local_terminal
+                        .cmder_directory
+                        .map(|path| path.to_string_lossy().into_owned())
+                        .unwrap_or_default(),
+                )
+        });
+        let subscriptions = vec![
+            cx.observe(&cmder, |_, _, cx| cx.notify()),
+            cx.subscribe(&cmder_input, |this, input, event: &InputEvent, cx| {
+                if matches!(event, InputEvent::Change) {
+                    let value = input.read(cx).value().trim().to_owned();
+                    let path = (!value.is_empty()).then(|| std::path::PathBuf::from(value));
+                    this.store.update(cx, |store, cx| {
+                        store.update(
+                            |settings| settings.local_terminal.cmder_directory = path,
+                            cx,
+                        )
+                    });
+                }
+            }),
             cx.subscribe(&input, |this, input, event: &InputEvent, cx| {
                 if matches!(event, InputEvent::Change) {
                     let shell = input.read(cx).value().to_string();
@@ -55,6 +88,17 @@ impl LocalShellEditor {
             // around them; anything else (重置, the settings file read
             // anew) shows in it.
             cx.observe_in(&store, window, |this, store, window, cx| {
+                let cmder = store
+                    .read(cx)
+                    .settings()
+                    .local_terminal
+                    .cmder_directory
+                    .map(|path| path.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                if this.cmder_input.read(cx).value().trim() != cmder {
+                    this.cmder_input
+                        .update(cx, |input, cx| input.set_value(cmder, window, cx));
+                }
                 let shell = stored(&store, cx).unwrap_or_default();
                 if this.input.read(cx).value().trim() != shell {
                     this.input
@@ -84,6 +128,8 @@ impl LocalShellEditor {
         Self {
             store,
             input,
+            cmder_input,
+            cmder,
             found: None,
             _subscriptions: subscriptions,
             _scan: scan,
@@ -156,6 +202,117 @@ impl LocalShellEditor {
 /// The shell the settings hold, `None` for the default.
 fn stored(store: &Entity<SettingsStore>, cx: &App) -> Option<String> {
     store.read(cx).settings().local_terminal.shell
+}
+
+pub(super) fn cmder_field(
+    editor: &Entity<LocalShellEditor>,
+    options: &RenderOptions,
+    cx: &App,
+) -> Div {
+    let this = editor.read(cx);
+    let (choose, automatic) = (editor.downgrade(), editor.downgrade());
+    let detected = this
+        .cmder
+        .read(cx)
+        .directory()
+        .map(|path| path.to_string_lossy().into_owned());
+    let status = detected.map_or_else(
+        || t!("settings.local_terminal.cmder_missing"),
+        |path| t!("settings.local_terminal.cmder_found", path = path),
+    );
+    gpui_kit::component::v_flex()
+        .gap_2()
+        .w_full()
+        .child(
+            h_flex()
+                .gap_2()
+                .child(
+                    Input::new(&this.cmder_input)
+                        .id("cmder-directory")
+                        .aria_label(t!("settings.local_terminal.cmder"))
+                        .with_size(options.size())
+                        .flex_1()
+                        .min_w_0()
+                        .disabled(!cfg!(windows)),
+                )
+                .child(
+                    Button::new("browse-cmder")
+                        .outline()
+                        .with_size(options.size())
+                        .label(t!("settings.local_terminal.cmder_browse"))
+                        .disabled(!cfg!(windows))
+                        .on_click(move |_, _, cx| {
+                            let receiver = cx.prompt_for_paths(PathPromptOptions {
+                                files: false,
+                                directories: true,
+                                multiple: false,
+                                prompt: Some(t!("settings.local_terminal.cmder_browse")),
+                            });
+                            let editor = choose.clone();
+                            cx.spawn(async move |cx| {
+                                let Ok(Ok(Some(paths))) = receiver.await else {
+                                    return;
+                                };
+                                let Some(path) = paths.into_iter().next() else {
+                                    return;
+                                };
+                                editor
+                                    .update(cx, |editor, cx| {
+                                        editor.store.update(cx, |store, cx| {
+                                            store.update(
+                                                |settings| {
+                                                    settings.local_terminal.cmder_directory =
+                                                        Some(path)
+                                                },
+                                                cx,
+                                            )
+                                        })
+                                    })
+                                    .ok();
+                            })
+                            .detach();
+                        }),
+                )
+                .child(
+                    Button::new("cmder-automatic")
+                        .ghost()
+                        .with_size(options.size())
+                        .label(t!("settings.local_terminal.automatic_unknown"))
+                        .disabled(
+                            !cfg!(windows)
+                                || this
+                                    .store
+                                    .read(cx)
+                                    .settings()
+                                    .local_terminal
+                                    .cmder_directory
+                                    .is_none(),
+                        )
+                        .on_click(move |_, _, cx| {
+                            automatic
+                                .update(cx, |editor, cx| {
+                                    editor.store.update(cx, |store, cx| {
+                                        store.update(
+                                            |settings| {
+                                                settings.local_terminal.cmder_directory = None
+                                            },
+                                            cx,
+                                        )
+                                    })
+                                })
+                                .ok();
+                        }),
+                ),
+        )
+        .child(
+            div()
+                .id("cmder-detection")
+                .test_support()
+                .aria_label(status.clone())
+                .text_xs()
+                .text_color(cx.theme().muted_foreground)
+                .child(status),
+        )
 }
 
 /// The row's control, under its title: the field across the row, with the

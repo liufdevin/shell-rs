@@ -154,9 +154,9 @@ impl AdbConnection {
     pub(super) fn shell(&self, script: &str, cancel: &mut dyn FnMut() -> bool) -> Result<Vec<u8>> {
         let marker = format!("__shelllf_adb_{}__", uuid::Uuid::new_v4().simple());
         let wrapped =
-            format!("( {script}\n) 2>&1; result=$?; printf '\\n{marker}%s\\n' \"$result\"");
+            format!("( {script}\n) 2>&1; result=$?; printf '\\000{marker}%s\\n' \"$result\"");
         let output = self.shell_output(&wrapped, Duration::from_secs(15), cancel)?;
-        let marker = format!("\n{marker}");
+        let marker = format!("\0{marker}");
         let offset = output
             .windows(marker.len())
             .rposition(|value| value == marker.as_bytes())
@@ -608,6 +608,41 @@ mod tests {
     use crate::adb::test_support::{BOARD_BOOT, FakeAdb, OTHER_BOOT};
 
     #[test]
+    #[ignore = "reads directories from an explicitly selected connected ADB device"]
+    fn connected_device_directory_listing_is_readable() {
+        let program = std::env::var_os("SHELLRS_TEST_ADB").expect("SHELLRS_TEST_ADB is required");
+        let serial =
+            std::env::var("SHELLRS_TEST_ADB_SERIAL").expect("SHELLRS_TEST_ADB_SERIAL is required");
+        let runner = Arc::new(SystemRunner(PathBuf::from(program)));
+        let AdbDetection::Choose(devices) = discover(runner, None).unwrap() else {
+            panic!("expected connected ADB devices");
+        };
+        let device = devices
+            .into_iter()
+            .find(|device| device.serial() == serial)
+            .expect("selected device is connected");
+        let paths = std::env::var("SHELLRS_TEST_ADB_PATHS")
+            .unwrap_or_else(|_| "/;/sdcard;/storage/emulated/0;/system".into());
+        for path in paths.split(';') {
+            device.verify(&mut || false).unwrap();
+            let listing = device
+                .list(path, &mut || false)
+                .unwrap_or_else(|error| panic!("{path}: {error:#}"));
+            assert_eq!(listing.path(), path);
+            assert!(!listing.entries().is_empty());
+            assert!(matches!(
+                device
+                    .metadata(path, &mut || false)
+                    .unwrap()
+                    .unwrap()
+                    .kind(),
+                EntryKind::Directory | EntryKind::Symlink
+            ));
+            println!("{}: {} entries", listing.path(), listing.entries().len());
+        }
+    }
+
+    #[test]
     fn adb_matches_the_current_board_without_assuming_android() {
         let fake = FakeAdb {
             devices: vec![
@@ -853,6 +888,54 @@ mod tests {
         assert_eq!(
             listing.entries()[0].target_kind(),
             Some(EntryKind::Directory)
+        );
+    }
+
+    #[test]
+    fn shell_status_framing_does_not_depend_on_android_line_endings() {
+        struct AndroidReplies {
+            payload: Vec<u8>,
+            status: u32,
+        }
+        impl Runner for AndroidReplies {
+            fn run(
+                &self,
+                args: &[OsString],
+                _: Duration,
+                _: &mut dyn FnMut() -> bool,
+            ) -> Result<Vec<u8>> {
+                let script = args.last().unwrap().to_str().unwrap();
+                let marker = script
+                    .rsplit_once("printf '\\000")
+                    .expect("binary status separator")
+                    .1
+                    .split("%s")
+                    .next()
+                    .unwrap();
+                let mut output = self.payload.clone();
+                output.extend_from_slice(format!("\0{marker}{}\r\n", self.status).as_bytes());
+                Ok(output)
+            }
+        }
+        let payload = b"SHELLLF_ADB_LIST\0/sdcard\0\x38\x31a4 4 2 -\0\xe6\x96\x87\xe4\xbb\xb6\r\nname.txt\0END\0";
+        let device = AdbConnection::test_connection(Arc::new(AndroidReplies {
+            payload: payload.to_vec(),
+            status: 0,
+        }));
+        let output = device.shell("read-only command", &mut || false).unwrap();
+        assert_eq!(output, payload);
+        let listing = parse_listing(&output).unwrap();
+        assert_eq!(listing.entries()[0].name(), "文件\r\nname.txt");
+        let device = AdbConnection::test_connection(Arc::new(AndroidReplies {
+            payload: b"Permission denied\r\n".to_vec(),
+            status: 1,
+        }));
+        assert!(
+            device
+                .shell("read-only command", &mut || false)
+                .unwrap_err()
+                .to_string()
+                .contains("Permission denied")
         );
     }
 

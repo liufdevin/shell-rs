@@ -231,6 +231,8 @@ impl BasePanel for LocalTerminalPanel {
     }
 
     fn set_active(&mut self, active: bool, window: &mut Window, cx: &mut Context<Self>) {
+        self.terminal
+            .update(cx, |terminal, cx| terminal.set_tab_active(active, cx));
         if active {
             self.terminal
                 .update(cx, |terminal, cx| terminal.attach_window(window, cx));
@@ -269,6 +271,7 @@ impl Panel for LocalTerminalPanel {
             mark,
             self.display_title(cx),
         )
+        .unread(self.terminal.read(cx).has_unread_output())
         .closable(
             ("close-local-terminal", self.id.0),
             Box::new(CloseLocalTerminal(self.id)),

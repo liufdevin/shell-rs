@@ -44,6 +44,7 @@ gpui_kit::actions!(
         ImportTerminalSchemes,
         /// Open a new local login-shell terminal.
         NewLocalTerminal,
+        NewCmderTerminal,
         NewCommandTerminal,
         /// Start 命令广播, which turns terminal tab marks into checkboxes,
         /// or end it.

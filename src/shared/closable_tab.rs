@@ -39,6 +39,7 @@ pub struct ClosableTabTitle {
     close: Option<(ElementId, Box<dyn Action>)>,
     menu: Option<MenuBuilder>,
     modified: bool,
+    unread: bool,
     connection_state: Option<ConnectionState>,
 }
 
@@ -57,6 +58,7 @@ impl ClosableTabTitle {
             close: None,
             menu: None,
             modified: false,
+            unread: false,
             connection_state: None,
         }
     }
@@ -75,6 +77,11 @@ impl ClosableTabTitle {
     /// as editors do.
     pub fn modified(mut self, modified: bool) -> Self {
         self.modified = modified;
+        self
+    }
+
+    pub fn unread(mut self, unread: bool) -> Self {
+        self.unread = unread;
         self
     }
 
@@ -101,51 +108,68 @@ impl RenderOnce for ClosableTabTitle {
             .connection_state
             .is_some_and(|state| !state.is_connected());
         let middle_close = self.close.as_ref().map(|(_, action)| action.boxed_clone());
-        let row = h_flex()
-            .id("title")
-            .gap_1()
-            .child(self.leading)
-            .child(
-                div()
-                    // A long title, such as a command line a shell names the
-                    // tab after, gives way rather than the tab bar. The
-                    // ellipsis cuts it to width; clipping would also cut
-                    // the descenders of g and p, as the tab sets the line
-                    // height to the font size.
-                    .max_w(rems(20.))
-                    .min_w_0()
-                    .whitespace_nowrap()
-                    .text_ellipsis()
-                    .when(offline, |label| {
-                        label.text_color(cx.theme().muted_foreground)
-                    })
-                    .child(self.label.clone()),
-            )
-            .when(self.modified, |row| {
-                row.child(
+        let row =
+            h_flex()
+                .id("title")
+                .gap_1()
+                .child(div().relative().flex_shrink_0().child(self.leading).when(
+                    self.unread,
+                    |mark| {
+                        mark.child(
+                            div()
+                                .id("new-output")
+                                .test_support()
+                                .aria_label(t!("shared.tab.new_output"))
+                                .absolute()
+                                .left_0()
+                                .top_0()
+                                .size_1p5()
+                                .rounded_full()
+                                .bg(cx.theme().danger),
+                        )
+                    },
+                ))
+                .child(
                     div()
-                        .id("modified")
-                        .test_support()
-                        .aria_label(t!("shared.tab.unsaved"))
-                        .size_1p5()
-                        .rounded_full()
-                        .bg(cx.theme().muted_foreground),
+                        // A long title, such as a command line a shell names the
+                        // tab after, gives way rather than the tab bar. The
+                        // ellipsis cuts it to width; clipping would also cut
+                        // the descenders of g and p, as the tab sets the line
+                        // height to the font size.
+                        .max_w(rems(20.))
+                        .min_w_0()
+                        .whitespace_nowrap()
+                        .text_ellipsis()
+                        .when(offline, |label| {
+                            label.text_color(cx.theme().muted_foreground)
+                        })
+                        .child(self.label.clone()),
                 )
-            })
-            .when_some(self.close, |row, (id, action)| {
-                row.child(
-                    Button::new(id)
-                        .ghost()
-                        .xsmall()
-                        .icon(IconName::Close)
-                        .tooltip(t!("common.close"))
-                        .on_click(move |_, window, cx| {
-                            // Closing must not also select or drag the tab.
-                            cx.stop_propagation();
-                            window.dispatch_action(action.boxed_clone(), cx);
-                        }),
-                )
-            });
+                .when(self.modified, |row| {
+                    row.child(
+                        div()
+                            .id("modified")
+                            .test_support()
+                            .aria_label(t!("shared.tab.unsaved"))
+                            .size_1p5()
+                            .rounded_full()
+                            .bg(cx.theme().muted_foreground),
+                    )
+                })
+                .when_some(self.close, |row, (id, action)| {
+                    row.child(
+                        Button::new(id)
+                            .ghost()
+                            .xsmall()
+                            .icon(IconName::Close)
+                            .tooltip(t!("common.close"))
+                            .on_click(move |_, window, cx| {
+                                // Closing must not also select or drag the tab.
+                                cx.stop_propagation();
+                                window.dispatch_action(action.boxed_clone(), cx);
+                            }),
+                    )
+                });
         div()
             .id(self.id)
             // The first click selects the tab as usual.

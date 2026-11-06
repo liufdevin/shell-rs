@@ -8,10 +8,14 @@ One section per version, titled `## [version]`, optionally followed by a date. E
 
 ### Added
 
+- Local terminals support a separate, automatically detected Cmder installation with its own title bar button, without changing the regular local shell.
+
+- Terminal notifications include an optional new-output indicator: background terminal tabs show a red dot for unread output, cleared when viewed.
+
 - Serial Linux shell mode provides services, processes, connections and system monitoring alongside the console, with network/ADB file transfer and a ZMODEM file picker as fallback.
 - Configure monitoring channels per host. Auto prefers SSH, then ADB, and finally idle serial sampling; device boot identities prevent silently choosing another board.
 - ADB file browsing and uploads/downloads support Android and Linux boards, including legacy adbd versions that only allocate a PTY.
-- ADB device tools offer separate-window scrcpy mirroring, APK installation and app launching on supported devices, with named device selection. Mirroring requires a complete external scrcpy installation.
+- ADB device tools offer separate-window scrcpy mirroring with mouse and keyboard control of Android devices. Audio is off by default and can be enabled before starting. APK installation, app launching and named device selection are also supported; mirroring uses a complete official scrcpy bundle.
 - Reuse saved password credentials in host forms and file-transfer authentication without changing the current username.
 - Ctrl+T opens the ShellLF command terminal for temporary SSH connections; the separate local terminal remains available in the title bar.
 
@@ -21,6 +25,12 @@ One section per version, titled `## [version]`, optionally followed by a date. E
 - The monitor uses a compact pause indicator instead of a multiline notice that shifts the data. Unsupported ADB devices show a shorter mirroring message.
 
 ### Fixed
+
+- New-output tab indicators ignore CLI cursor, title and color changes and identical text redraws, avoiding false unread dots from idle refreshes after a response finishes.
+
+- Android system monitoring shows `ro.product.cpu.abi` (such as `arm64-v8a`) when available, falling back to the kernel architecture without changing ordinary Linux reporting.
+
+- Fixed Android ADB directory browsing for serial hosts failing with invalid or incomplete data and hiding paths when command status markers use CRLF line endings.
 
 - Prevent command snippets from sending bracketed-paste escape sequences to login prompts and other shells that do not support them.
 - Preserve directory records and filenames when legacy ADB PTY sessions convert newlines, without replaying ordinary failed commands.
