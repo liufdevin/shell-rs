@@ -1,4 +1,4 @@
-//! Putting the `shellrs` command on the PATH and the agent skill where
+//! Putting the `shelllf-cli` command on the PATH and the agent skill where
 //! agents look for it. Plain file system work, blocking, for a background
 //! thread. Every path comes from [`IntegrationPaths`], so tests point it at
 //! a temporary directory instead of the user's home.
@@ -10,12 +10,12 @@ use gpui_kit::SharedString;
 
 use crate::i18n::t;
 
-/// The skill that teaches an agent to use `shellrs`.
+/// The skill that teaches an agent to use `shelllf-cli`.
 pub const SKILL: &str = include_str!("SKILL.md");
 
 /// What the command is called on the PATH, and what the skill folder is
 /// called in an agent's skills directory.
-const COMMAND_NAME: &str = "shellrs";
+const COMMAND_NAME: &str = "shelllf-cli";
 const SKILL_FILE: &str = "SKILL.md";
 
 /// An agent the skill can be installed for.
@@ -85,11 +85,11 @@ impl AgentKind {
 pub struct IntegrationPaths {
     /// Holds the agents' skill directories.
     pub home: PathBuf,
-    /// What puts `shellrs` on the PATH: a link to [`Self::exe`] on macOS
+    /// What puts `shelllf-cli` on the PATH: a link to [`Self::exe`] on macOS
     /// and Linux, a copy of it on Windows.
     pub bin_link: PathBuf,
     /// The command itself: this program on macOS and Linux, the
-    /// `shellrs-cli.exe` beside it on Windows.
+    /// `shelllf-cli.exe` beside it on Windows.
     pub exe: PathBuf,
     /// Windows: the PATH that [`Self::bin_link`]'s folder is put on. `None`
     /// leaves every PATH alone; tests use it, and macOS and Linux install
@@ -172,9 +172,9 @@ fn windows_locations(
 }
 
 /// The console program beside `shellrs.exe` on Windows.
-const WINDOWS_CLI: &str = "shellrs-cli.exe";
+const WINDOWS_CLI: &str = "shelllf-cli.exe";
 
-/// The file the `shellrs` command runs. Inside an AppImage the executable
+/// The file the `shelllf-cli` command runs. Inside an AppImage the executable
 /// lives in a mount that is gone once the app exits, so the command runs
 /// the AppImage itself, which `$APPIMAGE` names.
 fn program(exe: PathBuf, appimage: Option<PathBuf>) -> PathBuf {
@@ -190,7 +190,7 @@ pub enum BinaryStatus {
     /// A link to this program, or on Windows a current copy on the PATH.
     Installed,
     Missing,
-    /// A link to another copy of `shellrs`, or to something no longer
+    /// A link to another copy of `shelllf-cli`, or to something no longer
     /// there. Installing replaces it.
     Stale {
         target: PathBuf,
@@ -204,7 +204,7 @@ pub enum BinaryStatus {
     Outdated,
     /// Windows: the copy is there but its folder is not on the PATH.
     NotOnPath,
-    /// Windows: there is no `shellrs-cli.exe` beside the app to install.
+    /// Windows: there is no `shelllf-cli.exe` beside the app to install.
     Unavailable,
 }
 
@@ -215,7 +215,7 @@ pub fn binary_status(paths: &IntegrationPaths) -> BinaryStatus {
     link_status(paths)
 }
 
-/// Put `shellrs` on the PATH. Where the directory is not writable, macOS
+/// Put `shelllf-cli` on the PATH. Where the directory is not writable, macOS
 /// asks for an administrator the way other apps install their command; the
 /// user can cancel that.
 pub fn install_binary(paths: &IntegrationPaths) -> io::Result<()> {
@@ -225,7 +225,7 @@ pub fn install_binary(paths: &IntegrationPaths) -> io::Result<()> {
     install_link(paths)
 }
 
-/// Take `shellrs` off the PATH, but only ours: someone else's file of the
+/// Take `shelllf-cli` off the PATH, but only ours: someone else's file of the
 /// same name stays.
 pub fn remove_binary(paths: &IntegrationPaths) -> io::Result<()> {
     #[cfg(windows)]
@@ -266,13 +266,13 @@ fn link_status(paths: &IntegrationPaths) -> BinaryStatus {
     }
 }
 
-/// Whether a link target is a `shellrs` binary, this build or another.
+/// Whether a link target is a `shelllf-cli` binary, this build or another.
 #[cfg(not(windows))]
 fn is_ours(target: &Path) -> bool {
     target.file_name().is_some_and(|name| name == COMMAND_NAME)
 }
 
-/// Link `shellrs` to this program.
+/// Link `shelllf-cli` to this program.
 #[cfg(not(windows))]
 fn install_link(paths: &IntegrationPaths) -> io::Result<()> {
     if let BinaryStatus::Occupied { .. } = link_status(paths) {
@@ -307,7 +307,7 @@ fn link_binary(paths: &IntegrationPaths) -> io::Result<()> {
     ))
 }
 
-/// Remove the link, but only a link to `shellrs`.
+/// Remove the link, but only a link to `shelllf-cli`.
 #[cfg(not(windows))]
 fn remove_link(paths: &IntegrationPaths) -> io::Result<()> {
     match link_status(paths) {
@@ -442,8 +442,8 @@ mod tests {
         assert_eq!(
             windows_locations(None, Some(local.clone()), exe),
             Some((
-                local.join("ShellRS").join("bin").join("shellrs.exe"),
-                exe.with_file_name("shellrs-cli.exe"),
+                local.join("ShellRS").join("bin").join("shelllf-cli.exe"),
+                exe.with_file_name("shelllf-cli.exe"),
             ))
         );
         assert_eq!(windows_locations(None, None, exe), None);
@@ -451,8 +451,8 @@ mod tests {
         assert_eq!(
             windows_locations(Some(root), Some(local), &root.join("shellrs.exe")),
             Some((
-                root.join("bin").join("shellrs.exe"),
-                root.join("shellrs-cli.exe"),
+                root.join("bin").join("shelllf-cli.exe"),
+                root.join("shelllf-cli.exe"),
             ))
         );
     }
@@ -471,7 +471,7 @@ mod tests {
         fs::write(&exe, "binary").unwrap();
         IntegrationPaths {
             home: root.join("home"),
-            bin_link: root.join("bin").join("shellrs"),
+            bin_link: root.join("bin").join("shelllf-cli"),
             exe,
             user_path: None,
         }
@@ -486,7 +486,7 @@ mod tests {
             paths.skill_file(AgentKind::Generic),
             home.join(".agents")
                 .join("skills")
-                .join("shellrs")
+                .join("shelllf-cli")
                 .join("SKILL.md")
         );
         assert_eq!(
@@ -494,14 +494,14 @@ mod tests {
             home.join(".config")
                 .join("opencode")
                 .join("skills")
-                .join("shellrs")
+                .join("shelllf-cli")
                 .join("SKILL.md")
         );
         assert_eq!(
             paths.skill_file(AgentKind::WorkBuddy),
             home.join(".workbuddy")
                 .join("skills")
-                .join("shellrs")
+                .join("shelllf-cli")
                 .join("SKILL.md")
         );
     }
@@ -579,7 +579,7 @@ mod tests {
         fs::create_dir_all(paths.bin_link.parent().unwrap()).unwrap();
 
         // A link to a build that has since moved.
-        std::os::unix::fs::symlink(root.path().join("gone/shellrs"), &paths.bin_link).unwrap();
+        std::os::unix::fs::symlink(root.path().join("gone/shelllf-cli"), &paths.bin_link).unwrap();
         assert!(matches!(binary_status(&paths), BinaryStatus::Stale { .. }));
         install_binary(&paths).unwrap();
         assert_eq!(binary_status(&paths), BinaryStatus::Installed);

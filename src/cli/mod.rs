@@ -1,4 +1,4 @@
-//! The external CLI: the `shellrs` command AI agents use to run commands
+//! The external CLI: the `shelllf-cli` command AI agents use to run commands
 //! and move files on the user's saved hosts. The command holds no
 //! credentials and opens no database: it hands each request to the running
 //! app over a local socket, and the app connects with what it has saved.
@@ -54,13 +54,13 @@ pub use server::{ChangeReply, CliBackend, CliServer, CliTarget, CliUse};
 // `--help` is English whatever the interface language, so it names the
 // settings it points to in both.
 const AFTER_HELP: &str = concat!(
-    "Hosts are named by the 16-character ID that `shellrs hosts list` prints, ",
+    "Hosts are named by the 16-character ID that `shelllf-cli hosts list` prints, ",
     "the one ShellLF copies with Copy ID (复制 ID).\n", // i18n: keep
     "ShellLF must be running, with Settings → External CLI → Enable external CLI ",
     "(设置 → 外部 CLI → 启用外部 CLI) turned on.\n", // i18n: keep
     "\n",
     "Exit codes: exec exits with the remote command's code; 1 means a transfer finished with failures;\n",
-    "255 means shellrs could not do what was asked (the reason is printed as `shellrs: [code] message`).",
+    "255 means shelllf-cli could not do what was asked (the reason is printed as `shelllf-cli: [code] message`).",
 );
 
 const HOST_FIELDS: &str = "\
@@ -71,7 +71,7 @@ Reads one JSON object from stdin. Every field may be left out; `update` changes 
   user        Default root (none for Telnet). A host using a credential logs in as the credential's user.
   group       A group path such as \"Production/Databases\", made when it is not there; null for the top level.
   auth        \"password\", \"credential\" or \"no_password\".
-  credential  A credential ID from `shellrs credentials list`, for auth \"credential\" (implied).
+  credential  A credential ID from `shelllf-cli credentials list`, for auth \"credential\" (implied).
   password    The host's own password, saved to the keychain and never printed; null deletes it.
               Changing host, port or user without it keeps the saved one.
   route       {\"type\": \"direct\"}
@@ -92,7 +92,7 @@ Reads one JSON object from stdin. Every field may be left out; `update` changes 
               {\"device\": \"/dev/ttyUSB0\" | \"COM3\", \"baud\": 115200, \"data_bits\": 5-8,
                \"parity\": \"none\" | \"odd\" | \"even\", \"stop_bits\": 1 | 2,
                \"flow_control\": \"none\" | \"rts_cts\" | \"xon_xoff\", \"linux_shell\": true | false}   (device required to create)
-What `shellrs hosts show <ID> --json` prints can be edited and passed back as it is.";
+What `shelllf-cli hosts show <ID> --json` prints can be edited and passed back as it is.";
 
 const CREDENTIAL_FIELDS: &str = "\
 Reads one JSON object from stdin. Every field may be left out; `update` changes only the fields given.
@@ -103,7 +103,7 @@ Reads one JSON object from stdin. Every field may be left out; `update` changes 
   key_path     A private key file on this machine (relative to the current directory, or ~/...).
   private_key  The private key's text instead, for ShellLF to keep in a file of its own.
   passphrase   The key's passphrase, saved to the keychain; null deletes it.
-What `shellrs credentials show <ID> --json` prints can be edited and passed back as it is.";
+What `shelllf-cli credentials show <ID> --json` prints can be edited and passed back as it is.";
 
 /// Run commands, move files and manage the SSH hosts saved in ShellLF.
 ///
@@ -111,7 +111,7 @@ What `shellrs credentials show <ID> --json` prints can be edited and passed back
 /// command never reads them. One given to it to save goes to the keychain
 /// and is never printed back.
 #[derive(Debug, Parser)]
-#[command(name = "shellrs", version, after_help = AFTER_HELP)]
+#[command(name = "shelllf-cli", version, after_help = AFTER_HELP)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -135,7 +135,7 @@ enum Command {
     /// and closes it. The command gets no stdin. The exit code is the
     /// remote command's.
     Exec {
-        /// Host ID, from `shellrs hosts list`.
+        /// Host ID, from `shelllf-cli hosts list`.
         #[arg(required_unless_present = "json")]
         id: Option<String>,
         /// One complete remote shell command, quoted as one argument.
@@ -168,7 +168,7 @@ enum Command {
     /// copy's path. Folders are copied recursively; existing files are
     /// overwritten.
     Upload {
-        /// Host ID, from `shellrs hosts list`.
+        /// Host ID, from `shelllf-cli hosts list`.
         id: String,
         /// Local file or folder.
         local: PathBuf,
@@ -182,7 +182,7 @@ enum Command {
     ///
     /// Destination rules are scp's, as for `upload`.
     Download {
-        /// Host ID, from `shellrs hosts list`.
+        /// Host ID, from `shelllf-cli hosts list`.
         id: String,
         /// Remote file or folder. `~` is the login directory.
         remote: String,
@@ -199,7 +199,7 @@ enum Command {
     /// be). A file of the same size and modification time is left alone;
     /// any other is copied over. Only this way: nothing comes back.
     Sync {
-        /// Host ID, from `shellrs hosts list`.
+        /// Host ID, from `shelllf-cli hosts list`.
         id: String,
         /// Local folder, whose contents are copied.
         local: PathBuf,
@@ -230,7 +230,7 @@ enum HostsCommand {
     /// Show one host in full. Passwords are never shown, only whether one
     /// is saved.
     Show {
-        /// Host ID, from `shellrs hosts list`.
+        /// Host ID, from `shelllf-cli hosts list`.
         id: String,
         #[arg(long)]
         json: bool,
@@ -244,7 +244,7 @@ enum HostsCommand {
     /// Change a saved host: the fields of the JSON on stdin.
     #[command(after_help = HOST_FIELDS)]
     Update {
-        /// Host ID, from `shellrs hosts list`.
+        /// Host ID, from `shelllf-cli hosts list`.
         id: String,
         #[arg(long)]
         json: bool,
@@ -252,7 +252,7 @@ enum HostsCommand {
     /// Delete a saved host, with its port forwarding rules. Its open tabs
     /// in ShellLF stay.
     Delete {
-        /// Host ID, from `shellrs hosts list`.
+        /// Host ID, from `shelllf-cli hosts list`.
         id: String,
         /// Accepted and ignored: deleting once closed the host's tabs.
         #[arg(long, hide = true)]
@@ -275,7 +275,7 @@ enum CredentialsCommand {
     /// Show one credential. Passwords and keys are never shown, only
     /// whether they are saved.
     Show {
-        /// Credential ID, from `shellrs credentials list`.
+        /// Credential ID, from `shelllf-cli credentials list`.
         id: String,
         #[arg(long)]
         json: bool,
@@ -289,7 +289,7 @@ enum CredentialsCommand {
     /// Change a credential: the fields of the JSON on stdin.
     #[command(after_help = CREDENTIAL_FIELDS)]
     Update {
-        /// Credential ID, from `shellrs credentials list`.
+        /// Credential ID, from `shelllf-cli credentials list`.
         id: String,
         #[arg(long)]
         json: bool,
@@ -297,7 +297,7 @@ enum CredentialsCommand {
     /// Delete a credential. The hosts using it log in on their own from
     /// then on.
     Delete {
-        /// Credential ID, from `shellrs credentials list`.
+        /// Credential ID, from `shelllf-cli credentials list`.
         id: String,
         #[arg(long)]
         json: bool,
@@ -312,7 +312,8 @@ pub fn main(args: Vec<OsString>) -> i32 {
         let (settings, _) = crate::settings::SettingsStore::load(path);
         crate::i18n::set_locale(settings.settings().language.resolved());
     }
-    let cli = match Cli::try_parse_from(std::iter::once(OsString::from("shellrs")).chain(args)) {
+    let cli = match Cli::try_parse_from(std::iter::once(OsString::from("shelllf-cli")).chain(args))
+    {
         Ok(cli) => cli,
         Err(error) => {
             let _ = error.print();
@@ -437,12 +438,12 @@ fn hosts_request(command: HostsCommand, console: &mut Console) -> Result<Request
         HostsCommand::Create { json } => {
             console.json |= json;
             Request::CreateHost {
-                fields: host_fields(console, "shellrs hosts create < host.json")?,
+                fields: host_fields(console, "shelllf-cli hosts create < host.json")?,
             }
         }
         HostsCommand::Update { id, json } => {
             console.json |= json;
-            let example = format!("shellrs hosts update {id} < changes.json");
+            let example = format!("shelllf-cli hosts update {id} < changes.json");
             Request::UpdateHost {
                 fields: host_fields(console, &example)?,
                 host: id,
@@ -468,12 +469,15 @@ fn credentials_request(command: CredentialsCommand, console: &mut Console) -> Re
         CredentialsCommand::Create { json } => {
             console.json |= json;
             Request::CreateCredential {
-                fields: credential_fields(console, "shellrs credentials create < credential.json")?,
+                fields: credential_fields(
+                    console,
+                    "shelllf-cli credentials create < credential.json",
+                )?,
             }
         }
         CredentialsCommand::Update { id, json } => {
             console.json |= json;
-            let example = format!("shellrs credentials update {id} < changes.json");
+            let example = format!("shelllf-cli credentials update {id} < changes.json");
             Request::UpdateCredential {
                 fields: credential_fields(console, &example)?,
                 credential: id,

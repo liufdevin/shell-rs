@@ -133,6 +133,24 @@ impl AdbConnection {
         Ok(String::from_utf8(self.shell(command, &mut cancelled)?)?)
     }
 
+    pub fn collect_bugreport(&self, destination: &Path, cancel: &AtomicBool) -> Result<()> {
+        let mut cancelled = || cancel.load(Ordering::Acquire);
+        self.verify(&mut cancelled)?;
+        self.run(
+            &[OsStr::new("bugreport"), destination.as_os_str()],
+            Duration::from_secs(300),
+            &mut cancelled,
+        )?;
+        if cancelled() {
+            bail!(t!("adb.interrupted"));
+        }
+        self.verify(&mut cancelled)?;
+        if !destination.is_file() {
+            bail!(t!("adb.invalid_response"));
+        }
+        Ok(())
+    }
+
     pub fn display_name(&self) -> &str {
         self.name.as_deref().unwrap_or(&self.serial)
     }
@@ -606,6 +624,68 @@ fn read_pipe(
 mod tests {
     use super::*;
     use crate::adb::test_support::{BOARD_BOOT, FakeAdb, OTHER_BOOT};
+
+    struct BugreportAdb {
+        inner: FakeAdb,
+        changed: bool,
+    }
+
+    impl Runner for BugreportAdb {
+        fn run(
+            &self,
+            args: &[OsString],
+            timeout: Duration,
+            cancel: &mut dyn FnMut() -> bool,
+        ) -> Result<Vec<u8>> {
+            if args.get(2).is_some_and(|argument| argument == "bugreport") {
+                assert_eq!(timeout, Duration::from_secs(300));
+                assert_eq!(args[0], "-s");
+                assert_eq!(args[1], "board");
+                std::fs::write(PathBuf::from(&args[3]), "bugreport archive")?;
+                if self.changed {
+                    self.inner
+                        .identities
+                        .lock()
+                        .unwrap()
+                        .insert("board".into(), OTHER_BOOT.into());
+                }
+                return Ok(Vec::new());
+            }
+            self.inner.run(args, timeout, cancel)
+        }
+    }
+
+    #[test]
+    fn bugreport_is_bound_to_the_device_and_rechecks_identity_after_collection() {
+        for changed in [false, true] {
+            let runner = Arc::new(BugreportAdb {
+                inner: FakeAdb::default(),
+                changed,
+            });
+            let device = AdbConnection::test_connection(runner);
+            let directory = tempfile::tempdir().unwrap();
+            let output = directory.path().join("bugreport.zip");
+            let result = device.collect_bugreport(&output, &AtomicBool::new(false));
+            assert_eq!(result.is_ok(), !changed);
+        }
+    }
+
+    #[test]
+    fn cancelled_bugreport_never_starts_collection() {
+        let runner = Arc::new(BugreportAdb {
+            inner: FakeAdb::default(),
+            changed: false,
+        });
+        let device = AdbConnection::test_connection(runner);
+        let directory = tempfile::tempdir().unwrap();
+        let output = directory.path().join("bugreport.zip");
+        assert!(
+            device
+                .collect_bugreport(&output, &AtomicBool::new(true))
+                .is_err()
+        );
+        assert!(!output.exists());
+    }
 
     #[test]
     #[ignore = "reads directories from an explicitly selected connected ADB device"]

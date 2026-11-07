@@ -1114,7 +1114,7 @@ fn app_lock_group(store: &Entity<SettingsStore>, cx: &App) -> SettingGroup {
     SettingGroup::new().title(t!("app_lock.title")).items(items)
 }
 
-/// 外部 CLI: whether the `shellrs` command may use the saved hosts, the
+/// 外部 CLI: whether the `shelllf-cli` command may use the saved hosts, the
 /// command itself, and the skill that teaches agents to use it.
 fn external_cli_groups(panel: &SettingsPanel, cx: &App) -> Vec<SettingGroup> {
     let (reader, writer) = (panel.store.clone(), panel.store.clone());
@@ -1354,7 +1354,7 @@ fn build_description() -> String {
     t!("settings.about.build", build = build, platform = platform).to_string()
 }
 
-/// Where the `shellrs` command stands, with the one thing to do about it.
+/// Where the `shelllf-cli` command stands, with the one thing to do about it.
 fn binary_item(bin_link: Option<String>, status: Option<IntegrationStatus>) -> SettingItem {
     SettingItem::render(move |_, _, cx| {
         let binary = status.as_ref().map(|status| &status.binary);

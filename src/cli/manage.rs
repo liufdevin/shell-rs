@@ -60,7 +60,7 @@ pub struct CredentialSecrets {
     pub passphrase: Option<SecretRef>,
 }
 
-/// A host as `shellrs hosts list` lists it.
+/// A host as `shelllf-cli hosts list` lists it.
 pub fn host_info(host: &Host, store: &HostStore) -> HostInfo {
     HostInfo {
         id: host.public_id.to_string(),

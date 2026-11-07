@@ -133,7 +133,7 @@ impl Workspace {
             ToolKind::Gpu => Counter::ToolGpu,
             ToolKind::Tmux => Counter::ToolTmux,
             ToolKind::Projects => Counter::ToolProjects,
-            ToolKind::Serial => return,
+            ToolKind::Serial | ToolKind::Logs => return,
         });
     }
 

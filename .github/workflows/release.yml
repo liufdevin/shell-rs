@@ -224,16 +224,16 @@ jobs:
           # Compress-Archive would drop it.
           $folder = Join-Path $env:RUNNER_TEMP "portable"
           New-Item -ItemType Directory -Force -Path (Join-Path $folder "data") | Out-Null
-          Copy-Item "target\release\shellrs.exe", "target\release\shellrs-cli.exe" $folder
+          Copy-Item "target\release\shellrs.exe", "target\release\shelllf-cli.exe" $folder
           $zip = "$env:GITHUB_WORKSPACE\dist\ShellRS-$env:VERSION-windows-x86_64-portable.zip"
           Push-Location $folder
-          7z a -tzip -mx=9 $zip shellrs.exe shellrs-cli.exe data
+          7z a -tzip -mx=9 $zip shellrs.exe shelllf-cli.exe data
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Pop-Location
           # The first path listed is the archive itself.
           $entries = 7z l -slt $zip | Select-String '^Path = ' |
             ForEach-Object { $_.Line.Substring(7) } | Select-Object -Skip 1
-          if (Compare-Object @($entries) @('data', 'shellrs-cli.exe', 'shellrs.exe')) {
+          if (Compare-Object @($entries) @('data', 'shelllf-cli.exe', 'shellrs.exe')) {
             Write-Error "The portable zip holds: $($entries -join ', ')"
             exit 1
           }

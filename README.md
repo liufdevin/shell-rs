@@ -28,7 +28,7 @@
 
 ShellRS brings Xshell-style host management and tabbed terminals, a WinSCP-style dual-pane SFTP browser and SSH port forwarding together in one cross-platform app, which bastion hosts such as JumpServer can launch the way they launch Xshell and WinSCP. It is written in Rust, and its UI is built on GPUI, the GPU-accelerated UI framework of the Zed editor (through [gpui-kit](https://gpui-kit.com)). There is no Electron and no JVM.
 
-Hosts, groups, credentials and forwarding rules live in a local SQLite database. Passwords and key passphrases go only into the system keychain (macOS Keychain, Windows Credential Manager, Linux Secret Service); the database never holds a secret. ShellRS also ships a `shellrs` command that lets AI agents such as Claude Code or Codex run commands and transfer files on your saved hosts without ever seeing a password.
+Hosts, groups, credentials and forwarding rules live in a local SQLite database. Passwords and key passphrases go only into the system keychain (macOS Keychain, Windows Credential Manager, Linux Secret Service); the database never holds a secret. ShellRS also ships a `shelllf-cli` command that lets AI agents such as Claude Code or Codex run commands and transfer files on your saved hosts without ever seeing a password.
 
 ## Features
 
@@ -89,8 +89,8 @@ Hosts, groups, credentials and forwarding rules live in a local SQLite database.
 
 **A CLI for AI agents**
 
-- `shellrs hosts` / `credentials` / `exec` / `upload` / `download` / `sync`: manage hosts and credentials, run commands, move and sync files. The running ShellRS logs in on the command's behalf, so the command itself never reads a password or private key.
-- Install `shellrs` into your PATH and an Agent Skill for Claude Code, Codex, OpenCode or WorkBuddy from the settings page.
+- `shelllf-cli hosts` / `credentials` / `exec` / `upload` / `download` / `sync`: manage hosts and credentials, run commands, move and sync files. The running ShellRS logs in on the command's behalf, so the command itself never reads a password or private key.
+- Install `shelllf-cli` into your PATH and an Agent Skill for Claude Code, Codex, OpenCode or WorkBuddy from the settings page.
 
 **Security and updates**
 
@@ -146,14 +146,14 @@ Once installed, ShellRS keeps itself up to date: it checks, downloads and verifi
 
 ## For AI agents
 
-In Settings › External CLI, turn on Enable external CLI, then install the `shellrs` command and the Agent Skills. Your agent can then use the hosts you have saved:
+In Settings › External CLI, turn on Enable external CLI, then install the `shelllf-cli` command and the Agent Skills. Your agent can then use the hosts you have saved:
 
 ```sh
-shellrs hosts list -q web                          # list hosts and their IDs
-shellrs exec <ID> "uptime && df -h"                # run a command; the exit code is the remote one
-shellrs upload <ID> ./dist/app.tar.gz /opt/app/    # upload
-shellrs download <ID> /var/log/syslog ./logs/      # download
-shellrs sync <ID> ./dist /opt/app --delete         # sync a folder, skipping unchanged files
+shelllf-cli hosts list -q web                          # list hosts and their IDs
+shelllf-cli exec <ID> "uptime && df -h"                # run a command; the exit code is the remote one
+shelllf-cli upload <ID> ./dist/app.tar.gz /opt/app/    # upload
+shelllf-cli download <ID> /var/log/syslog ./logs/      # download
+shelllf-cli sync <ID> ./dist /opt/app --delete         # sync a folder, skipping unchanged files
 ```
 
 The command hands each request to the running ShellRS, which logs in with the saved settings and keychain. An unknown host or a missing password fails right away with a stable error code instead of a prompt that would hang the agent. See the [user manual](docs/manual.md#external-cli) for details.

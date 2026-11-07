@@ -465,23 +465,23 @@ settings.cli.enabled:
   zh-CN: 启用外部 CLI
   en: Enable external CLI
 settings.cli.enabled_description:
-  zh-CN: 开启后，本机当前用户下的程序（如 AI Agent）可以通过 shellrs 命令，在已保存的主机上执行命令、传输和同步文件，并查看、新建、修改和删除主机与凭据，无需知道密码。
-  en: When on, programs running as you on this computer, such as AI agents, can use the shellrs command to run commands and transfer and sync files on saved hosts, and to view, create, change and delete hosts and credentials, without knowing any password.
+  zh-CN: 开启后，本机当前用户下的程序（如 AI Agent）可以通过 shelllf-cli 命令，在已保存的主机上执行命令、传输和同步文件，并查看、新建、修改和删除主机与凭据，无需知道密码。
+  en: When on, programs running as you on this computer, such as AI agents, can use the shelllf-cli command to run commands and transfer and sync files on saved hosts, and to view, create, change and delete hosts and credentials, without knowing any password.
 settings.cli.binary:
   zh-CN: CLI 二进制
   en: Command
 settings.cli.binary_description:
-  zh-CN: 把 shellrs 命令加入 PATH，方便在终端和 Agent 中直接调用。
-  en: Puts the shellrs command on the PATH so terminals and agents can call it directly.
+  zh-CN: 把 shelllf-cli 命令加入 PATH，方便在终端和 Agent 中直接调用。
+  en: Puts the shelllf-cli command on the PATH so terminals and agents can call it directly.
 settings.cli.binary_description_windows:
-  zh-CN: 把 shellrs 命令加入当前用户的 PATH，方便在终端和 Agent 中直接调用。重新打开的终端和 Agent 才能找到它。
-  en: Puts the shellrs command on your user PATH so terminals and agents can call it directly. Terminals and agents find it once reopened.
+  zh-CN: 把 shelllf-cli 命令加入当前用户的 PATH，方便在终端和 Agent 中直接调用。重新打开的终端和 Agent 才能找到它。
+  en: Puts the shelllf-cli command on your user PATH so terminals and agents can call it directly. Terminals and agents find it once reopened.
 settings.cli.binary_description_portable:
-  zh-CN: 把 shellrs 命令复制到应用文件夹里的 bin，并把它加入当前用户的 PATH，方便在终端和 Agent 中直接调用。重新打开的终端和 Agent 才能找到它。移动应用文件夹或盘符变了以后，要再安装一次。
-  en: Copies the shellrs command into the bin folder inside the application folder and puts it on your user PATH so terminals and agents can call it directly. Terminals and agents find it once reopened. After moving the application folder or a change of drive letter, install it again.
+  zh-CN: 把 shelllf-cli 命令复制到应用文件夹里的 bin，并把它加入当前用户的 PATH，方便在终端和 Agent 中直接调用。重新打开的终端和 Agent 才能找到它。移动应用文件夹或盘符变了以后，要再安装一次。
+  en: Copies the shelllf-cli command into the bin folder inside the application folder and puts it on your user PATH so terminals and agents can call it directly. Terminals and agents find it once reopened. After moving the application folder or a change of drive letter, install it again.
 settings.cli.skills_description:
-  zh-CN: 安装 shellrs skill，让外部 Agent 在连接服务器、执行远程命令和传输文件时使用 shellrs CLI。可安装到通用目录或指定 Agent 的专用目录。
-  en: Install the shellrs skill so agents use the shellrs CLI to connect to servers, run remote commands and transfer files. Install it to the shared folder or to a particular agent’s own folder.
+  zh-CN: 安装 shelllf-cli skill，让外部 Agent 在连接服务器、执行远程命令和传输文件时使用 shelllf-cli。可安装到通用目录或指定 Agent 的专用目录。
+  en: Install the shelllf-cli skill so agents use the shelllf-cli command to connect to servers, run remote commands and transfer files. Install it to the shared folder or to a particular agent’s own folder.
 settings.cli.status:
   zh-CN: 状态：
   en: "Status:"
@@ -489,8 +489,8 @@ settings.cli.checking:
   zh-CN: 正在检查…
   en: Checking…
 settings.cli.binary_unsupported:
-  zh-CN: 此系统暂不支持安装 shellrs 命令
-  en: The shellrs command can’t be installed on this system yet
+  zh-CN: 此系统暂不支持安装 shelllf-cli 命令
+  en: The shelllf-cli command can’t be installed on this system yet
 settings.cli.skill_unsupported:
   zh-CN: 此系统暂不支持安装
   en: Can’t be installed on this system yet
@@ -513,8 +513,8 @@ settings.cli.binary_not_on_path:
   zh-CN: "%{path} 所在的文件夹不在 PATH 中"
   en: The folder of %{path} isn’t on the PATH
 settings.cli.binary_unavailable:
-  zh-CN: 找不到 shellrs-cli.exe：它应在 ShellLF 程序旁边（开发时请先 cargo build）
-  en: Can’t find shellrs-cli.exe. It belongs next to the ShellLF program (in development, run cargo build first).
+  zh-CN: 找不到 shelllf-cli.exe：它应在 ShellLF 程序旁边（开发时请先 cargo build）
+  en: Can’t find shelllf-cli.exe. It belongs next to the ShellLF program (in development, run cargo build first).
 settings.cli.installed_at:
   zh-CN: 已安装于
   en: Installed at
@@ -534,8 +534,8 @@ settings.cli.remove:
   zh-CN: 移除
   en: Remove
 settings.cli.binary_keywords:
-  zh-CN: CLI,PATH,shellrs,命令,安装
-  en: CLI,PATH,shellrs,command,install
+  zh-CN: CLI,PATH,shelllf-cli,命令,安装
+  en: CLI,PATH,shelllf-cli,command,install
 settings.cli.check:
   zh-CN: 检查状态
   en: Check status

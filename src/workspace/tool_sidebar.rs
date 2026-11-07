@@ -55,6 +55,7 @@ impl ToolKind {
             | ToolKind::Processes
             | ToolKind::Connections
             | ToolKind::Monitor
+            | ToolKind::Logs
             | ToolKind::Gpu => os.is_none_or(HostOs::is_linux),
             ToolKind::Snippets | ToolKind::Files | ToolKind::Projects | ToolKind::Serial => true,
             // Wherever `sh` runs `docker`, `kubectl` or `tmux`: Linux, and a
@@ -79,6 +80,7 @@ impl ToolKind {
             ToolKind::Processes => "tool-processes",
             ToolKind::Connections => "tool-connections",
             ToolKind::Monitor => "tool-monitor",
+            ToolKind::Logs => "tool-logs",
             ToolKind::Gpu => "tool-gpu",
             ToolKind::Projects => "tool-projects",
             ToolKind::Serial => "tool-serial",
@@ -89,6 +91,7 @@ impl ToolKind {
 /// The SSH terminal the right sidebar works on, and its host as the
 /// terminal took it.
 #[derive(Clone, PartialEq)]
+#[non_exhaustive]
 pub struct ToolTerminal {
     pub id: RemoteTerminalId,
     pub host: HostId,
@@ -101,6 +104,7 @@ pub struct ToolTerminal {
     pub serial: bool,
     pub ssh: bool,
     pub monitor_settings: crate::host::MonitorSettings,
+    pub device_logs: crate::host::DeviceLogSettings,
     /// Runs the tools' commands on the terminal's own connection.
     pub view: WeakEntity<TerminalView>,
 }
@@ -135,6 +139,7 @@ pub struct ToolSidebar {
     serial_transfer_status: Option<(RemoteTerminalId, u64, SharedString)>,
     serial_checks: HashSet<(RemoteTerminalId, u64)>,
     monitor: Entity<MonitorPanel>,
+    logs: Entity<crate::device_logs::DeviceLogPanel>,
     snippets: Entity<SnippetPanel>,
     history: Entity<HistoryPanel>,
     /// The terminal in front's 文件, which the workspace owns: one per
@@ -172,6 +177,9 @@ impl ToolSidebar {
             serial_transfer_status: None,
             serial_checks: HashSet::new(),
             monitor: cx.new(|cx| MonitorPanel::new(dispatch.clone(), store.clone(), cx)),
+            logs: cx.new(|cx| {
+                crate::device_logs::DeviceLogPanel::new(dispatch.clone(), store.clone(), window, cx)
+            }),
             projects: cx.new(|cx| ProjectPanel::new(store.clone(), dispatch.clone(), cx)),
             snippets: cx.new(|cx| SnippetPanel::new(store, dispatch.clone(), window, cx)),
             history: cx.new(|cx| HistoryPanel::new(dispatch.clone(), window, cx)),
@@ -199,6 +207,8 @@ impl ToolSidebar {
         connector: std::sync::Arc<dyn crate::monitor::MonitorConnector>,
         cx: &mut Context<Self>,
     ) {
+        self.logs
+            .update(cx, |logs, cx| logs.set_connector(connector.clone(), cx));
         self.monitor
             .update(cx, |monitor, cx| monitor.set_connector(connector, cx));
     }
@@ -208,6 +218,20 @@ impl ToolSidebar {
             panel.update(cx, |panel, cx| panel.set_target(None, false, cx));
             cx.notify();
         }
+    }
+
+    pub fn device_log_command(
+        &mut self,
+        command: &crate::device_logs::DeviceLogCommand,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.logs
+            .update(cx, |logs, cx| logs.command(command, window, cx));
+    }
+
+    pub fn forget_log_terminal(&mut self, terminal: RemoteTerminalId, cx: &mut Context<Self>) {
+        self.logs.update(cx, |logs, cx| logs.forget(terminal, cx));
     }
 
     pub fn kubernetes_command(
@@ -462,6 +486,23 @@ impl ToolSidebar {
             .filter(|terminal| terminal.serial)
             .map(|terminal| (terminal.host, terminal.monitor_settings.clone()));
         let native_ssh = self.remote().is_some_and(|terminal| terminal.ssh);
+        let log_target = self
+            .remote()
+            .filter(|terminal| terminal.device_logs.enabled)
+            .map(|terminal| {
+                crate::device_logs::LogTarget::new(
+                    ExecTarget {
+                        terminal: terminal.id,
+                        view: terminal.view.clone(),
+                    },
+                    terminal.host,
+                    terminal.device_logs.clone(),
+                    terminal.serial.then(|| terminal.monitor_settings.clone()),
+                )
+            });
+        let logs = showing(ToolKind::Logs);
+        self.logs
+            .update(cx, |panel, cx| panel.set_target(log_target, logs, cx));
         self.monitor.update(cx, |panel, cx| {
             panel.set_target(target.clone(), serial, native_ssh, monitor, cx)
         });
@@ -645,6 +686,7 @@ impl Render for ToolSidebar {
                     ToolKind::Processes => self.processes.clone().into_any_element(),
                     ToolKind::Connections => self.netstat.clone().into_any_element(),
                     ToolKind::Monitor => self.monitor.clone().into_any_element(),
+                    ToolKind::Logs => self.logs.clone().into_any_element(),
                     ToolKind::Gpu => self.gpu.clone().into_any_element(),
                     ToolKind::Projects => self.projects.clone().into_any_element(),
                     ToolKind::Serial => self.serial_settings(cx).into_any_element(),

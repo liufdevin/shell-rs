@@ -7,7 +7,7 @@
 //! over, so each file of the old version is moved aside under a hidden name
 //! and the new one moved in, and ShellRS restarts from the new program. The
 //! version that starts then deletes what was moved aside, the old process
-//! being gone by then. Nothing under `data`, or `bin` with the `shellrs`
+//! being gone by then. Nothing under `data`, or `bin` with the `shelllf-cli`
 //! command on the PATH, is ever touched.
 
 use std::ffi::OsString;
@@ -301,7 +301,7 @@ mod tests {
     fn portable() -> (tempfile::TempDir, PathBuf) {
         let root = tempfile::tempdir().unwrap();
         fs::write(root.path().join("shellrs.exe"), "old").unwrap();
-        fs::write(root.path().join("shellrs-cli.exe"), "old cli").unwrap();
+        fs::write(root.path().join("shelllf-cli.exe"), "old cli").unwrap();
         fs::create_dir_all(root.path().join("data/updates/0.2.0")).unwrap();
         fs::write(root.path().join("data/shellrs.db"), "hosts").unwrap();
         fs::create_dir(root.path().join("bin")).unwrap();
@@ -333,7 +333,7 @@ mod tests {
             &download,
             &[
                 ("shellrs.exe", Some("new")),
-                ("shellrs-cli.exe", Some("new cli")),
+                ("shelllf-cli.exe", Some("new cli")),
                 ("data/", None),
                 ("Data/shellrs.db", Some("empty")),
                 ("bin/shellrs.exe", Some("other")),
@@ -342,7 +342,7 @@ mod tests {
         );
         let installer = PortableInstaller::new(root.path().to_path_buf());
         let staged = installer.stage(&download, &release()).unwrap();
-        assert_eq!(names(&staged.path), ["shellrs-cli.exe", "shellrs.exe"]);
+        assert_eq!(names(&staged.path), ["shelllf-cli.exe", "shellrs.exe"]);
         assert_eq!(read(root.path().join("shellrs.exe")), "old");
 
         assert_eq!(
@@ -350,7 +350,7 @@ mod tests {
             Ok(Relaunch::Restart(root.path().join("shellrs.exe")))
         );
         assert_eq!(read(root.path().join("shellrs.exe")), "new");
-        assert_eq!(read(root.path().join("shellrs-cli.exe")), "new cli");
+        assert_eq!(read(root.path().join("shelllf-cli.exe")), "new cli");
         assert_eq!(read(root.path().join("data/shellrs.db")), "hosts");
         assert_eq!(read(root.path().join("bin/shellrs.exe")), "command");
         assert!(!staged.path.exists());
@@ -368,7 +368,7 @@ mod tests {
         installer.clean_up(&Version::new(0, 2, 0));
         assert_eq!(
             names(root.path()),
-            ["bin", "data", "shellrs-cli.exe", "shellrs.exe"]
+            ["bin", "data", "shelllf-cli.exe", "shellrs.exe"]
         );
     }
 
@@ -381,13 +381,13 @@ mod tests {
         assert_eq!(installer.apply(&staged, false), Ok(Relaunch::Nothing));
         assert_eq!(read(root.path().join("shellrs.exe")), "new");
         // A file only the old version had stays.
-        assert_eq!(read(root.path().join("shellrs-cli.exe")), "old cli");
+        assert_eq!(read(root.path().join("shelllf-cli.exe")), "old cli");
     }
 
     #[test]
     fn a_package_without_the_program_is_refused() {
         let (root, download) = portable();
-        package(&download, &[("shellrs-cli.exe", Some("new cli"))]);
+        package(&download, &[("shelllf-cli.exe", Some("new cli"))]);
         let installer = PortableInstaller::new(root.path().to_path_buf());
         assert!(matches!(
             installer.stage(&download, &release()),
@@ -431,7 +431,7 @@ mod tests {
         package(
             &download,
             &[
-                ("shellrs-cli.exe", Some("new cli")),
+                ("shelllf-cli.exe", Some("new cli")),
                 ("shellrs.exe", Some("new")),
                 ("zzz.dll", Some("new dll")),
             ],
@@ -451,15 +451,15 @@ mod tests {
             Err(UpdateError::Install(_))
         ));
         assert_eq!(read(root.path().join("shellrs.exe")), "old");
-        assert_eq!(read(root.path().join("shellrs-cli.exe")), "old cli");
+        assert_eq!(read(root.path().join("shelllf-cli.exe")), "old cli");
         assert_eq!(
             names(root.path()),
-            ["bin", "data", "shellrs-cli.exe", "shellrs.exe"]
+            ["bin", "data", "shelllf-cli.exe", "shellrs.exe"]
         );
         // Still staged, for the next try.
         assert_eq!(
             names(&staged.path),
-            ["shellrs-cli.exe", "shellrs.exe", "zzz.dll"]
+            ["shelllf-cli.exe", "shellrs.exe", "zzz.dll"]
         );
         assert_eq!(read(staged.path.join("shellrs.exe")), "new");
     }
@@ -473,7 +473,7 @@ mod tests {
         PortableInstaller::new(root.path().to_path_buf()).clean_up(&Version::new(0, 2, 0));
         assert_eq!(
             names(root.path()),
-            [".keep", "bin", "data", "shellrs-cli.exe", "shellrs.exe"]
+            [".keep", "bin", "data", "shelllf-cli.exe", "shellrs.exe"]
         );
     }
 

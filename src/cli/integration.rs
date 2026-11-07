@@ -5,7 +5,7 @@ use super::install::{
     update_outdated_binary, update_outdated_skills,
 };
 
-/// What the settings page shows about the `shellrs` command and the agent
+/// What the settings page shows about the `shelllf-cli` command and the agent
 /// skills: where they go and whether they are there.
 ///
 /// Without paths nothing can be installed. That is the state UI tests start

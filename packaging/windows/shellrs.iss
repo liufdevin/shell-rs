@@ -69,9 +69,10 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 [Files]
 Source: "{#BuildDir}\shellrs.exe"; DestDir: "{app}"; Flags: ignoreversion
 ; The `shellrs` command: 设置 › 外部 CLI copies it onto the PATH.
-Source: "{#BuildDir}\shellrs-cli.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#BuildDir}\shelllf-cli.exe"; DestDir: "{app}"; Flags: ignoreversion
 
 [InstallDelete]
+Type: files; Name: "{app}\shellrs-cli.exe"
 Type: files; Name: "{autoprograms}\ShellRS.lnk"
 Type: files; Name: "{autodesktop}\ShellRS.lnk"
 

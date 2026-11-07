@@ -221,7 +221,7 @@ struct Shared {
     usage: Mutex<Vec<CliUse>>,
 }
 
-/// The kind of a `shellrs` command, as 匿名使用统计 counts them: nothing
+/// The kind of a `shelllf-cli` command, as 匿名使用统计 counts them: nothing
 /// of what it asked for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CliUse {

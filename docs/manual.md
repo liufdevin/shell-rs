@@ -115,7 +115,7 @@ Serial upload/download uses ZMODEM and requires `lrzsz` (`rz`/`sz`) on the devic
 - **Fully featured**: “Connect in new tab”, “Open SFTP”, “Reconnect” and all the right sidebar tools work. The connection is direct.
 - **Not saved**: it stays out of the host list, the start page’s Recent list and the database, and is gone once its terminal and SFTP tabs are all closed. Its tab menu has no “Edit host…”.
 - **Password in memory only**: the password you enter doesn’t go into the keychain and is reused when reconnecting; if you left it empty and the server wants a password, you’re asked. With “Credential”, the password or private key saved in the credential is used.
-- The external CLI’s `shellrs hosts list` lists it too (`"temporary": true` in the JSON, “(not saved)” in the table’s group column), and you can use its ID while its tabs are open.
+- The external CLI’s `shelllf-cli hosts list` lists it too (`"temporary": true` in the JSON, “(not saved)” in the table’s group column), and you can use its ID while its tabs are open.
 
 Hosts you want to keep are created with “+” at the top of the host list, the context menu, or ⌘N (Ctrl+N on Windows and Linux).
 
@@ -251,37 +251,37 @@ The “Settings” button at the bottom of the sidebar, or ⌘, (Ctrl+, on Windo
 
 ## External CLI
 
-The `shellrs` command lets AI agents such as Codex, Claude Code and OpenCode run remote commands and transfer and sync files on the hosts saved in ShellRS, and also view, create, change and delete hosts and credentials. The command itself reads no passwords or private keys, and no database: it hands the request to the running ShellRS, which connects with the saved settings and the keychain. Requests travel over local interprocess communication: the socket `cli.sock` in the data folder on macOS and Linux, and the named pipe `\\.\pipe\shellrs-cli-<hash of the data folder>` on Windows.
+The `shelllf-cli` command lets AI agents such as Codex, Claude Code and OpenCode run remote commands and transfer and sync files on the hosts saved in ShellRS, and also view, create, change and delete hosts and credentials. The command itself reads no passwords or private keys, and no database: it hands the request to the running ShellRS, which connects with the saved settings and the keychain. Requests travel over local interprocess communication: the socket `cli.sock` in the data folder on macOS and Linux, and the named pipe `\\.\pipe\shellrs-cli-<hash of the data folder>` on Windows.
 
 In Settings → External CLI:
 
 - **Enable external CLI**: off by default. While it’s off, ShellRS still listens but refuses every request, and the command tells you to turn it on here. Once it’s on, any program running as the current user on this computer can use the saved hosts this way, and can also change hosts and credentials (there’s no separate switch). Only the current user can read and write the socket, and ShellRS also checks the identity of the user connecting. On Windows, the pipe likewise admits only the current user and only local connections, and before sending a request the command checks that the pipe belongs to the current user (or an administrator), so nobody else can grab a pipe with the same name.
-- **Command**: puts `shellrs` on the PATH.
-  - macOS: links it to `/usr/local/bin/shellrs`; if that folder isn’t writable, the system asks for authorization.
-  - Linux: links it to `~/.local/bin/shellrs`.
-  - On macOS and Linux, “Remove” deletes only a link that points to shellrs; other files with the same name are left alone.
-  - Windows: a GUI app has no console, so the command is a separate console program, `shellrs-cli.exe` (next to `shellrs.exe`). “Install” copies it to `%LOCALAPPDATA%\ShellRS\bin\shellrs.exe` and adds that folder to the current user’s PATH (no administrator needed); terminals and agents find it once they’re reopened. After ShellRS updates, it refreshes this copy when it starts; when it can’t, “Update” appears. The copy can be updated even while it’s in use. “Remove” deletes the copy and takes the folder off the PATH. A portable copy copies it to `bin\shellrs.exe` in the portable folder and puts that `bin` on the PATH, so the command talks to that portable copy; install it again after moving the folder or when its drive letter changes. With both the installed and the portable command installed, whichever comes first on the PATH wins.
-- **Agent Skills**: writes the skill that teaches agents to use `shellrs` to the standard folder (`~/.agents/skills`) or to the skills folder of Codex, Claude Code, OpenCode or WorkBuddy; when the content differs from the current version, “Update” appears. “Copy skills” copies the whole skill to the clipboard.
+- **Command**: puts `shelllf-cli` on the PATH.
+  - macOS: links it to `/usr/local/bin/shelllf-cli`; if that folder isn’t writable, the system asks for authorization.
+  - Linux: links it to `~/.local/bin/shelllf-cli`.
+  - On macOS and Linux, “Remove” deletes only a link that points to shelllf-cli; other files with the same name are left alone.
+  - Windows: a GUI app has no console, so the command is a separate console program, `shelllf-cli.exe` (next to `shellrs.exe`). “Install” copies it to `%LOCALAPPDATA%\ShellRS\bin\shelllf-cli.exe` and adds that folder to the current user’s PATH (no administrator needed); terminals and agents find it once they’re reopened. After ShellRS updates, it refreshes this copy when it starts; when it can’t, “Update” appears. The copy can be updated even while it’s in use. “Remove” deletes the copy and takes the folder off the PATH. A portable copy copies it to `bin\shelllf-cli.exe` in the portable folder and puts that `bin` on the PATH, so the command talks to that portable copy; install it again after moving the folder or when its drive letter changes. With both the installed and the portable command installed, whichever comes first on the PATH wins.
+- **Agent Skills**: writes the skill that teaches agents to use `shelllf-cli` to the standard folder (`~/.agents/skills`) or to the skills folder of Codex, Claude Code, OpenCode or WorkBuddy; when the content differs from the current version, “Update” appears. “Copy skills” copies the whole skill to the clipboard.
 
-Commands (`shellrs --help` has the full details):
+Commands (`shelllf-cli --help` has the full details):
 
 ```sh
-shellrs hosts list [-q <keyword>] [--json]     # list hosts; JSON when the output isn't a terminal
-shellrs hosts show <ID> [--json]               # one host's full settings
-shellrs exec <ID> "<command>"                  # or --stdin to read the command from stdin
-shellrs exec --json                            # read {"host", "command"} from stdin, print JSON
-shellrs upload <ID> <local-path> <remote-path>
-shellrs download <ID> <remote-path> <local-path>
-shellrs sync <ID> <local-folder> <remote-folder> [--delete]
-shellrs hosts create | update <ID> | delete <ID>
-shellrs credentials list | show <ID> | create | update <ID> | delete <ID>
+shelllf-cli hosts list [-q <keyword>] [--json]     # list hosts; JSON when the output isn't a terminal
+shelllf-cli hosts show <ID> [--json]               # one host's full settings
+shelllf-cli exec <ID> "<command>"                  # or --stdin to read the command from stdin
+shelllf-cli exec --json                            # read {"host", "command"} from stdin, print JSON
+shelllf-cli upload <ID> <local-path> <remote-path>
+shelllf-cli download <ID> <remote-path> <local-path>
+shelllf-cli sync <ID> <local-folder> <remote-folder> [--delete]
+shelllf-cli hosts create | update <ID> | delete <ID>
+shelllf-cli credentials list | show <ID> | create | update <ID> | delete <ID>
 ```
 
-- `<ID>` is the 16-character host ID: the `id` in `shellrs hosts list`, which is also what “Copy ID” on a host’s context menu copies. The list also includes quick connections and external connections whose tabs are open (`"temporary": true`); see “Quick connect” and “Opening from a bastion host (external connections)”.
+- `<ID>` is the 16-character host ID: the `id` in `shelllf-cli hosts list`, which is also what “Copy ID” on a host’s context menu copies. The list also includes quick connections and external connections whose tabs are open (`"temporary": true`); see “Quick connect” and “Opening from a bastion host (external connections)”.
 - `exec` opens a new connection each time and disconnects when it’s done. The remote command gets no stdin, and the exit code is the remote command’s; if a signal killed it, the exit code is 128 plus the signal number.
 - Uploads and downloads use the SFTP tab’s transfer engine (recursive, `.filepart`, reconnecting after a drop), and destination paths follow scp’s rules: if the destination is an existing folder, the item goes into it under its own name; otherwise the destination is the path of the copy itself, and its parent folder must exist. Existing files are overwritten; new files keep the source’s executable permission. `~` means the login folder.
 - `sync` goes only from this computer to the host: it syncs the contents of the local folder into the remote folder. If the remote folder doesn’t exist, it’s created (its parent must exist); if it’s a file, that’s an error; and it can’t be the root folder `/`. Files whose size and modification time haven’t changed, and links whose target hasn’t changed, are skipped and counted as “unchanged” in the summary, so syncing again sends only what changed; other files are overwritten, and new files keep their executable permission. `--delete` first deletes items in the remote folder that aren’t in the local one, or are of a different type (without following links), but never the `.filepart` and `.shellrs-….backup` files that transfers in progress leave behind, and it doesn’t clean up folders that can’t be read locally; items it can’t delete count as failures.
-- `hosts` and `credentials` manage the saved hosts and credentials. `create` and `update` read a JSON object from stdin (`update` changes only the fields given); the fields are in `shellrs hosts create --help` and `shellrs credentials create --help`. What `show --json` prints can be edited and passed straight back to `update`. The checks are the same as in the dialogs, and errors use the dialogs’ wording:
+- `hosts` and `credentials` manage the saved hosts and credentials. `create` and `update` read a JSON object from stdin (`update` changes only the fields given); the fields are in `shelllf-cli hosts create --help` and `shelllf-cli credentials create --help`. What `show --json` prints can be edited and passed straight back to `update`. The checks are the same as in the dialogs, and errors use the dialogs’ wording:
   - Hosts: `name`, `host` (the address), `port` (default 22), `user` (default root), `group` (a group path such as `Production/Databases`, created level by level if it doesn’t exist; an error if more than one group has that path), `auth` (`password` / `credential` / `no_password`), `credential` (a credential ID), `password`, `route` (direct, jump hosts listed by ID, or an HTTP / SOCKS5 proxy) and `notes`. Jump hosts must be saved SSH hosts, and not the host itself. If you change the address, port or user without giving a password, the saved password moves along, as in the dialog.
   - Serial hosts: `protocol` is `serial` (`ssh` by default), with `serial` in place of `host`, `port`, `user`, `auth`, `credential`, `password` and `route`. `serial` has `device` (required to create), `baud`, `data_bits`, `parity` (`none` / `odd` / `even`), `stop_bits` and `flow_control` (`none` / `rts_cts` / `xon_xoff`). Giving `serial` alone makes a serial host. `exec` (`--terminal` too), `upload`, `download` and `sync` fail on a serial host with `not_ssh`.
   - Telnet hosts: `protocol` is `telnet`, `port` is 23 by default, and `user` may be empty. `auth` is its automatic login: `password` types its own username and password, `credential` uses a password credential, and `no_password` doesn’t log in (the default; giving `user` or `password` without `auth` turns it on). `telnet` has the two prompts, `user_prompt` and `password_prompt` (`null` or empty for the usual ones), and `telnet` alone makes a Telnet host. A Telnet host can’t be a jump host, and `exec`, `upload`, `download` and `sync` fail on it with `not_ssh` too.
@@ -291,9 +291,9 @@ shellrs credentials list | show <ID> | create | update <ID> | delete <ID>
   - Quick connections and external connections can be shown with `show`, but not changed or deleted.
   - `hosts delete` doesn’t ask for confirmation and deletes the host’s port forwarding rules along with it; the host’s open tabs in ShellRS stay open (`--force` is still accepted and does nothing). Hosts that jump through it are left with a “Deleted host” hop. `credentials delete` doesn’t ask either; hosts that use the credential switch to logging in on their own (as in the app).
   - ShellRS makes changes one at a time: a change that hasn’t had its turn within 10 seconds is withdrawn and not made; once it has started, the command waits for it to finish.
-- On failure, the command prints `shellrs: [code] message` to stderr and exits with 255. The error codes are `not_running` (ShellRS isn’t running), `not_enabled` (the external CLI isn’t enabled), `host_not_found`, `credential_not_found`, `host_key_unknown` (you haven’t connected to this host in ShellRS yet), `host_key_changed`, `missing_credential` (no saved password or passphrase), `connect_failed`, `transfer_failed`, `bad_request`, `save_failed` (the change was made but couldn’t all be written to the database or keychain) and `version_mismatch` (the command and the running ShellRS are different versions, or ShellRS is too old to know the command). The CLI never prompts: an unknown host or a missing password fails right away, so connect once in ShellRS first. When a transfer finishes but some items failed, the exit code is 1.
+- On failure, the command prints `shelllf-cli: [code] message` to stderr and exits with 255. The error codes are `not_running` (ShellRS isn’t running), `not_enabled` (the external CLI isn’t enabled), `host_not_found`, `credential_not_found`, `host_key_unknown` (you haven’t connected to this host in ShellRS yet), `host_key_changed`, `missing_credential` (no saved password or passphrase), `connect_failed`, `transfer_failed`, `bad_request`, `save_failed` (the change was made but couldn’t all be written to the database or keychain) and `version_mismatch` (the command and the running ShellRS are different versions, or ShellRS is too old to know the command). The CLI never prompts: an unknown host or a missing password fails right away, so connect once in ShellRS first. When a transfer finishes but some items failed, the exit code is 1.
 - `exec --json` reads `{"host": "<ID>", "command": "<command>"}` from stdin and, once the command ends, prints `{"exit_code", "stdout", "stderr"}`, or `{"error": {"code", "message"}}` on an error, with the same exit codes as without `--json`. The output is ASCII only: Chinese and other characters are escaped as `\uXXXX`, and output that isn’t UTF-8 becomes U+FFFD. The command doesn’t go through the local shell’s quoting, and the console code page can’t garble the output, which suits Windows PowerShell and agents that need to read stdout and stderr separately.
-- macOS, Linux and Windows are supported. In Windows PowerShell, prefer `exec --json` for running commands (`@{ host = '<ID>'; command = '…' } | ConvertTo-Json -Compress | shellrs exec --json`). To watch the output while the command runs (long builds, lots of logs), pass the command as a here-string through `--stdin` instead (`@'…'@ | shellrs exec <ID> --stdin`), and, as for `list`, `upload` and `download`, first run `$OutputEncoding = [Console]::OutputEncoding = [Text.UTF8Encoding]::new()`, or Chinese and other non-ASCII text turns into question marks or garbage. Any BOM at the start of the command text is removed and CRLF becomes LF, so the remote shell sees no stray carriage returns.
+- macOS, Linux and Windows are supported. In Windows PowerShell, prefer `exec --json` for running commands (`@{ host = '<ID>'; command = '…' } | ConvertTo-Json -Compress | shelllf-cli exec --json`). To watch the output while the command runs (long builds, lots of logs), pass the command as a here-string through `--stdin` instead (`@'…'@ | shelllf-cli exec <ID> --stdin`), and, as for `list`, `upload` and `download`, first run `$OutputEncoding = [Console]::OutputEncoding = [Text.UTF8Encoding]::new()`, or Chinese and other non-ASCII text turns into question marks or garbage. Any BOM at the start of the command text is removed and CRLF becomes LF, so the remote shell sees no stray carriage returns.
 
 ## Opening from a bastion host (external connections)
 
@@ -313,10 +313,10 @@ ShellRS /sessionname=tab-name sftp://user[:password]@address[:port]
 - The password in the link stays only in memory, never in the keychain, and is reused when reconnecting; if the link has no password and the server wants one, you’re asked. The first time you connect to a bastion host, you trust its host key, which is recorded in ShellRS’s own `known_hosts` and not asked about again.
 - When ShellRS is already running, the link goes to the running ShellRS, its window comes to the front, and no second ShellRS starts. If the link has a problem (not `ssh://` or `sftp://`, no username or address, a wrong port), ShellRS shows a notification saying why.
 - The program for the bastion host to launch:
-  - Windows: `shellrs.exe` in the installation folder (by default `%LOCALAPPDATA%\Programs\ShellRS\shellrs.exe`), or in the portable folder for the portable copy. Don’t use the `shellrs.exe` on the PATH (the one in the portable copy’s `bin` included): that’s the external CLI’s copy.
+  - Windows: `shellrs.exe` in the installation folder (by default `%LOCALAPPDATA%\Programs\ShellRS\shellrs.exe`), or in the portable folder for the portable copy. Don’t use the `shelllf-cli.exe` on the PATH (the one in the portable copy’s `bin` included): that’s the external CLI’s copy.
   - macOS: `/Applications/ShellLF.app/Contents/MacOS/shellrs`. Don’t use `open -a ShellLF --args …`: when ShellLF is already running, the system drops the arguments.
   - Linux: the AppImage itself.
-- The external CLI’s `shellrs hosts list` lists external connections too (`"temporary": true` in the JSON, “(not saved)” in the table’s group column). While the tabs are open, an agent can use the connection’s ID to run commands and transfer files, and the ID stays the same all that time. Once the tabs close, the ID stops working; the next time the bastion host launches ShellRS (even for the same asset), it’s a new external connection with a new ID. As with saved hosts, each command logs in again with the username and password from the link; if the bastion host passed a one-time token, that login is refused.
+- The external CLI’s `shelllf-cli hosts list` lists external connections too (`"temporary": true` in the JSON, “(not saved)” in the table’s group column). While the tabs are open, an agent can use the connection’s ID to run commands and transfer files, and the ID stays the same all that time. Once the tabs close, the ID stops working; the next time the bastion host launches ShellRS (even for the same asset), it’s a new external connection with a new ID. As with saved hosts, each command logs in again with the username and password from the link; if the bastion host passed a one-time token, that login is refused.
 - A password in command-line arguments is visible in this computer’s process list; that comes with how the bastion host passes arguments.
 
 ## Tabs
@@ -441,6 +441,31 @@ Standard metrics use the current connection, with no second login and nothing to
 A figure that can’t be read shows as “—”, not 0. Utilization and memory aren’t colored by how full they are: a GPU at 100% while training, or memory taken up front by an inference server, is how they should run. Temperatures of 80 °C or more show in yellow, 90 °C or more in red; a device in poor health (uncorrectable ECC errors on NVIDIA, an Ascend Health other than OK) has a yellow or red dot beside its number, and pointing at it says why. When `nvidia-smi` or `npu-smi` fails (a GPU fell off the bus, the driver isn’t loaded, no permission), what it said shows as it said it.
 
 The data is read over this terminal’s existing SSH connection, with no second login and nothing to install; it refreshes every 2 seconds (counted from the end of the last reading, so a slow `npu-smi` slows it down), the uptime with it, reading only while GPU/NPU is showing. Each tool gets 3 seconds; one that doesn’t answer is stopped, and so is reading until you click the refresh button: a failing GPU can leave `nvidia-smi` stuck in the driver, and retrying would pile up stuck processes on the server. A host with neither tool says so. **Not supported yet: AMD, Hygon DCU, Cambricon and other vendors.**
+
+### Device logs
+
+Enable **Device log tool** in the host's create/edit dialog to show it in the right sidebar; it is off by default. Supports SSH hosts and serial hosts in Linux shell mode. Android defaults to `logcat`; Ubuntu and other Linux systems default to `dmesg`, with system, service and file logs available through Filters. Enablement and elevation preferences are local per host and do not automatically propagate through cloud sync.
+
+- Snapshots refresh every second, reading the latest 2,000 lines and retaining at most 10,000 lines or 4 MB. A warning indicates trimming or device-buffer changes. Disable **Follow** to scroll manually. Hiding the sidebar, switching tools, closing the tab or disabling the host option stops collection.
+- **Pause** freezes the display while a bounded buffer continues collecting. **Resume** shows retained new content.
+- **Clear** clears this view only; neither `logcat -c` nor `dmesg -c` is run.
+- Severity is a minimum level. Case-insensitive keyword filtering is local and never interpolated into device commands. Kernel priorities map to corresponding levels.
+- **Export…** saves the filtered results, or the frozen filtered view while paused. Choose all levels and clear the keyword to export all retained logs.
+- **Filters…** offers Android app package, PID, exact Tag and crash-buffer filters. App PIDs are resolved on every read, following restarts while preserving previously collected entries and stack traces. Linux offers kernel, system, service and absolute-path file sources. Journal sources support the last 10 minutes, hour, 24 hours and previous boot. Android time filtering uses the device clock. Time ranges remain subject to the 2,000-entry read limit. Options last until the terminal closes and do not change the host configuration.
+- **Bookmarks** filters the buffer to entries marked with the star button. The trailing copy button copies the complete entry. Multiline entries appear on one list row, while copying and export retain line breaks. Bookmarks belong to the bounded buffer and are cleared when the view is cleared or its source changes.
+- Elevation is a separate opt-in host option. Android checks authorized `su` and `timeout`, verifies root with `id -u`, and supports both `su -c` and `su 0`. Linux uses existing root access or scopes `sudo -n --` to the selected `dmesg`, `journalctl` or `tail` command, requiring existing passwordless permission. No passwords are requested or saved, and no sudo or kernel policy is changed. Failure offers **Retry** or **Use current user**. Root access broadens visibility; it does not change severity levels. File log severity is inferred from text.
+
+SSH uses an independent exec channel on the existing connection, not typed commands in the interactive terminal. Serial hosts are identified once at an idle prompt, then use a verified independent ADB/SSH channel selected from the host's monitor channel configuration. Ongoing collection does not use the serial console; busy consoles and unavailable channels have explicit recovery messages. Another device is never guessed.
+
+**Live logs…** in a service's details opens that service in the log tool. Hosts without device logs enabled are prompted to enable the option first.
+
+### Diagnostic bundles
+
+Choose **Diagnostic bundle…** in the log tool, select the collection items and a local ZIP destination. Defaults include system information, load, memory, disk space and inodes, processes, recent device logs, and Android apps/activity or Linux failed/running services. Selecting logs also includes the current filtered view, frozen if paused.
+
+- Android screenshots and full Bugreport are optional and off by default. Full reports require an authorized ADB device matching the current boot identity, wait up to five minutes and accept up to 128 MB. A missing matching ADB connection is recorded instead of choosing another device.
+- Ordinary commands use an eight-second device-side timeout when available and remain subject to transport timeouts. Text items are limited to 512 KB and encoded screenshots to 3 MB. `manifest.json` records successes, permission errors, failures and truncation; other items continue. The destination is replaced only after the new ZIP is complete. Cancellation or a lost connection during collection leaves an existing archive untouched.
+- Log polling pauses during collection and resumes afterward. Switching hosts, hiding the tool or closing the terminal cancels collection. Interactive terminals are not interrupted and device logs and system configuration are not changed. Review logs, app information and screenshots before sharing them.
 
 ### Kubernetes
 
@@ -637,7 +662,7 @@ Cancelling, closing the tab, disconnecting or quitting keeps the resume records;
 
 When a file name can’t be represented exactly, ShellRS reports an error. The remote string decoding of the current `russh-sftp 3.0.0` replaces invalid UTF-8, so the browser refuses remote names that contain the replacement character `U+FFFD`, to avoid acting on the wrong path. Symbolic links use OpenSSH’s SFTP v3 argument order.
 
-**Not implemented yet: folder sync in SFTP tabs (the external CLI’s `shellrs sync` can sync), a foreground transfer progress dialog, reordering the queue, filtering, finding files, a folder tree, and keeping the Dock layout.**
+**Not implemented yet: folder sync in SFTP tabs (the external CLI’s `shelllf-cli sync` can sync), a foreground transfer progress dialog, reordering the queue, filtering, finding files, a folder tree, and keeping the Dock layout.**
 
 ## Download and updates
 
@@ -665,12 +690,12 @@ ShellRS checks for a new version 30 seconds after it starts, then every 6 hours.
 
 ### Windows portable
 
-The portable copy is a zip (`ShellRS-<version>-windows-x86_64-portable.zip`) holding `shellrs.exe`, `shellrs-cli.exe` and an empty `data` folder: unzip it and run `shellrs.exe`, nothing to install. A `shellrs.exe` with a `data` folder beside it is portable: hosts, credentials, settings, `known_hosts`, pasted and generated private keys, the window’s place and update downloads all live in `data`, and nothing goes to `%APPDATA%`. The version number’s tooltip on the About page says “portable”.
+The portable copy is a zip (`ShellRS-<version>-windows-x86_64-portable.zip`) holding `shellrs.exe`, `shelllf-cli.exe` and an empty `data` folder: unzip it and run `shellrs.exe`, nothing to install. A `shellrs.exe` with a `data` folder beside it is portable: hosts, credentials, settings, `known_hosts`, pasted and generated private keys, the window’s place and update downloads all live in `data`, and nothing goes to `%APPDATA%`. The version number’s tooltip on the About page says “portable”.
 
 - Unzip first: a `shellrs.exe` opened inside the zip has no `data` beside it, so it runs as an ordinary copy and keeps its data in `%APPDATA%\shellrs`.
 - Keep it in a folder you can write to, such as `D:\Tools\ShellRS` or a USB stick, not in `Program Files` and not in a folder OneDrive or the like syncs. When the folder can’t be written to, it can’t update itself, and “Open download page” gives the portable zip.
 - Don’t rename `shellrs.exe` (updates replace the file by that name) and don’t delete `data` (without it, the copy is no longer portable). A `data` folder in the installed copy’s folder doesn’t make that copy portable (uninstalling deletes the whole folder).
-- Automatic updates download and verify in the background as for the installed copy; “Restart to update”, or quitting, swaps `shellrs.exe` and `shellrs-cli.exe` and leaves `data` and `bin` alone. The old files are renamed to hidden names like `.shellrs.exe.old-…` and deleted once the new version has started.
+- Automatic updates download and verify in the background as for the installed copy; “Restart to update”, or quitting, swaps `shellrs.exe` and `shelllf-cli.exe` and leaves `data` and `bin` alone. The old files are renamed to hidden names like `.shellrs.exe.old-…` and deleted once the new version has started.
 - Use one portable folder from one Windows account at a time. It can run beside the installed copy, each with its own data and its own taskbar button.
 - **Moving over from the installed copy**: quit both, then copy the files in `%APPDATA%\shellrs` into the portable copy’s `data`. Pasted and generated private keys switch to the copies in `data\keys` by themselves; on the same computer, saved passwords keep working.
 - **What stays on the computer**:
@@ -702,4 +727,4 @@ The first three carry these settings and counts, each with a fixed set of possib
 
 - Counts are first kept in `analytics.json` in the data folder, so quitting doesn’t lose them, and they’re sent later. Being offline or on an intranet doesn’t get in the way: when sending fails, ShellRS waits 1 minute, then doubles the wait each time up to 6 hours, and retries only while you’re using ShellRS, sending no requests while it’s idle.
 - Aptabase infers the country and region from the request’s IP address but doesn’t store the IP. It tells devices apart by a hash of the IP and User-Agent with a random salt that changes every day, so it can’t follow the same device across days.
-- Development builds you compile yourself don’t send statistics, and neither does the external CLI (the `shellrs` command) itself.
+- Development builds you compile yourself don’t send statistics, and neither does the external CLI (the `shelllf-cli` command) itself.

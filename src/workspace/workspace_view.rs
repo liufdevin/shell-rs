@@ -202,11 +202,11 @@ pub struct Workspace {
     settings_tab: Option<Entity<SettingsPanel>>,
     /// What the settings tab edits; the workspace applies it to the window.
     settings: Entity<SettingsStore>,
-    /// Where the `shellrs` command and the agent skills go, and whether
+    /// Where the `shelllf-cli` command and the agent skills go, and whether
     /// they are there. No paths in UI tests, so nothing reaches the home
     /// directory unless a test hands it a temporary one.
     cli_integration: Entity<CliIntegration>,
-    /// Answers the `shellrs` command. Production only: UI tests never
+    /// Answers the `shelllf-cli` command. Production only: UI tests never
     /// listen on the real socket.
     pub(super) cli_server: Option<CliServer>,
     pub(super) locked_links: Vec<crate::cli::OpenLink>,
@@ -3054,6 +3054,8 @@ fn new_terminal_panel(
                 this.finish_detached_tab(CenterTab::Terminal(*terminal_id), cx);
                 this.cancel_prompts_for_terminal(*terminal_id, window, cx);
                 this.terminals.remove(terminal_id);
+                this.tools
+                    .update(cx, |tools, cx| tools.forget_log_terminal(*terminal_id, cx));
                 this.close_file_sidebar(*terminal_id, window, cx);
                 this.directory_follow.remove(terminal_id);
                 this.sync_broadcast(cx);
@@ -3622,6 +3624,7 @@ impl Workspace {
             .on_action(cx.listener(Self::on_toggle_snippet_category))
             .on_action(cx.listener(Self::on_refresh_docker))
             .on_action(cx.listener(Self::on_kubernetes_action))
+            .on_action(cx.listener(Self::on_device_log_action))
             .on_action(cx.listener(Self::on_toggle_docker_project))
             .on_action(cx.listener(Self::on_show_docker_object))
             .on_action(cx.listener(Self::on_control_containers))

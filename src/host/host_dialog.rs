@@ -270,6 +270,7 @@ pub struct HostForm {
     proxy_secret: Entity<SecretFields>,
     notes: Entity<TextareaState>,
     log_enabled: bool,
+    device_logs: crate::host::DeviceLogSettings,
     log_directory: Option<PathBuf>,
     auto_reconnect: bool,
     reconnect_delay: Entity<InputState>,
@@ -764,6 +765,7 @@ impl HostForm {
             proxy_secret,
             notes,
             log_enabled: draft.log_enabled,
+            device_logs: draft.device_logs.clone(),
             log_directory,
             auto_reconnect: draft.auto_reconnect,
             reconnect_delay,
@@ -935,6 +937,7 @@ impl HostForm {
     }
 
     fn with_log_file(&self, mut draft: HostDraft, cx: &App) -> HostDraft {
+        draft.device_logs = self.device_logs.clone();
         draft.monitor.channel = self
             .monitor_channel
             .read(cx)
@@ -1059,15 +1062,53 @@ impl HostForm {
                 .w_full()
                 .gap_2()
                 .child(
-                    Checkbox::new("host-log-enabled")
-                        .small()
-                        .label(t!("host.dialog.log_file"))
-                        .checked(self.log_enabled)
-                        .on_click(cx.listener(|this, checked, _, cx| {
-                            this.log_enabled = *checked;
-                            cx.notify();
-                        })),
+                    h_flex()
+                        .w_full()
+                        .gap_3()
+                        .flex_wrap()
+                        .child(
+                            Checkbox::new("host-log-enabled")
+                                .small()
+                                .label(t!("host.dialog.log_file"))
+                                .checked(self.log_enabled)
+                                .on_click(cx.listener(|this, checked, _, cx| {
+                                    this.log_enabled = *checked;
+                                    cx.notify();
+                                })),
+                        )
+                        .child(
+                            Checkbox::new("host-device-logs-enabled")
+                                .small()
+                                .label(t!("device_logs.host.enabled"))
+                                .checked(self.device_logs.enabled)
+                                .on_change(cx.listener(|this, checked, _, cx| {
+                                    this.device_logs.enabled = *checked;
+                                    cx.notify();
+                                })),
+                        ),
                 )
+                .when(self.device_logs.enabled, |view| {
+                    view.child(
+                        v_flex()
+                            .gap_1()
+                            .child(
+                                Checkbox::new("host-device-logs-elevated")
+                                    .small()
+                                    .label(t!("device_logs.host.elevated"))
+                                    .checked(self.device_logs.elevated)
+                                    .on_change(cx.listener(|this, checked, _, cx| {
+                                        this.device_logs.elevated = *checked;
+                                        cx.notify();
+                                    })),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(t!("device_logs.host.note")),
+                            ),
+                    )
+                })
                 .when(self.log_enabled, |view| {
                     view.child(
                         h_flex()

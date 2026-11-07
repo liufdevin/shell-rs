@@ -16,6 +16,9 @@ use crate::{
 pub trait MonitorLink: Send {
     fn label(&self) -> String;
     fn sample(&mut self, command: &str, cancel: &AtomicBool) -> Result<String, String>;
+    fn adb_connection(&self) -> Option<AdbConnection> {
+        None
+    }
 }
 
 pub trait MonitorConnector: Send + Sync {
@@ -124,6 +127,9 @@ impl MonitorConnector for SystemMonitorConnector {
 }
 
 impl MonitorLink for AdbConnection {
+    fn adb_connection(&self) -> Option<AdbConnection> {
+        Some(self.clone())
+    }
     fn label(&self) -> String {
         format!("ADB · {} ({})", self.display_name(), self.serial())
     }

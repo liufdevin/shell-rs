@@ -191,7 +191,7 @@ pub enum Request {
         credential: String,
     },
     /// Bring the app's window forward, and open `open` in it. Not the
-    /// `shellrs` command's: ShellRS sends it when it is opened while it is
+    /// `shelllf-cli` command's: ShellRS sends it when it is opened while it is
     /// already running, so it is answered whatever 启用外部 CLI says.
     ///
     /// Without a link it is `{"type":"activate"}`, as it always was. A

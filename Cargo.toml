@@ -17,8 +17,8 @@ path = "src/main.rs"
 # The `shellrs` command on its own, as a console program: Windows needs it,
 # because the app is a GUI program there and has no console to print to.
 [[bin]]
-name = "shellrs-cli"
-path = "src/bin/shellrs-cli.rs"
+name = "shelllf-cli"
+path = "src/bin/shelllf-cli.rs"
 
 # The sync, SSH and hosts cores are crates of their own, under MIT, so the
 # mobile apps can link them as well. Cargo commands here build, test and lint them

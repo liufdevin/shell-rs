@@ -204,9 +204,9 @@ gpui_kit::actions!(
         FitPreview,
         /// Show the previewed image at its own size (100%).
         ActualSizePreview,
-        /// Put the `shellrs` command on the PATH.
+        /// Put the `shelllf-cli` command on the PATH.
         InstallCliCommand,
-        /// Take the `shellrs` command off the PATH.
+        /// Take the `shelllf-cli` command off the PATH.
         RemoveCliCommand,
         /// Look again at what of the external CLI is installed.
         RefreshCliIntegration,
@@ -264,6 +264,7 @@ macro_rules! id_actions {
 
 id_actions! {
     AdbDeviceAction(crate::adb::DeviceCommand);
+    DeviceLogAction(crate::device_logs::DeviceLogCommand);
     RemoveTerminalScheme(String);
     /// Open a new terminal connection for a host.
     ConnectHost(HostId);
@@ -577,6 +578,7 @@ pub enum ToolKind {
     Processes,
     Connections,
     Monitor,
+    Logs,
     Gpu,
     /// 项目, the one tool of local terminals.
     Projects,
@@ -584,7 +586,7 @@ pub enum ToolKind {
 }
 
 impl ToolKind {
-    pub const ALL: [ToolKind; 13] = [
+    pub const ALL: [ToolKind; 14] = [
         ToolKind::Snippets,
         ToolKind::History,
         ToolKind::Files,
@@ -595,6 +597,7 @@ impl ToolKind {
         ToolKind::Processes,
         ToolKind::Connections,
         ToolKind::Monitor,
+        ToolKind::Logs,
         ToolKind::Gpu,
         ToolKind::Projects,
         ToolKind::Serial,
@@ -615,6 +618,7 @@ impl ToolKind {
             ToolKind::Processes => "processes",
             ToolKind::Connections => "connections",
             ToolKind::Monitor => "monitor",
+            ToolKind::Logs => "logs",
             ToolKind::Gpu => "gpu",
             ToolKind::Projects => "projects",
             ToolKind::Serial => "serial",
@@ -645,6 +649,7 @@ impl ToolKind {
             ToolKind::Processes => t!("tools.kind.processes"),
             ToolKind::Connections => t!("tools.kind.connections"),
             ToolKind::Monitor => t!("tools.kind.monitor"),
+            ToolKind::Logs => t!("device_logs.title"),
             ToolKind::Gpu => "GPU/NPU".into(),
             ToolKind::Projects => t!("tools.kind.projects"),
             ToolKind::Serial => t!("tools.kind.serial"),
@@ -666,6 +671,7 @@ impl ToolKind {
             ToolKind::Processes => CatalogIcon::ListFilter,
             ToolKind::Connections => CatalogIcon::Network,
             ToolKind::Monitor => CatalogIcon::Activity,
+            ToolKind::Logs => CatalogIcon::FileText,
             ToolKind::Gpu => CatalogIcon::Gpu,
             ToolKind::Projects => CatalogIcon::FolderCode,
             ToolKind::Serial => CatalogIcon::Settings,

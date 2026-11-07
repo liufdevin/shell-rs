@@ -1,4 +1,4 @@
-//! 在已开的终端里执行: what `shellrs exec --terminal` types into an open
+//! 在已开的终端里执行: what `shelllf-cli exec --terminal` types into an open
 //! remote terminal, and how the result is read back out of its output.
 //!
 //! A bastion host that opened ShellRS with a link serves one login, and

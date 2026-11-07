@@ -1,5 +1,5 @@
 //! The workspace's share of the external CLI: coming forward when ShellRS
-//! is opened again, the changes to hosts and credentials a `shellrs`
+//! is opened again, the changes to hosts and credentials a `shelllf-cli`
 //! command asks for, and the `exec --terminal` runs. The request threads
 //! cannot reach the store or the terminals; the changes and the runs wait
 //! in the server until they are taken up here. 显示或隐藏 ShellRS, the
@@ -141,7 +141,7 @@ impl Workspace {
         }
     }
 
-    /// Make a change a `shellrs` command asks for, checked as the host and
+    /// Make a change a `shelllf-cli` command asks for, checked as the host and
     /// credential forms check theirs. Its outcome is the reply the command
     /// prints; on success, the host or credential as it is now.
     pub fn apply_cli_change(

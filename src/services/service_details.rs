@@ -82,10 +82,28 @@ pub fn open_service_dialog(
                 _ => button.outline(),
             }
         };
+        let log_dispatch = dispatch.clone();
+        let log_service = service.name.clone();
         let footer = DialogFooter::new()
             .justify_start()
             .children(service.commands().iter().map(|&command| button(command)))
-            .children(service.boot_command().map(button));
+            .children(service.boot_command().map(button))
+            .child(
+                Button::new("service-live-logs")
+                    .label(t!("device_logs.live_service"))
+                    .on_click(move |_, window, cx| {
+                        window.close_dialog(cx);
+                        log_dispatch.dispatch_action(
+                            &crate::app::DeviceLogAction(
+                                crate::device_logs::DeviceLogCommand::OpenService(
+                                    log_service.to_string(),
+                                ),
+                            ),
+                            window,
+                            cx,
+                        );
+                    }),
+            );
         dialog
             .title(title)
             // Dialog geometry is an API boundary that takes `Pixels`; the

@@ -1,6 +1,6 @@
 _version: 2
 
-# 外部 CLI: what the `shellrs` command prints, and the messages the app
+# 外部 CLI: what the `shelllf-cli` command prints, and the messages the app
 # sends back to it. CLI output uses plain ASCII quotes and apostrophes, so
 # it copies into a shell unchanged; the texts shown in the app's window
 # (the settings page, notifications) use “ ” and ’ like the rest of the UI.
@@ -267,14 +267,14 @@ cli.summary.failed:
 
 # What the app answers when it will not take the request.
 cli.server.version_mismatch:
-  zh-CN: shellrs 命令与正在运行的 ShellLF 版本不同：请重新启动 ShellLF，或在 设置 → 外部 CLI 中更新 CLI
-  en: The shellrs command and the running ShellLF are different versions. Restart ShellLF, or update the CLI in Settings → External CLI.
+  zh-CN: shelllf-cli 命令与正在运行的 ShellLF 版本不同：请重新启动 ShellLF，或在 设置 → 外部 CLI 中更新 CLI
+  en: The shelllf-cli command and the running ShellLF are different versions. Restart ShellLF, or update the CLI in Settings → External CLI.
 cli.server.not_enabled:
   zh-CN: ShellLF 未启用外部 CLI：请在 ShellLF 的 设置 → 外部 CLI 中打开「启用外部 CLI」
   en: The external CLI is turned off. Turn on Enable external CLI in ShellLF under Settings → External CLI.
 cli.server.closed_during_change:
-  zh-CN: ShellLF 在处理改动时关闭了：请重新打开 ShellLF，用 shellrs hosts list 查看改动是否已完成
-  en: ShellLF closed while making the change. Open ShellLF again and check with shellrs hosts list whether it was made.
+  zh-CN: ShellLF 在处理改动时关闭了：请重新打开 ShellLF，用 shelllf-cli hosts list 查看改动是否已完成
+  en: ShellLF closed while making the change. Open ShellLF again and check with shelllf-cli hosts list whether it was made.
 cli.server.change_timed_out:
   zh-CN: ShellLF 没有及时处理这项改动，改动没有做：请稍后再试
   en: ShellLF didn't get to the change in time, so it wasn't made. Try again later.
@@ -292,11 +292,11 @@ cli.server.another_app:
   zh-CN: 另一个 ShellLF 已在提供外部 CLI
   en: Another ShellLF is already serving the external CLI.
 cli.error.host_not_found:
-  zh-CN: 没有 ID 为 %{id} 的主机：请用 shellrs hosts list 查看
-  en: No host has the ID %{id}. List the hosts with shellrs hosts list.
+  zh-CN: 没有 ID 为 %{id} 的主机：请用 shelllf-cli hosts list 查看
+  en: No host has the ID %{id}. List the hosts with shelllf-cli hosts list.
 cli.error.credential_not_found:
-  zh-CN: 没有 ID 为 %{id} 的凭据：请用 shellrs credentials list 查看
-  en: No credential has the ID %{id}. List the credentials with shellrs credentials list.
+  zh-CN: 没有 ID 为 %{id} 的凭据：请用 shelllf-cli credentials list 查看
+  en: No credential has the ID %{id}. List the credentials with shelllf-cli credentials list.
 
 # Checking what `hosts create` / `update` ask for.
 cli.host.temporary:
@@ -413,8 +413,8 @@ cli.change.failures:
 
 # Running commands and moving files.
 cli.exec.try_terminal:
-  zh-CN: "%{message}（堡垒机可能只允许登录一次：改用 shellrs exec --terminal，在 ShellLF 已打开的终端里执行）"
-  en: "%{message} (The bastion host may allow one login only: use shellrs exec --terminal to run the command in the terminal open in ShellLF.)"
+  zh-CN: "%{message}（堡垒机可能只允许登录一次：改用 shelllf-cli exec --terminal，在 ShellLF 已打开的终端里执行）"
+  en: "%{message} (The bastion host may allow one login only: use shelllf-cli exec --terminal to run the command in the terminal open in ShellLF.)"
 
 # `exec --terminal`: why the command could not be typed into the terminal,
 # or did not finish there.
@@ -440,8 +440,8 @@ cli.terminal.full_screen:
   zh-CN: 终端里正在运行全屏程序（如 vim、less、top、tmux）：请先在 ShellLF 里退出它
   en: A full-screen program (such as vim, less, top or tmux) has the terminal. Quit it in ShellLF first.
 cli.terminal.another_run:
-  zh-CN: 这个终端里上一条 shellrs exec --terminal 命令还在执行
-  en: The previous shellrs exec --terminal command is still running in this terminal.
+  zh-CN: 这个终端里上一条 shelllf-cli exec --terminal 命令还在执行
+  en: The previous shelllf-cli exec --terminal command is still running in this terminal.
 cli.terminal.transferring:
   zh-CN: 这个终端正在用 ZMODEM 传输文件
   en: This terminal is transferring files with ZMODEM.
@@ -489,8 +489,8 @@ cli.agent.generic_description:
   zh-CN: 安装到 Agent Skills 标准目录，供支持该目录的 Agent 使用。
   en: Installs to the standard Agent Skills folder, for agents that read it.
 cli.install.unsupported:
-  zh-CN: 此系统暂不支持安装 shellrs 命令
-  en: Installing the shellrs command isn’t supported on this system.
+  zh-CN: 此系统暂不支持安装 shelllf-cli 命令
+  en: Installing the shelllf-cli command isn’t supported on this system.
 cli.install.occupied:
   zh-CN: "%{path} 已被其他程序占用，ShellLF 不会改动它"
   en: "%{path} belongs to another program, so ShellLF leaves it alone"

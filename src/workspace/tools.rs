@@ -141,6 +141,13 @@ impl Workspace {
                 .monitor
                 .clone(),
             view: panel.terminal().downgrade(),
+            device_logs: self
+                .store
+                .read(cx)
+                .host(panel.host_id())
+                .unwrap_or(panel.host())
+                .device_logs
+                .clone(),
         })
     }
 
@@ -184,6 +191,7 @@ impl Workspace {
                             && (*tool != ToolKind::Serial || terminal.serial)
                             && shown.shows(*tool)
                             && tool.works_on(os)
+                            && (*tool != ToolKind::Logs || terminal.device_logs.enabled)
                             && (!telnet
                                 || matches!(
                                     tool,
@@ -203,6 +211,7 @@ impl Workspace {
                                         | ToolKind::Processes
                                         | ToolKind::Connections
                                         | ToolKind::Monitor
+                                        | ToolKind::Logs
                                 ))
                             && !(shell_only && tool.runs_commands())
                     })
@@ -219,6 +228,40 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         self.tools.update(cx, |tools, cx| tools.refresh_gpu(cx));
+    }
+
+    pub(super) fn on_device_log_action(
+        &mut self,
+        action: &crate::app::DeviceLogAction,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let crate::device_logs::DeviceLogCommand::OpenService(name) = &action.0 {
+            if !self.offered_tools(cx).contains(&ToolKind::Logs) {
+                window.push_notification(Notification::info(t!("device_logs.enable_first")), cx);
+                return;
+            }
+            let Some(target) = self.sidebar_target(cx) else {
+                return;
+            };
+            self.remember_target_tool(&target, Some(ToolKind::Logs), cx);
+            self.sync_tool_sidebar(window, cx);
+            self.tools.update(cx, |tools, cx| {
+                tools.device_log_command(
+                    &crate::device_logs::DeviceLogCommand::ApplyOptions(
+                        crate::device_logs::LogOptions::service(name.clone()),
+                    ),
+                    window,
+                    cx,
+                );
+            });
+            return;
+        }
+        if self.offered_tools(cx).contains(&ToolKind::Logs) {
+            self.tools.update(cx, |tools, cx| {
+                tools.device_log_command(&action.0, window, cx)
+            });
+        }
     }
 
     /// GPU/NPU's 全部展开 and 全部收起.

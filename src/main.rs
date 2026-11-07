@@ -14,9 +14,9 @@ fn main() {
     // bastion host opening ShellRS the way it opens Xshell. On every build,
     // a Windows release build above all, where bastion hosts run it.
     let link = shellrs::cli::link_arguments(&args);
-    // `shellrs hosts list`, `shellrs exec …`: the command, not the app. Not in a
+    // `shelllf-cli hosts list`, `shelllf-cli exec …`: the command, not the app.
     // Windows release build, which has nowhere to print: there the command
-    // is `shellrs-cli.exe`, which 设置 → 外部 CLI puts on the PATH.
+    // is `shelllf-cli.exe`, which 设置 → 外部 CLI puts on the PATH.
     #[cfg(any(not(windows), debug_assertions))]
     if link.is_none() && !args.is_empty() {
         std::process::exit(shellrs::cli::main(args));

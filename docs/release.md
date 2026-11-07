@@ -5,7 +5,7 @@
 在 `CHANGELOG.md`（英文）和 `CHANGELOG.zh.md`（中文）里各写好 `## [x.y.z]` 一节，把 `Cargo.toml` 的版本改成 `x.y.z`，提交后推送 tag `vx.y.z`。`.github/workflows/release.yml` 依次：
 
 1. 核对 tag 与 `Cargo.toml` 一致，两份更新日志都有这一节，从英文版截出 GitHub Release 的说明，确认代码里有发布公钥；
-2. 构建并打包：macOS 按 `aarch64`（Apple Silicon）和 `x86_64`（Intel）分别构建、签名、公证、staple，各自产出升级用的 `.app.zip` 和首次安装用的 `.dmg`；Windows 用 Inno Setup 打安装程序，另打便携版的 zip（根上是 `shellrs.exe`、`shellrs-cli.exe` 和空的 `data` 文件夹，用 7-Zip 打包，打完核对正好是这三项），它既是首次下载的包、也是便携版升级用的包；Linux 打 AppImage；
+2. 构建并打包：macOS 按 `aarch64`（Apple Silicon）和 `x86_64`（Intel）分别构建、签名、公证、staple，各自产出升级用的 `.app.zip` 和首次安装用的 `.dmg`；Windows 用 Inno Setup 打安装程序，另打便携版的 zip（根上是 `shellrs.exe`、`shelllf-cli.exe` 和空的 `data` 文件夹，用 7-Zip 打包，打完核对正好是这三项），它既是首次下载的包、也是便携版升级用的包；Linux 打 AppImage；
 3. 在 `release` 环境里人工批准后：给每个包签名，上传到 R2（`dl.shellrs.com/releases/<版本>/`），建 GitHub Release，**最后**才替换更新清单 `dl.shellrs.com/update/v1/<通道>.json` 并清 CDN 缓存，然后调用官网的部署挂钩重新构建 shellrs.com（官网的下载页和更新日志在构建时读这份清单）。清单里每个包有两个下载地址：先 R2，下载失败时客户端接着试 GitHub Release（仓库是公开的，下载不用登录）。
 
 版本号带 `-` 的（如 `0.3.0-beta.1`）只发到 beta 通道；正式版同时成为 beta 通道的最新版。在 Actions 里手动运行这个 workflow 只构建打包、不发布，用来演练。客户端只接受比自己新的版本，所以发错的版本撤不回来：把清单改回上一版能阻止更多人升级，修复要发新的补丁版。

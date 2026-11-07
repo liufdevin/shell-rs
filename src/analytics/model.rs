@@ -95,7 +95,7 @@ pub enum Counter {
     NoticeProgram,
     NoticeBell,
     NoticeKeyword,
-    /// A `shellrs` command served.
+    /// A `shelllf-cli` command served.
     CliExec,
     CliExecTerminal,
     CliUpload,

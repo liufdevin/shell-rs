@@ -1,0 +1,244 @@
+_version: 2
+device_logs.description:
+  zh-CN: 查看设备、系统、服务和文件日志，或导出诊断包；需在主机配置中单独启用。
+  en: View device, system, service and file logs, or export a diagnostic bundle. Enable separately in the host configuration.
+device_logs.follow:
+  zh-CN: 跟随
+  en: Follow
+device_logs.loading:
+  zh-CN: 正在检测日志来源和读取权限…
+  en: Checking log source and read permissions…
+device_logs.empty:
+  zh-CN: 暂无匹配日志
+  en: No matching log entries
+device_logs.title:
+  zh-CN: 设备日志
+  en: Device logs
+device_logs.host.enabled:
+  zh-CN: 启用设备日志工具
+  en: Enable device log tool
+device_logs.host.elevated:
+  zh-CN: 使用管理员权限读取日志（Android su / Linux sudo）
+  en: Read logs with elevated privileges (Android su / Linux sudo)
+device_logs.host.note:
+  zh-CN: 默认关闭。支持设备日志和诊断包；串口主机需 ADB 或 SSH 独立通道。提权会先检查权限，不保存或询问密码。
+  en: Off by default. Enables logs and diagnostic bundles. Serial hosts require an independent ADB or SSH channel. Elevation is checked first; passwords are never requested or stored.
+device_logs.pause:
+  zh-CN: 暂停
+  en: Pause
+device_logs.resume:
+  zh-CN: 继续
+  en: Resume
+device_logs.clear:
+  zh-CN: 清空
+  en: Clear
+device_logs.clear_note:
+  zh-CN: 仅清空当前日志视图，不删除设备上的日志。
+  en: Clear this view only. Device log buffers are not deleted.
+device_logs.export:
+  zh-CN: 导出…
+  en: Export…
+device_logs.exported:
+  zh-CN: 日志已导出。
+  en: Logs exported.
+device_logs.export_failed:
+  zh-CN: "日志导出失败：%{error}"
+  en: "Could not export logs: %{error}"
+device_logs.keyword:
+  zh-CN: 关键词过滤
+  en: Filter by keyword
+device_logs.level.all:
+  zh-CN: 全部等级
+  en: All levels
+device_logs.scope:
+  zh-CN: "%{count} 条；每秒刷新，导出当前筛选结果"
+  en: "%{count} entries; refreshed every second; exports filtered results"
+device_logs.source:
+  zh-CN: "%{source} · %{route} · %{permission}"
+  en: "%{source} · %{route} · %{permission}"
+device_logs.admin:
+  zh-CN: 管理员权限
+  en: Elevated
+device_logs.user:
+  zh-CN: 当前用户权限
+  en: Current user
+device_logs.limited:
+  zh-CN: 日志已截断或设备缓冲发生变化；最多保留 10000 条、4 MB，单次读取最近 2000 条。
+  en: Logs were trimmed or the device buffer changed. Retains up to 10,000 entries or 4 MB; reads the latest 2,000 entries per refresh.
+device_logs.paused:
+  zh-CN: 显示已暂停，后台继续保留有限日志缓冲。
+  en: Display paused. A bounded log buffer is still collected in the background.
+device_logs.not_connected:
+  zh-CN: 终端未连接，连接恢复后继续读取日志。
+  en: Terminal disconnected. Logs will resume after reconnecting.
+device_logs.busy:
+  zh-CN: 串口正在使用，无法确认设备。请在空闲命令提示符下重试。
+  en: The serial terminal is busy. Retry at an idle shell prompt to identify the device.
+device_logs.no_channel:
+  zh-CN: 日志需要独立的 ADB 或 SSH 通道。请连接并授权 ADB，或在主机的监控通道配置中选择可用的 SSH 主机，然后重试。
+  en: Logs require an independent ADB or SSH channel. Connect and authorize ADB, or select an available SSH host in the host's monitoring channel settings, then retry.
+device_logs.unsupported:
+  zh-CN: 未找到可用的 logcat 或 dmesg，此设备暂不支持日志查看。
+  en: No usable logcat or dmesg was found. Log viewing is unavailable on this device.
+device_logs.elevation_failed:
+  zh-CN: 无法获得管理员权限。Android 需要可用且已授权的 su 和 timeout；Linux 需要 root 或免密码 sudo。可检查设备授权后重试，或使用当前用户权限查看。
+  en: Elevation was denied or unavailable. Android requires authorized su and timeout; Linux requires root or passwordless sudo. Check device authorization and retry, or view logs as the current user.
+device_logs.read_failed:
+  zh-CN: "无法读取日志：%{error}。若为权限不足，请检查主机的管理员权限选项及设备授权；不会自动提权。"
+  en: "Could not read logs: %{error}. For permission errors, check the host's elevation option and device authorization. Privileges are never raised automatically."
+device_logs.retry:
+  zh-CN: 重试
+  en: Retry
+device_logs.current_user:
+  zh-CN: 使用当前权限
+  en: Use current user
+device_logs.filters:
+  zh-CN: 筛选…
+  en: Filters…
+device_logs.filter_title:
+  zh-CN: 日志筛选
+  en: Log filters
+device_logs.enable_first:
+  zh-CN: 请先在主机配置中启用设备日志工具。
+  en: Enable the device log tool in this host's configuration first.
+device_logs.live_service:
+  zh-CN: 实时日志…
+  en: Live logs…
+device_logs.apply:
+  zh-CN: 应用
+  en: Apply
+device_logs.origin:
+  zh-CN: 日志来源
+  en: Log source
+device_logs.kind.kernel:
+  zh-CN: 内核
+  en: Kernel
+device_logs.kind.system:
+  zh-CN: 系统
+  en: System
+device_logs.kind.service:
+  zh-CN: 指定服务
+  en: Service
+device_logs.kind.file:
+  zh-CN: 指定文件
+  en: File
+device_logs.period:
+  zh-CN: 时间范围
+  en: Time range
+device_logs.period.recent:
+  zh-CN: 最近 2000 条
+  en: Latest 2,000 entries
+device_logs.period.minutes10:
+  zh-CN: 最近 10 分钟
+  en: Last 10 minutes
+device_logs.period.hour:
+  zh-CN: 最近 1 小时
+  en: Last hour
+device_logs.period.day:
+  zh-CN: 最近 24 小时
+  en: Last 24 hours
+device_logs.period.previous:
+  zh-CN: 上一次启动
+  en: Previous boot
+device_logs.package:
+  zh-CN: 应用包名（可选）
+  en: App package (optional)
+device_logs.app_waiting:
+  zh-CN: 应用尚未运行，正在等待新 PID。
+  en: App is not running; waiting for a new PID.
+device_logs.path:
+  zh-CN: 文件绝对路径
+  en: Absolute file path
+device_logs.service:
+  zh-CN: 服务名称
+  en: Service name
+device_logs.pid:
+  zh-CN: PID（可选）
+  en: PID (optional)
+device_logs.tag:
+  zh-CN: Tag（精确匹配，可选）
+  en: Tag (exact match, optional)
+device_logs.crashes:
+  zh-CN: 只看崩溃缓冲区
+  en: Crash buffer only
+device_logs.filter_note:
+  zh-CN: 应用筛选会跟踪新 PID；时间筛选受最近 2000 条读取上限限制。文件日志等级根据文本推断。
+  en: App filtering tracks new PIDs. Time filters apply within the latest 2,000 entries. File log levels are inferred from text.
+device_logs.invalid_filter:
+  zh-CN: 请填写有效的包名、PID、服务名称或文件绝对路径。
+  en: Enter a valid package, PID, service name or absolute file path.
+device_logs.bookmarks:
+  zh-CN: 书签
+  en: Bookmarks
+device_logs.bookmark:
+  zh-CN: 切换日志书签
+  en: Toggle log bookmark
+device_logs.copy:
+  zh-CN: 复制日志行
+  en: Copy log entry
+device_logs.report.title:
+  zh-CN: 诊断包…
+  en: Diagnostic bundle…
+device_logs.report.dialog_title:
+  zh-CN: 导出诊断包
+  en: Export diagnostic bundle
+device_logs.report.collect:
+  zh-CN: 选择位置并采集…
+  en: Choose location and collect…
+device_logs.report.system:
+  zh-CN: 系统与设备信息
+  en: System and device information
+device_logs.report.resources:
+  zh-CN: 负载、内存、磁盘与进程
+  en: Load, memory, disks and processes
+device_logs.report.logs:
+  zh-CN: 最近日志与当前筛选结果
+  en: Recent logs and current filtered view
+device_logs.report.apps:
+  zh-CN: 应用列表与前台 Activity
+  en: Apps and foreground activity
+device_logs.report.services:
+  zh-CN: 失败及运行中的服务
+  en: Failed and running services
+device_logs.report.screenshot:
+  zh-CN: 屏幕截图
+  en: Screenshot
+device_logs.report.bugreport:
+  zh-CN: 完整 Android Bugreport（需匹配的 ADB）
+  en: Full Android bugreport (requires matching ADB)
+device_logs.report.note:
+  zh-CN: ZIP 保存在本机，包含各项采集结果和错误清单，不修改设备配置。日志和截图可能包含业务信息，请检查后再分享。
+  en: Saves a ZIP locally with collection results and an error manifest, without changing device configuration. Logs and screenshots may contain business information; review before sharing.
+device_logs.report.bugreport_note:
+  zh-CN: 完整报告可能需要数分钟，最长等待 5 分钟，上限 128 MB。没有匹配的 ADB 或权限不足时记入清单，其余项目仍可导出。
+  en: A full report may take several minutes; waits up to 5 minutes and accepts up to 128 MB. Missing matching ADB or permission errors are recorded; other items can still be exported.
+device_logs.report.choosing:
+  zh-CN: 正在选择诊断包保存位置…
+  en: Choosing where to save the diagnostic bundle…
+device_logs.report.progress:
+  zh-CN: "正在采集：%{item}"
+  en: "Collecting: %{item}"
+device_logs.report.bugreport_progress:
+  zh-CN: 正在生成 Android Bugreport，可取消…
+  en: Generating Android bugreport; cancellation is available…
+device_logs.report.cancelled:
+  zh-CN: 诊断采集已取消。
+  en: Diagnostic collection cancelled.
+device_logs.report.saved:
+  zh-CN: "诊断包已保存：%{success} 项完成，%{incomplete} 项失败或截断，详见 manifest.json。"
+  en: "Diagnostic bundle saved: %{success} complete; %{incomplete} failed or truncated. See manifest.json."
+device_logs.report.failed:
+  zh-CN: "诊断包未保存：%{error}"
+  en: "Diagnostic bundle was not saved: %{error}"
+device_logs.report.adb_required:
+  zh-CN: 没有与当前设备匹配且已授权的 ADB 通道。
+  en: No authorized ADB channel matches this device.
+device_logs.report.bugreport_large:
+  zh-CN: Bugreport 超过 128 MB，未加入诊断包。
+  en: Bugreport exceeds 128 MB and was not added to the bundle.
+device_logs.report.invalid_image:
+  zh-CN: 截图数据无效或超过单项采集上限。
+  en: Screenshot data is invalid or exceeds the per-item collection limit.
+device_logs.report.truncated:
+  zh-CN: 此项目达到 512 KB 采集上限，内容可能不完整。
+  en: This item reached the 512 KB collection limit and may be incomplete.

@@ -10,7 +10,7 @@ const DATA_DIR_ENV: &str = "SHELLRS_DATA_DIR";
 /// data lives there instead of in the user's profile.
 pub const PORTABLE_DATA: &str = "data";
 
-/// The folder of a portable copy that its `shellrs` command is copied into,
+/// The folder of a portable copy that its `shelllf-cli` command is copied into,
 /// for the PATH (设置 › 外部 CLI).
 pub const PORTABLE_BIN: &str = "bin";
 
@@ -97,13 +97,13 @@ pub fn analytics_path() -> PathBuf {
     data_dir().join("analytics.json")
 }
 
-/// Where the running app listens for the `shellrs` command. The command
+/// Where the running app listens for the `shelllf-cli` command. The command
 /// and the app both ask here, so both follow `SHELLRS_DATA_DIR`.
 pub fn cli_socket_path() -> PathBuf {
     cli_endpoint(&data_dir())
 }
 
-/// Where an app keeping its data in `dir` listens for the `shellrs`
+/// Where an app keeping its data in `dir` listens for the `shelllf-cli`
 /// command: a socket in that directory, or on Windows a named pipe.
 ///
 /// Pipe names are one namespace for the whole machine, so the name is made
@@ -137,7 +137,7 @@ pub fn portable_root() -> Option<&'static Path> {
 }
 
 /// The portable folder `exe` belongs to: its own folder when that has a
-/// `data` folder, or, for the `shellrs` command copied into a portable
+/// `data` folder, or, for the `shelllf-cli` command copied into a portable
 /// copy's `bin`, the folder above. Never a folder the setup program
 /// installed into.
 pub(crate) fn portable_root_of(exe: &Path) -> Option<PathBuf> {
@@ -193,7 +193,7 @@ mod tests {
         fs::remove_file(&exe).unwrap();
         assert_eq!(portable_root_of(&branded).as_deref(), Some(root.path()));
         // Its console program finds the same folder.
-        let cli = root.path().join("shellrs-cli.exe");
+        let cli = root.path().join("shelllf-cli.exe");
         assert_eq!(portable_root_of(&cli).as_deref(), Some(root.path()));
     }
 
@@ -218,7 +218,7 @@ mod tests {
         let bin = root.path().join("BIN");
         fs::create_dir(&bin).unwrap();
         fs::create_dir(root.path().join(PORTABLE_DATA)).unwrap();
-        let command = bin.join("shellrs.exe");
+        let command = bin.join("shelllf-cli.exe");
         // Only beside the program it belongs to.
         assert_eq!(portable_root_of(&command), None);
         fs::write(root.path().join("shellrs.exe"), "").unwrap();
@@ -226,7 +226,7 @@ mod tests {
         // Any other folder above is not looked at.
         let other = root.path().join("tools");
         fs::create_dir(&other).unwrap();
-        assert_eq!(portable_root_of(&other.join("shellrs.exe")), None);
+        assert_eq!(portable_root_of(&other.join("shelllf-cli.exe")), None);
     }
 
     #[test]

@@ -15,6 +15,7 @@ pub mod app_lock;
 pub mod cli;
 pub mod connection;
 pub mod credential;
+pub mod device_logs;
 pub mod docker;
 pub mod editor;
 pub mod explorer;

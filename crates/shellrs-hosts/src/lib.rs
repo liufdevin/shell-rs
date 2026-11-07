@@ -13,6 +13,7 @@
 mod credential;
 mod data;
 mod database;
+mod device_log_settings;
 mod forward;
 mod login;
 mod mark;
@@ -35,6 +36,7 @@ pub use data::{
     SecretsWritten, SyncExport, read_secrets,
 };
 pub use database::{HostDatabase, OpenError, StoredData};
+pub use device_log_settings::DeviceLogSettings;
 pub use forward::*;
 pub use gpui_shared_string::SharedString;
 pub use login::{

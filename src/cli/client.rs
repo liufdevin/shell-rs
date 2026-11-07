@@ -48,7 +48,7 @@ impl Console<'_> {
             });
             let _ = writeln!(self.stdout, "{}", ascii_json(&error));
         } else {
-            let _ = writeln!(self.stderr, "shellrs: [{}] {message}", code.as_str());
+            let _ = writeln!(self.stderr, "shelllf-cli: [{}] {message}", code.as_str());
         }
         FAILURE_EXIT
     }

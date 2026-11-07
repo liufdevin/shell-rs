@@ -15,6 +15,7 @@ mod compose;
 mod connection;
 mod credential;
 mod detached;
+mod device_logs;
 mod docker;
 mod editor;
 mod encoding;

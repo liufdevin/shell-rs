@@ -1,7 +1,7 @@
-//! Putting `shellrs` on the PATH the Windows way. A link would need an
+//! Putting `shelllf-cli` on the PATH the Windows way. A link would need an
 //! administrator or developer mode there, and the app is a GUI program
 //! anyway, so the command is a copy of the console program
-//! `shellrs-cli.exe` in a folder of ShellRS's own, and that folder goes on
+//! `shelllf-cli.exe` in a folder of ShellRS's own, and that folder goes on
 //! the user's PATH. Plain file work apart from the registry, so the tests
 //! run everywhere, with the PATH kept in a file.
 
@@ -284,12 +284,12 @@ mod tests {
     }
 
     fn paths(root: &Path) -> IntegrationPaths {
-        let exe = root.join("app").join("shellrs-cli.exe");
+        let exe = root.join("app").join("shelllf-cli.exe");
         fs::create_dir_all(exe.parent().unwrap()).unwrap();
         fs::write(&exe, "build 1").unwrap();
         IntegrationPaths {
             home: root.join("home"),
-            bin_link: root.join("ShellRS").join("bin").join("shellrs.exe"),
+            bin_link: root.join("ShellRS").join("bin").join("shelllf-cli.exe"),
             exe,
             user_path: Some(UserPath::File(root.join("PATH.txt"))),
         }
@@ -360,7 +360,7 @@ mod tests {
             .unwrap()
             .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
             .collect();
-        assert_eq!(names, ["shellrs.exe"]);
+        assert_eq!(names, ["shelllf-cli.exe"]);
     }
 
     #[test]

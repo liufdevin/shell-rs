@@ -321,7 +321,7 @@ fn failures_carry_their_code_and_exit_255() {
     assert!(
         String::from_utf8(stderr)
             .unwrap()
-            .starts_with("shellrs: [host_key_unknown]")
+            .starts_with("shelllf-cli: [host_key_unknown]")
     );
 
     let (code, _, stderr) = run(
@@ -373,7 +373,7 @@ fn with_the_switch_off_nothing_reaches_the_backend() {
     assert_eq!(code, 255);
     assert!(stdout.is_empty());
     let stderr = String::from_utf8(stderr).unwrap();
-    assert!(stderr.starts_with("shellrs: [not_enabled]"));
+    assert!(stderr.starts_with("shelllf-cli: [not_enabled]"));
     assert!(stderr.contains("设置 → 外部 CLI"));
     assert!(fixture.backend.calls.lock().unwrap().is_empty());
 }
@@ -390,7 +390,7 @@ fn without_the_app_the_command_says_it_is_not_running() {
     assert!(
         String::from_utf8(stderr)
             .unwrap()
-            .starts_with("shellrs: [not_running]")
+            .starts_with("shelllf-cli: [not_running]")
     );
 
     // Nor when a crashed app left its socket behind, with nobody on it.
@@ -405,7 +405,7 @@ fn without_the_app_the_command_says_it_is_not_running() {
         assert!(
             String::from_utf8(stderr)
                 .unwrap()
-                .starts_with("shellrs: [not_running]")
+                .starts_with("shelllf-cli: [not_running]")
         );
     }
 }
@@ -450,7 +450,7 @@ fn opening_shellrs_again_brings_the_running_one_forward() {
     assert!(
         String::from_utf8(stderr)
             .unwrap()
-            .starts_with("shellrs: [not_enabled]")
+            .starts_with("shelllf-cli: [not_enabled]")
     );
     assert_eq!(fixture.server.take_activation(), None);
 }
@@ -631,7 +631,7 @@ fn the_socket_belongs_to_one_app_at_a_time_and_goes_with_it() {
     assert!(
         String::from_utf8(stderr)
             .unwrap()
-            .starts_with("shellrs: [not_running]")
+            .starts_with("shelllf-cli: [not_running]")
     );
     #[cfg(unix)]
     {
@@ -939,7 +939,7 @@ fn a_change_waits_for_the_app_and_comes_back_as_it_made_it() {
     assert_eq!(code, 255);
     assert_eq!(
         String::from_utf8(stderr).unwrap(),
-        "shellrs: [host_in_use] 主机「x」有打开的标签\n"
+        "shelllf-cli: [host_in_use] 主机「x」有打开的标签\n"
     );
 }
 
@@ -996,7 +996,7 @@ fn with_the_switch_off_no_change_reaches_the_app() {
     assert!(
         String::from_utf8(stderr)
             .unwrap()
-            .starts_with("shellrs: [not_enabled]")
+            .starts_with("shelllf-cli: [not_enabled]")
     );
     assert!(fixture.server.take_change().is_none());
 }
@@ -1082,7 +1082,7 @@ fn showing_a_host_or_a_credential_says_what_is_saved_and_never_what() {
     assert!(
         String::from_utf8(stderr)
             .unwrap()
-            .starts_with("shellrs: [credential_not_found]")
+            .starts_with("shelllf-cli: [credential_not_found]")
     );
 }
 
@@ -1179,7 +1179,7 @@ fn an_app_that_does_not_know_the_command_is_said_to_be_older() {
     assert!(
         String::from_utf8(stderr)
             .unwrap()
-            .starts_with("shellrs: [version_mismatch] 正在运行的 ShellLF 不认识这个命令"),
+            .starts_with("shelllf-cli: [version_mismatch] 正在运行的 ShellLF 不认识这个命令"),
     );
 }
 
@@ -1307,7 +1307,7 @@ fn a_run_that_cannot_be_typed_says_why() {
         let (exit, stderr) = command.join().unwrap();
         assert_eq!(exit, 255);
         assert!(
-            stderr.starts_with(&format!("shellrs: [{code}] ")),
+            stderr.starts_with(&format!("shelllf-cli: [{code}] ")),
             "{stderr}"
         );
         stderr

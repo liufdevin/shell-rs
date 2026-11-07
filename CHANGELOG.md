@@ -8,6 +8,11 @@ One section per version, titled `## [version]`, optionally followed by a date. E
 
 ### Added
 
+- Device logs support Android app/PID/Tag, time and crash filters; Ubuntu system/service/file sources; and service-detail shortcuts, bookmarks and copying complete entries.
+- Export diagnostic ZIP bundles for Android and Ubuntu with selectable system, resource, log and service/app information. Android optionally includes screenshots and a device-matched full bugreport; a manifest records failures and truncation.
+
+- Added opt-in per-host device logs in the right sidebar: Android logcat and Linux dmesg, refreshed every second with pause, local clear, severity and keyword filters, and export. Optional Android su or non-interactive Linux sudo is checked before use.
+
 - Local terminals support a separate, automatically detected Cmder installation with its own title bar button, without changing the regular local shell.
 
 - Terminal notifications include an optional new-output indicator: background terminal tabs show a red dot for unread output, cleared when viewed.

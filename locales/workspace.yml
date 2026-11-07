@@ -220,11 +220,11 @@ workspace.cli.start_failed:
   zh-CN: 外部 CLI 无法启动
   en: The external CLI couldn’t start
 workspace.cli.install_command_failed:
-  zh-CN: 无法安装 shellrs 命令
-  en: Couldn’t install the shellrs command
+  zh-CN: 无法安装 shelllf-cli 命令
+  en: Couldn’t install the shelllf-cli command
 workspace.cli.remove_command_failed:
-  zh-CN: 无法移除 shellrs 命令
-  en: Couldn’t remove the shellrs command
+  zh-CN: 无法移除 shelllf-cli 命令
+  en: Couldn’t remove the shelllf-cli command
 workspace.cli.install_skill_failed:
   zh-CN: 无法安装 skill
   en: Couldn’t install the skill

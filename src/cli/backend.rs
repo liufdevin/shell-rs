@@ -143,7 +143,7 @@ impl CliBackend for SshCliBackend {
             Ok(ExecExit::Signal(signal)) => {
                 let _ = output(
                     ExecStream::Stderr,
-                    format!("shellrs: {}\n", t!("cli.exec.signal", signal = signal)).as_bytes(),
+                    format!("shelllf-cli: {}\n", t!("cli.exec.signal", signal = signal)).as_bytes(),
                 );
                 Ok(signal_exit_code(&signal))
             }
