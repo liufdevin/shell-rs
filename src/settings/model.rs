@@ -380,6 +380,9 @@ pub struct LocalTerminalSettings {
     /// shell, found anew each time.
     pub shell: Option<String>,
     pub cmder_directory: Option<std::path::PathBuf>,
+    /// Where a new local terminal starts when no saved folder applies.
+    /// `None` is the home folder.
+    pub start_directory: Option<std::path::PathBuf>,
     /// 保留终端内容: a 项目 terminal's last lines of output, kept when it
     /// closes and drawn again when it opens. On until the user turns it off.
     pub keep_output: bool,
@@ -390,6 +393,7 @@ impl Default for LocalTerminalSettings {
         Self {
             shell: None,
             cmder_directory: None,
+            start_directory: None,
             keep_output: true,
         }
     }
@@ -916,9 +920,18 @@ mod tests {
     #[test]
     fn terminal_output_is_kept_unless_turned_off() {
         assert!(AppSettings::default().local_terminal.keep_output);
+        assert_eq!(AppSettings::default().local_terminal.start_directory, None);
         let read: AppSettings =
             serde_json::from_str(r#"{"local_terminal":{"shell":"/bin/zsh"}}"#).unwrap();
         assert!(read.local_terminal.keep_output);
+        assert_eq!(read.local_terminal.start_directory, None);
+        let read: AppSettings =
+            serde_json::from_str(r#"{"local_terminal":{"start_directory":"/code/project"}}"#)
+                .unwrap();
+        assert_eq!(
+            read.local_terminal.start_directory,
+            Some(std::path::PathBuf::from("/code/project"))
+        );
         let read: AppSettings =
             serde_json::from_str(r#"{"local_terminal":{"keep_output":false}}"#).unwrap();
         assert!(!read.local_terminal.keep_output);

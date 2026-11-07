@@ -331,6 +331,21 @@ settings.local_terminal.shell:
 settings.local_terminal.shell_description:
   zh-CN: 新开或重新启动的本地终端运行的程序：路径或命令，可以带参数。留空时自动检测系统默认的 shell。
   en: "The program new and restarted local terminals run: a path or a command, with any arguments. Leave it empty to use the system’s default shell."
+settings.local_terminal.start_directory:
+  zh-CN: 默认起始目录
+  en: Default start folder
+settings.local_terminal.start_directory_description:
+  zh-CN: 新建本地终端和 Cmder 终端默认在这里打开；留空使用用户主目录。已保存的项目终端仍优先回到自己的目录。
+  en: New local and Cmder terminals start here by default; leave it empty for the home folder. Saved project terminals still return to their own folders first.
+settings.local_terminal.start_directory_keywords:
+  zh-CN: 目录,文件夹,起始,默认,本地终端,Cmder
+  en: folder,directory,start,default,local terminal,Cmder
+settings.local_terminal.start_home:
+  zh-CN: 用户主目录
+  en: Home folder
+settings.local_terminal.browse_directory:
+  zh-CN: 选择文件夹…
+  en: Choose folder…
 # The empty field and the first choice of its menu, with the shell that
 # runs: 「自动检测（/bin/zsh）」.
 settings.local_terminal.automatic:

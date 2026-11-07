@@ -56,7 +56,10 @@ pub use highlight::{
 pub use input::{TerminalInput, TerminalInputEvent};
 pub use kept_output::KEPT_LINES;
 pub use local_pty::LocalPtyTransportProvider;
-pub use local_shell::{LocalLaunch, LocalShell, default_shell_name, installed_shells, quote_word};
+pub use local_shell::{
+    LocalLaunch, LocalShell, LocalTerminalKind, LocalTerminalStart, default_shell_name,
+    installed_shells, quote_word,
+};
 pub use local_terminal_panel::{LocalTerminalPanel, LocalTerminalPanelEvent, SavedName};
 pub use model::TerminalTabIndicators;
 pub use model::{

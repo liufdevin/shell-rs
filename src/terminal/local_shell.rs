@@ -12,6 +12,40 @@ use portable_pty::CommandBuilder;
 
 use crate::i18n::t;
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum LocalTerminalKind {
+    #[default]
+    Shell,
+    Cmder,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct LocalTerminalStart {
+    pub kind: LocalTerminalKind,
+    pub directory: Option<PathBuf>,
+    pub administrator: bool,
+}
+
+impl LocalTerminalStart {
+    pub fn new(kind: LocalTerminalKind) -> Self {
+        Self {
+            kind,
+            ..Self::default()
+        }
+    }
+
+    pub fn with_directory(mut self, directory: PathBuf) -> Self {
+        self.directory = Some(directory);
+        self
+    }
+
+    pub fn with_administrator(mut self, administrator: bool) -> Self {
+        self.administrator = administrator;
+        self
+    }
+}
+
 /// The program a local terminal runs, as the user wrote it: a path or a
 /// command, with any arguments. Without one, the system's default shell.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

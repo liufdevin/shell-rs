@@ -7,10 +7,305 @@ use gpui_kit::component::Placement;
 use gpui_kit::component::dock::{DockPlacement, InsertTarget, PanelId};
 use shellrs::app::{
     CloseLocalTerminal, CloseSavedTerminal, DeleteSavedTerminal, DeleteTerminalGroup,
-    NewSavedTerminal, OpenSavedTerminal, RestartLocalTerminal, ToolKind,
+    NewSavedTerminal, OpenLocalTerminalOptions, OpenSavedTerminal, RestartLocalTerminal,
+    StartLocalTerminal, ToolKind,
 };
 use shellrs::host::{SavedTerminalId, SavedTerminalTab, TerminalGroupId};
-use shellrs::terminal::LocalLaunch;
+use shellrs::terminal::{LocalLaunch, LocalTerminalKind, LocalTerminalStart};
+
+#[gpui_kit::test]
+async fn pending_local_launch_keeps_the_shell_selected_when_clicked(cx: &mut TestAppContext) {
+    let root = tempfile::tempdir().unwrap();
+    let local = fake_local_terminals();
+    let (handle, workspace) = open_with_local(cx, HostStore::empty(), local.clone());
+    let settings = cx.update(|cx| workspace.read(cx).settings().clone());
+    cx.update(|cx| {
+        settings.update(cx, |store, cx| {
+            store.update(
+                |settings| {
+                    settings.local_terminal.start_directory = Some(root.path().to_path_buf());
+                    settings.local_terminal.shell = Some("cmd.exe /D".into());
+                },
+                cx,
+            );
+        })
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.click("new-local-terminal", cx);
+        settings.update(cx, |store, cx| {
+            store.update(
+                |settings| settings.local_terminal.shell = Some("powershell.exe -NoLogo".into()),
+                cx,
+            );
+        });
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(5), |_, _| {
+        !local.launches().is_empty()
+    })
+    .await;
+    assert_eq!(local.launches()[0].shell.command(), Some("cmd.exe /D"));
+    assert_eq!(local.launches()[0].directory.as_deref(), Some(root.path()));
+}
+
+#[gpui_kit::test]
+async fn new_local_terminals_use_the_global_start_folder(cx: &mut TestAppContext) {
+    let root = tempfile::tempdir().unwrap();
+    let local = fake_local_terminals();
+    let (handle, workspace) = open_with_local(cx, HostStore::empty(), local.clone());
+    let settings = cx.update(|cx| workspace.read(cx).settings().clone());
+    cx.update(|cx| {
+        settings.update(cx, |store, cx| {
+            store.update(
+                |settings| {
+                    settings.local_terminal.start_directory = Some(root.path().to_path_buf())
+                },
+                cx,
+            )
+        })
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.click("new-local-terminal", cx)
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(5), |_, _| {
+        !local.launches().is_empty()
+    })
+    .await;
+    assert_eq!(
+        local.launches().last().unwrap().directory.as_deref(),
+        Some(root.path())
+    );
+}
+
+#[gpui_kit::test]
+async fn start_options_choose_a_folder_for_one_local_terminal(cx: &mut TestAppContext) {
+    let chosen = tempfile::tempdir().unwrap();
+    let default = tempfile::tempdir().unwrap();
+    let local = fake_local_terminals();
+    let (handle, workspace) = open_with_local(cx, HostStore::empty(), local.clone());
+    let settings = cx.update(|cx| workspace.read(cx).settings().clone());
+    cx.update(|cx| {
+        settings.update(cx, |store, cx| {
+            store.update(
+                |settings| {
+                    settings.local_terminal.start_directory = Some(default.path().to_path_buf())
+                },
+                cx,
+            )
+        })
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.dispatch_action(
+            Box::new(OpenLocalTerminalOptions(LocalTerminalKind::Shell)),
+            cx,
+        );
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.click("browse-local-terminal-directory", cx);
+    });
+    cx.simulate_path_prompt_response(|options| {
+        assert!(options.directories && !options.files);
+        Some(vec![chosen.path().to_path_buf()])
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(5), |window, cx| {
+        window.render_frame(cx);
+        window.find("local-terminal-directory").value()
+            == Some(chosen.path().to_string_lossy().as_ref())
+    })
+    .await;
+    in_frame(cx, handle, |window, cx| {
+        window.click("start-local-terminal", cx);
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(5), |_, _| {
+        !local.launches().is_empty()
+    })
+    .await;
+    assert_eq!(
+        local.launches().last().unwrap().directory.as_deref(),
+        Some(chosen.path())
+    );
+    cx.update(|cx| {
+        assert_eq!(
+            settings
+                .read(cx)
+                .settings()
+                .local_terminal
+                .start_directory
+                .as_deref(),
+            Some(default.path())
+        )
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.dispatch_action(Box::new(RestartLocalTerminal(LocalTerminalId(1))), cx);
+    });
+    assert_eq!(
+        local.launches().last().unwrap().directory.as_deref(),
+        Some(chosen.path())
+    );
+}
+
+#[gpui_kit::test]
+async fn start_actions_open_the_requested_kind_and_folder(cx: &mut TestAppContext) {
+    let root = tempfile::tempdir().unwrap();
+    let local = fake_local_terminals();
+    let (handle, _) = open_with_local(cx, HostStore::empty(), local.clone());
+    in_frame(cx, handle, |window, cx| {
+        window.dispatch_action(
+            Box::new(StartLocalTerminal(
+                LocalTerminalStart::new(LocalTerminalKind::Shell)
+                    .with_directory(root.path().to_path_buf()),
+            )),
+            cx,
+        );
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(5), |_, _| {
+        !local.launches().is_empty()
+    })
+    .await;
+    let launch = local.launches().last().unwrap().clone();
+    assert_eq!(launch.directory.as_deref(), Some(root.path()));
+}
+
+#[derive(Default)]
+struct RecordedAdministratorLaunches(Mutex<Vec<shellrs::workspace::AdminTerminalRequest>>);
+
+impl shellrs::workspace::AdministratorTerminalLauncher for RecordedAdministratorLaunches {
+    fn launch(&self, request: &shellrs::workspace::AdminTerminalRequest) -> Result<bool, String> {
+        self.0.lock().unwrap().push(request.clone());
+        Ok(false)
+    }
+}
+
+#[gpui_kit::test]
+async fn administrator_launch_uses_the_global_folder_without_opening_a_normal_tab(
+    cx: &mut TestAppContext,
+) {
+    let root = tempfile::tempdir().unwrap();
+    let local = fake_local_terminals();
+    let (handle, workspace) = open_with_local(cx, HostStore::empty(), local.clone());
+    let recorder = Arc::new(RecordedAdministratorLaunches::default());
+    cx.update(|cx| {
+        workspace.update(cx, |workspace, cx| {
+            workspace.set_administrator_launcher(recorder.clone());
+            workspace.settings().update(cx, |store, cx| {
+                store.update(
+                    |settings| {
+                        settings.local_terminal.start_directory = Some(root.path().to_path_buf());
+                        settings.local_terminal.shell = Some("cmd.exe /D".into());
+                    },
+                    cx,
+                );
+            });
+        });
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.dispatch_action(
+            Box::new(StartLocalTerminal(
+                LocalTerminalStart::new(LocalTerminalKind::Shell).with_administrator(true),
+            )),
+            cx,
+        );
+        window.dispatch_action(
+            Box::new(StartLocalTerminal(
+                LocalTerminalStart::new(LocalTerminalKind::Shell).with_administrator(true),
+            )),
+            cx,
+        );
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(5), |_, _| {
+        !recorder.0.lock().unwrap().is_empty()
+    })
+    .await;
+    let recorded = recorder.0.lock().unwrap()[0].clone();
+    cx.run_until_parked();
+    assert_eq!(recorder.0.lock().unwrap().len(), 1);
+    assert_eq!(recorded.kind(), LocalTerminalKind::Shell);
+    assert_eq!(recorded.directory(), Some(root.path()));
+    assert_eq!(recorded.shell(), Some("cmd.exe /D"));
+    assert!(local.launches().is_empty());
+    in_frame(cx, handle, |window, cx| {
+        window.dispatch_action(
+            Box::new(StartLocalTerminal(
+                LocalTerminalStart::new(LocalTerminalKind::Shell).with_administrator(true),
+            )),
+            cx,
+        );
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(5), |_, _| {
+        recorder.0.lock().unwrap().len() == 2
+    })
+    .await;
+}
+
+#[gpui_kit::test]
+async fn an_invalid_start_folder_keeps_the_dialog_open_without_launching(cx: &mut TestAppContext) {
+    let root = tempfile::tempdir().unwrap();
+    let local = fake_local_terminals();
+    let (handle, _) = open_with_local(cx, HostStore::empty(), local.clone());
+    in_frame(cx, handle, |window, cx| {
+        window.dispatch_action(
+            Box::new(OpenLocalTerminalOptions(LocalTerminalKind::Shell)),
+            cx,
+        );
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.click("browse-local-terminal-directory", cx)
+    });
+    cx.simulate_path_prompt_response(|_| Some(vec![root.path().join("not-created")]));
+    cx.wait_for(handle.into(), Duration::from_secs(5), |window, cx| {
+        window.render_frame(cx);
+        window.try_find("local-terminal-directory-error").is_some()
+    })
+    .await;
+    in_frame(cx, handle, |window, cx| {
+        window.click("start-local-terminal", cx)
+    });
+    cx.executor().advance_clock(Duration::from_secs(1));
+    cx.run_until_parked();
+    assert!(local.launches().is_empty());
+}
+
+#[cfg(windows)]
+#[gpui_kit::test]
+async fn cmder_uses_the_global_start_folder(cx: &mut TestAppContext) {
+    let root = tempfile::tempdir().unwrap();
+    let working = tempfile::tempdir().unwrap();
+    std::fs::create_dir(root.path().join("vendor")).unwrap();
+    std::fs::write(root.path().join("vendor/init.bat"), b"@echo off").unwrap();
+    let local = fake_local_terminals();
+    let (handle, workspace) = open_with_local(cx, HostStore::empty(), local.clone());
+    cx.update(|cx| {
+        let settings = workspace.read(cx).settings().clone();
+        settings.update(cx, |store, cx| {
+            store.update(
+                |settings| {
+                    settings.local_terminal.cmder_directory = Some(root.path().to_path_buf());
+                    settings.local_terminal.start_directory = Some(working.path().to_path_buf());
+                },
+                cx,
+            );
+        });
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(5), |window, cx| {
+        window.render_frame(cx);
+        window.try_find("new-cmder-terminal").is_some()
+    })
+    .await;
+    in_frame(cx, handle, |window, cx| {
+        window.click("new-cmder-terminal", cx)
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(5), |_, _| {
+        !local.launches().is_empty()
+    })
+    .await;
+    assert_eq!(
+        local.launches()[0].directory.as_deref(),
+        Some(working.path())
+    );
+    assert_eq!(
+        local.launches()[0].shell.cmder_directory(),
+        Some(&dunce::canonicalize(root.path()).unwrap())
+    );
+}
 
 /// The groups and terminals of `projects_store`, in the order made.
 const SHELLRS: TerminalGroupId = TerminalGroupId(1);

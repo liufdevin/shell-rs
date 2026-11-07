@@ -127,6 +127,19 @@ fn without_the_app_the_command_says_so_and_exits_255() {
     );
 }
 
+#[test]
+fn invalid_administrator_arguments_exit_without_starting_the_app() {
+    let data_dir = tempfile::tempdir().unwrap();
+    assert_eq!(
+        open_shellrs(
+            data_dir.path(),
+            &["--admin-terminal=shell", "--admin-directory=invalid"]
+        ),
+        Some(2),
+    );
+    assert_eq!(std::fs::read_dir(data_dir.path()).unwrap().count(), 0);
+}
+
 /// A portable copy's command, copied into its `bin` for the PATH, finds that
 /// copy's app by where it sits, without `SHELLRS_DATA_DIR`.
 #[cfg(windows)]

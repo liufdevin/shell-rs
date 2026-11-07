@@ -105,6 +105,63 @@ workspace.title_bar.local_terminal:
 workspace.title_bar.new_local_terminal:
   zh-CN: 新建本地终端
   en: New local terminal
+workspace.title_bar.start_options:
+  zh-CN: 启动选项…
+  en: Start options…
+workspace.title_bar.administrator_window:
+  zh-CN: 以管理员身份新建…
+  en: New as administrator…
+workspace.local_terminal.options.local:
+  zh-CN: 新建本地终端
+  en: New local terminal
+workspace.local_terminal.options.cmder:
+  zh-CN: 新建 Cmder 终端
+  en: New Cmder terminal
+workspace.local_terminal.options.directory:
+  zh-CN: 起始目录
+  en: Start folder
+workspace.local_terminal.options.browse:
+  zh-CN: 选择文件夹…
+  en: Choose folder…
+workspace.local_terminal.options.invalid_directory:
+  zh-CN: 请填写存在的文件夹绝对路径。
+  en: Enter the absolute path of an existing folder.
+workspace.local_terminal.options.checking_directory:
+  zh-CN: 正在检查目录…
+  en: Checking folder…
+workspace.local_terminal.options.administrator:
+  zh-CN: 在独立管理员窗口中运行
+  en: Run in a separate administrator window
+workspace.local_terminal.options.administrator_note:
+  zh-CN: 勾选后在独立的 ShellLF 窗口中打开，Windows 会在需要时请求授权。
+  en: Opens in a separate ShellLF window. Windows requests authorization when needed.
+workspace.local_terminal.options.current_elevation:
+  zh-CN: ShellLF 当前已有管理员权限，新建的本地终端会继承此权限。
+  en: ShellLF is already elevated; new local terminals inherit this privilege.
+workspace.local_terminal.options.cancelled:
+  zh-CN: 已取消管理员终端启动。
+  en: Administrator terminal launch cancelled.
+workspace.local_terminal.options.elevation_required:
+  zh-CN: 管理员终端需要通过 Windows 授权后启动。
+  en: Start administrator terminals through Windows authorization.
+workspace.local_terminal.options.invalid_arguments:
+  zh-CN: 管理员终端启动参数无效，请从 ShellLF 的新建终端菜单重试。
+  en: Invalid administrator terminal arguments. Retry from ShellLF's new terminal menu.
+workspace.local_terminal.options.start:
+  zh-CN: 创建
+  en: Create
+workspace.local_terminal.options.start_failed:
+  zh-CN: "无法启动管理员终端：%{error}"
+  en: "Couldn’t start the administrator terminal: %{error}"
+workspace.local_terminal.options.administrator_unsupported:
+  zh-CN: 此系统不支持管理员终端。
+  en: Administrator terminals aren’t supported on this system.
+workspace.local_terminal.options.admin_window:
+  zh-CN: ShellLF · 管理员终端
+  en: ShellLF · Administrator terminal
+workspace.local_terminal.options.admin_cmder_window:
+  zh-CN: ShellLF · 管理员 Cmder 终端
+  en: ShellLF · Administrator Cmder terminal
 workspace.title_bar.to_light:
   zh-CN: 切换为浅色
   en: Switch to light

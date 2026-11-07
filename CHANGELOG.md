@@ -10,6 +10,7 @@ One section per version, titled `## [version]`, optionally followed by a date. E
 
 - Device logs support Android app/PID/Tag, time and crash filters; Ubuntu system/service/file sources; and service-detail shortcuts, bookmarks and copying complete entries.
 - Export diagnostic ZIP bundles for Android and Ubuntu with selectable system, resource, log and service/app information. Android optionally includes screenshots and a device-matched full bugreport; a manifest records failures and truncation.
+- New local and Cmder terminals accept a start folder for that launch, with a global default folder in Settings. Windows can open a separate ShellLF administrator terminal window.
 
 - Added opt-in per-host device logs in the right sidebar: Android logcat and Linux dmesg, refreshed every second with pause, local clear, severity and keyword filters, and export. Optional Android su or non-interactive Linux sudo is checked before use.
 
@@ -30,6 +31,8 @@ One section per version, titled `## [version]`, optionally followed by a date. E
 - The monitor uses a compact pause indicator instead of a multiline notice that shifts the data. Unsupported ADB devices show a shorter mirroring message.
 
 ### Fixed
+
+- Keep local terminal launch settings stable during directory checks, prevent overlapping administrator authorization requests, and reject invalid administrator arguments instead of starting the regular app.
 
 - New-output tab indicators ignore CLI cursor, title and color changes and identical text redraws, avoiding false unread dots from idle refreshes after a response finishes.
 

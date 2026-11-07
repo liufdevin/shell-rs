@@ -1,17 +1,20 @@
 use gpui_kit::component::{
     ActiveTheme as _, IconName, Selectable as _, Sizable as _, TITLE_BAR_HEIGHT, TitleBar,
-    button::{Button, ButtonGroup, ButtonVariants as _},
+    button::{Button, ButtonGroup, ButtonVariants as _, DropdownButton},
     h_flex,
+    menu::PopupMenuItem,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::app::{
-    CatalogIcon, NewLocalTerminal, NewTemporaryConnection, OpenAdbDevices, QuickConnect,
-    ShowCredentials, ShowForwards, ShowHosts, ShowUpdate, ToggleHostPanel, ToggleTheme,
+    CatalogIcon, NewCmderTerminal, NewLocalTerminal, NewTemporaryConnection, OpenAdbDevices,
+    OpenLocalTerminalOptions, QuickConnect, ShowCredentials, ShowForwards, ShowHosts, ShowUpdate,
+    StartLocalTerminal, ToggleHostPanel, ToggleTheme,
 };
 use crate::i18n::t;
 use crate::shared::tinted;
+use crate::terminal::{LocalTerminalKind, LocalTerminalStart};
 use crate::update::UpdateBadge;
 
 use super::sidebar::SidebarMode;
@@ -148,33 +151,23 @@ pub fn render_title_bar(
                             temporary.dispatch_action(&NewTemporaryConnection, window, cx)
                         }),
                 )
-                .child(
-                    Button::new("new-local-terminal")
-                        .ghost()
-                        .small()
-                        .icon(CatalogIcon::Terminal)
-                        .accessibility_label(t!("workspace.title_bar.local_terminal"))
-                        .tooltip_with_action(
-                            t!("workspace.title_bar.new_local_terminal"),
-                            &NewLocalTerminal,
-                            None,
-                        )
-                        .on_click(move |_, window, cx| {
-                            new_local.dispatch_action(&NewLocalTerminal, window, cx)
-                        }),
-                )
+                .child(local_terminal_button(
+                    "new-local-terminal",
+                    CatalogIcon::Terminal,
+                    t!("workspace.title_bar.local_terminal"),
+                    t!("workspace.title_bar.new_local_terminal"),
+                    LocalTerminalKind::Shell,
+                    new_local.clone(),
+                ))
                 .when(cmder_available, |row| {
-                    row.child(
-                        Button::new("new-cmder-terminal")
-                            .ghost()
-                            .small()
-                            .icon(CatalogIcon::SquareTerminal)
-                            .tooltip(t!("workspace.title_bar.new_cmder_terminal"))
-                            .accessibility_label(t!("workspace.title_bar.new_cmder_terminal"))
-                            .on_click(move |_, window, cx| {
-                                cmder.dispatch_action(&crate::app::NewCmderTerminal, window, cx)
-                            }),
-                    )
+                    row.child(local_terminal_button(
+                        "new-cmder-terminal",
+                        CatalogIcon::SquareTerminal,
+                        t!("workspace.title_bar.new_cmder_terminal"),
+                        t!("workspace.title_bar.new_cmder_terminal"),
+                        LocalTerminalKind::Cmder,
+                        cmder,
+                    ))
                 })
                 .children(update.map(|update| {
                     // The one coloured button up here, in the colour of
@@ -211,6 +204,62 @@ pub fn render_title_bar(
                         }),
                 ),
         )
+}
+
+fn local_terminal_button(
+    id: &'static str,
+    icon: CatalogIcon,
+    accessibility: SharedString,
+    tooltip: SharedString,
+    kind: LocalTerminalKind,
+    target: FocusHandle,
+) -> DropdownButton {
+    let action_target = target.clone();
+    DropdownButton::new(SharedString::from(format!("{id}-menu")))
+        .ghost()
+        .small()
+        .button(
+            Button::new(id)
+                .ghost()
+                .small()
+                .icon(icon)
+                .accessibility_label(accessibility)
+                .tooltip(tooltip)
+                .on_click(move |_, window, cx| match kind {
+                    LocalTerminalKind::Shell => {
+                        action_target.dispatch_action(&NewLocalTerminal, window, cx)
+                    }
+                    LocalTerminalKind::Cmder => {
+                        action_target.dispatch_action(&NewCmderTerminal, window, cx)
+                    }
+                }),
+        )
+        .dropdown_menu(move |menu, _, _| {
+            let options = target.clone();
+            let administrator = target.clone();
+            menu.item(
+                PopupMenuItem::new(t!("workspace.title_bar.start_options")).on_click(
+                    move |_, window, cx| {
+                        options.dispatch_action(&OpenLocalTerminalOptions(kind), window, cx)
+                    },
+                ),
+            )
+            .item(
+                PopupMenuItem::new(t!("workspace.title_bar.administrator_window"))
+                    .disabled(!cfg!(windows))
+                    .on_click(move |_, window, cx| {
+                        administrator.dispatch_action(
+                            &StartLocalTerminal(LocalTerminalStart {
+                                kind,
+                                administrator: true,
+                                ..LocalTerminalStart::default()
+                            }),
+                            window,
+                            cx,
+                        )
+                    }),
+            )
+        })
 }
 
 /// Position against the workspace, whose left edge is also the dock's,

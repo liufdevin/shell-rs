@@ -453,6 +453,7 @@ fn terminal_groups(panel: &SettingsPanel, cx: &App) -> Vec<SettingGroup> {
 /// arguments has the page's width.
 fn local_terminal_group(panel: &SettingsPanel) -> SettingGroup {
     let (editor, reset) = (panel.local_shell.clone(), panel.local_shell.clone());
+    let start_editor = panel.local_shell.clone();
     let store = panel.store.clone();
     let (reader, writer) = (panel.store.clone(), panel.store.clone());
     let cmder_editor = panel.local_shell.clone();
@@ -472,6 +473,17 @@ fn local_terminal_group(panel: &SettingsPanel) -> SettingGroup {
             .description(t!("settings.local_terminal.shell_description"))
             .layout(Axis::Vertical)
             .keywords(keywords(t!("settings.local_terminal.keywords"))),
+            SettingItem::new(
+                t!("settings.local_terminal.start_directory"),
+                SettingField::render(move |options, _, cx| {
+                    super::local_shell_editor::start_directory_field(&start_editor, options, cx)
+                }),
+            )
+            .layout(Axis::Vertical)
+            .description(t!("settings.local_terminal.start_directory_description"))
+            .keywords(keywords(t!(
+                "settings.local_terminal.start_directory_keywords"
+            ))),
             SettingItem::new(
                 t!("settings.local_terminal.keep_output"),
                 SettingField::switch(

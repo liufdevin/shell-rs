@@ -33,13 +33,13 @@ use crate::app::{
     ExplorerShortcut, FindInTerminal, FindNextInTerminal, FindPreviousInTerminal, FocusSearch,
     InstallAgentSkill, InstallCliCommand, MaximizeWindow, MoveHostNode, NewChildGroup,
     NewCommandTerminal, NewGroup, NewHost, NewHostInGroup, NewLocalTerminal,
-    NewTemporaryConnection, OpenExplorer, OpenSettings, PasteTerminal, QuickConnect,
-    ReconnectTerminal, RefreshCliIntegration, RemoveAgentSkill, RemoveCliCommand, RenameExplorer,
-    RenameGroup, RenameTerminal, RestartLocalTerminal, RestoreWindow, ReturnDetachedTab,
-    SelectAllTerminal, SendBreak, SendSerialHex, SetFileSizeFormat, ShowOrHideApp,
-    StartTerminalRecording, StopTerminalRecording, ToggleHiddenFiles, ToggleHostPanel,
-    ToggleTerminalFindOption, ToggleTheme, ToolKind, ZoomIn, ZoomOut, ZoomReset, ZoomTerminalIn,
-    ZoomTerminalOut, ZoomTerminalReset,
+    NewTemporaryConnection, OpenExplorer, OpenLocalTerminalOptions, OpenSettings, PasteTerminal,
+    QuickConnect, ReconnectTerminal, RefreshCliIntegration, RemoveAgentSkill, RemoveCliCommand,
+    RenameExplorer, RenameGroup, RenameTerminal, RestartLocalTerminal, RestoreWindow,
+    ReturnDetachedTab, SelectAllTerminal, SendBreak, SendSerialHex, SetFileSizeFormat,
+    ShowOrHideApp, StartLocalTerminal, StartTerminalRecording, StopTerminalRecording,
+    ToggleHiddenFiles, ToggleHostPanel, ToggleTerminalFindOption, ToggleTheme, ToolKind, ZoomIn,
+    ZoomOut, ZoomReset, ZoomTerminalIn, ZoomTerminalOut, ZoomTerminalReset,
 };
 use crate::app::{
     ClearTerminalLog, DeleteTerminalLog, ToggleSerialReceiveHex, ToggleSerialSendHex,
@@ -81,8 +81,8 @@ use crate::ssh::{
 use crate::sync::{SyncEvent, SyncService};
 use crate::terminal::{
     DEFAULT_FONT_SIZE, HostTerminalTransports, LocalPtyTransportProvider, LocalTerminalId,
-    LocalTerminalPanel, LocalTerminalPanelEvent, RemoteTerminalId, SavedName, SearchDirection,
-    SharedLocalTerminalTransportProvider, SharedRemoteTerminalTransportProvider,
+    LocalTerminalKind, LocalTerminalPanel, LocalTerminalPanelEvent, RemoteTerminalId, SavedName,
+    SearchDirection, SharedLocalTerminalTransportProvider, SharedRemoteTerminalTransportProvider,
     SharedSerialTerminalTransportProvider, SharedTelnetTerminalTransportProvider,
     SharedTerminalTransportFactory, TerminalCopy, TerminalPanel, TerminalPanelEvent, TerminalView,
 };
@@ -192,7 +192,7 @@ pub struct Workspace {
     pub(super) directory_follow: HashMap<RemoteTerminalId, super::follow::FollowState>,
     pub(super) local_terminals: HashMap<LocalTerminalId, Entity<LocalTerminalPanel>>,
     cmder: Entity<crate::terminal::Cmder>,
-    cmder_terminals: HashMap<LocalTerminalId, crate::terminal::LocalLaunch>,
+    pub(super) local_launches: HashMap<LocalTerminalId, crate::terminal::LocalLaunch>,
     /// The local terminals kept in 项目, by the tab each is open in.
     pub(super) saved_terminals: HashMap<LocalTerminalId, SavedTerminalId>,
     /// The saved terminal's tab in front last, for the next launch to put
@@ -221,6 +221,9 @@ pub struct Workspace {
     /// one that only records.
     pub(super) analytics: Option<super::analytics::Reporting>,
     local_terminal_provider: SharedLocalTerminalTransportProvider,
+    administrator_launcher:
+        Option<Arc<dyn super::local_terminal_window::AdministratorTerminalLauncher>>,
+    administrator_launch_pending: bool,
     host_terminals: HostTerminalTransports,
     sftp_provider: SharedSftpTransportProvider,
     pub(super) adb_detector: Arc<dyn crate::adb::AdbDetector>,
@@ -317,6 +320,9 @@ impl Workspace {
             cx,
         );
         this.ssh_dir = dirs::home_dir().map(|home| home.join(".ssh"));
+        this.administrator_launcher = Some(Arc::new(
+            super::local_terminal_window::SystemAdministratorTerminalLauncher,
+        ));
         this.adb_detector = Arc::new(crate::adb::SystemAdbDetector);
         this.tools.update(cx, |tools, cx| {
             tools.set_monitor_connector(
@@ -752,7 +758,7 @@ impl Workspace {
             directory_follow: HashMap::new(),
             local_terminals,
             cmder,
-            cmder_terminals: HashMap::new(),
+            local_launches: HashMap::new(),
             saved_terminals,
             front_saved_terminal,
             settings_tab: None,
@@ -764,6 +770,8 @@ impl Workspace {
             sync,
             analytics: None,
             local_terminal_provider,
+            administrator_launcher: None,
+            administrator_launch_pending: false,
             host_terminals,
             sftp_provider,
             adb_detector: Arc::new(crate::adb::NoAdbDetector),
@@ -1047,6 +1055,13 @@ impl Workspace {
 
     pub fn settings(&self) -> &Entity<SettingsStore> {
         &self.settings
+    }
+
+    pub fn set_administrator_launcher(
+        &mut self,
+        launcher: Arc<dyn super::local_terminal_window::AdministratorTerminalLauncher>,
+    ) {
+        self.administrator_launcher = Some(launcher);
     }
 
     /// The running port forwards, for tests.
@@ -1595,8 +1610,123 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.open_local_terminal(None, window, cx);
-        self.count(Counter::LocalTerminal);
+        self.on_start_local_terminal(
+            &StartLocalTerminal(crate::terminal::LocalTerminalStart::new(
+                LocalTerminalKind::Shell,
+            )),
+            window,
+            cx,
+        );
+    }
+
+    fn on_open_local_terminal_options(
+        &mut self,
+        action: &OpenLocalTerminalOptions,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        super::local_terminal_options::open_local_terminal_options(
+            action.0,
+            self.settings.clone(),
+            self.focus_handle.clone(),
+            window,
+            cx,
+        );
+    }
+
+    fn on_start_local_terminal(
+        &mut self,
+        action: &StartLocalTerminal,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let start = &action.0;
+        if start.administrator {
+            if self.administrator_launch_pending {
+                return;
+            }
+            let cmder = self
+                .cmder
+                .read(cx)
+                .directory()
+                .map(std::path::Path::to_path_buf);
+            let request = super::local_terminal_window::AdminTerminalRequest::new(
+                start,
+                &self.settings.read(cx).settings(),
+                cmder,
+            );
+            let Some(launcher) = self.administrator_launcher.clone() else {
+                return;
+            };
+            self.administrator_launch_pending = true;
+            cx.spawn_in(window, async move |this, cx| {
+                let result = cx
+                    .background_spawn(async move { launcher.launch(&request) })
+                    .await;
+                this.update(cx, |this, _| {
+                    this.administrator_launch_pending = false;
+                })
+                .ok();
+                cx.update(|window, cx| match result {
+                    Ok(true) => {}
+                    Ok(false) => window.push_notification(
+                        Notification::info(t!("workspace.local_terminal.options.cancelled")),
+                        cx,
+                    ),
+                    Err(error) => window.push_notification(
+                        Notification::error(t!(
+                            "workspace.local_terminal.options.start_failed",
+                            error = error
+                        )),
+                        cx,
+                    ),
+                })
+                .ok();
+            })
+            .detach();
+            return;
+        }
+        let settings = self.settings.read(cx).settings();
+        let shell = match start.kind {
+            LocalTerminalKind::Shell => crate::terminal::LocalShell::new(
+                settings.local_terminal.shell.as_deref().unwrap_or_default(),
+            ),
+            LocalTerminalKind::Cmder => {
+                let Some(directory) = self.cmder.read(cx).directory() else {
+                    return;
+                };
+                crate::terminal::LocalShell::cmder(directory.to_path_buf())
+            }
+        };
+        let mut launch = crate::terminal::LocalLaunch::new(shell);
+        launch.directory = start
+            .directory
+            .clone()
+            .or(settings.local_terminal.start_directory);
+        let directory = launch.directory.clone();
+        if let Some(directory) = directory {
+            cx.spawn_in(window, async move |this, cx| {
+                let valid = cx
+                    .background_spawn(async move { directory.is_absolute() && directory.is_dir() })
+                    .await;
+                this.update_in(cx, |this, window, cx| {
+                    if valid {
+                        this.open_configured_local_terminal(launch, window, cx);
+                    } else {
+                        window.push_notification(
+                            Notification::error(t!(
+                                "workspace.local_terminal.options.invalid_directory"
+                            )),
+                            cx,
+                        );
+                    }
+                })
+                .ok();
+            })
+            .detach();
+        } else {
+            self.open_configured_local_terminal(launch, window, cx);
+        }
     }
 
     fn on_new_cmder_terminal(
@@ -1605,20 +1735,26 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(directory) = self
-            .cmder
-            .read(cx)
-            .directory()
-            .map(std::path::Path::to_path_buf)
-        else {
-            return;
-        };
-        let launch =
-            crate::terminal::LocalLaunch::new(crate::terminal::LocalShell::cmder(directory));
+        self.on_start_local_terminal(
+            &StartLocalTerminal(crate::terminal::LocalTerminalStart::new(
+                LocalTerminalKind::Cmder,
+            )),
+            window,
+            cx,
+        );
+    }
+
+    fn open_configured_local_terminal(
+        &mut self,
+        launch: crate::terminal::LocalLaunch,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let cmder = launch.shell.cmder_directory().is_some();
         let factory = self.local_terminal_provider.factory_for(&launch);
         let id = LocalTerminalId(self.next_local_terminal_id);
         self.next_local_terminal_id += 1;
-        let name = Some(SavedName {
+        let name = cmder.then(|| SavedName {
             name: "Cmder".into(),
             fixed: true,
             title: None,
@@ -1633,7 +1769,10 @@ impl Workspace {
             cx,
         ));
         self.local_terminals.insert(id, panel.clone());
-        self.cmder_terminals.insert(id, launch);
+        self.local_launches.insert(id, launch);
+        if !cmder {
+            self.count(Counter::LocalTerminal);
+        }
         self.dock_area.update(cx, |area, cx| {
             area.add_panel_view(panel_handle(panel), DockPlacement::Center, None, window, cx);
         });
@@ -1682,9 +1821,30 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> LocalTerminalId {
+        self.open_local_terminal_at(None, saved, window, cx)
+    }
+
+    pub(super) fn open_local_terminal_at(
+        &mut self,
+        directory: Option<PathBuf>,
+        saved: Option<&SavedTerminal>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> LocalTerminalId {
         let id = LocalTerminalId(self.next_local_terminal_id);
         self.next_local_terminal_id += 1;
-        let factory = self.local_terminal_factory(saved, true, cx);
+        let settings = self.settings.read(cx).settings();
+        let replay = saved.and_then(|saved| {
+            super::projects::kept_replay(self.store.read(cx), &settings, saved.id)
+        });
+        let mut launch = super::projects::local_launch(&settings, saved, replay);
+        if directory.is_some() {
+            launch.directory = directory;
+        }
+        let factory = self.local_terminal_provider.factory_for(&launch);
+        if saved.is_none() {
+            self.local_launches.insert(id, launch);
+        }
         let name = saved.map(super::projects::saved_name);
         let (panel, subscription) = new_local_terminal_panel(id, factory, name, window, cx);
         self._subscriptions.push(subscription);
@@ -2341,10 +2501,22 @@ impl Workspace {
                 .cloned();
             let factory = if panel.read(cx).is_command_terminal() {
                 crate::terminal::command_terminal_factory()
-            } else if let Some(launch) = self.cmder_terminals.get(&action.0) {
-                self.local_terminal_provider.factory_for(launch)
+            } else if let Some(launch) = self.local_launches.get(&action.0) {
+                let mut launch = launch.clone();
+                if launch.shell.cmder_directory().is_none() {
+                    launch.shell = crate::terminal::LocalShell::new(
+                        self.settings
+                            .read(cx)
+                            .settings()
+                            .local_terminal
+                            .shell
+                            .as_deref()
+                            .unwrap_or_default(),
+                    );
+                }
+                self.local_terminal_provider.factory_for(&launch)
             } else {
-                self.local_terminal_factory(saved.as_ref(), false, cx)
+                self.local_terminal_factory(saved.as_ref(), None, false, cx)
             };
             panel.update(cx, |panel, cx| panel.restart(factory, window, cx));
         }
@@ -2357,6 +2529,7 @@ impl Workspace {
     fn local_terminal_factory(
         &self,
         saved: Option<&SavedTerminal>,
+        directory: Option<PathBuf>,
         opening: bool,
         cx: &App,
     ) -> SharedTerminalTransportFactory {
@@ -2364,8 +2537,11 @@ impl Workspace {
         let replay = saved.filter(|_| opening).and_then(|saved| {
             super::projects::kept_replay(self.store.read(cx), &settings, saved.id)
         });
-        self.local_terminal_provider
-            .factory_for(&super::projects::local_launch(&settings, saved, replay))
+        let mut launch = super::projects::local_launch(&settings, saved, replay);
+        if directory.is_some() {
+            launch.directory = directory;
+        }
+        self.local_terminal_provider.factory_for(&launch)
     }
 
     /// The terminal of the center tab shown most recently, remote or local.
@@ -3350,7 +3526,7 @@ fn new_local_terminal_panel(
                 this.finish_detached_tab(CenterTab::LocalTerminal(*id), cx);
                 this.keep_what_it_shows(*id, panel, cx);
                 this.local_terminals.remove(id);
-                this.cmder_terminals.remove(id);
+                this.local_launches.remove(id);
                 this.saved_terminals.remove(id);
                 if this.front_saved_terminal == Some(*id) {
                     this.front_saved_terminal = None;
@@ -3468,6 +3644,8 @@ impl Workspace {
             .on_action(cx.listener(Self::on_new_temporary_connection))
             .on_action(cx.listener(Self::on_quick_connect))
             .on_action(cx.listener(Self::on_new_local_terminal))
+            .on_action(cx.listener(Self::on_open_local_terminal_options))
+            .on_action(cx.listener(Self::on_start_local_terminal))
             .on_action(cx.listener(Self::on_new_cmder_terminal))
             .on_action(cx.listener(Self::on_new_command_terminal))
             .on_action(cx.listener(Self::on_toggle_terminal_broadcast))

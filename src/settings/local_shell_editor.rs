@@ -25,6 +25,7 @@ pub struct LocalShellEditor {
     store: Entity<SettingsStore>,
     input: Entity<InputState>,
     cmder_input: Entity<InputState>,
+    start_input: Entity<InputState>,
     cmder: Entity<crate::terminal::Cmder>,
     /// What 自动检测 runs here, and the shells installed; `None` until the
     /// look in the background comes back.
@@ -64,6 +65,19 @@ impl LocalShellEditor {
                         .unwrap_or_default(),
                 )
         });
+        let start_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(t!("settings.local_terminal.start_home"))
+                .default_value(
+                    store
+                        .read(cx)
+                        .settings()
+                        .local_terminal
+                        .start_directory
+                        .map(|path| path.to_string_lossy().into_owned())
+                        .unwrap_or_default(),
+                )
+        });
         let subscriptions = vec![
             cx.observe(&cmder, |_, _, cx| cx.notify()),
             cx.subscribe(&cmder_input, |this, input, event: &InputEvent, cx| {
@@ -84,6 +98,18 @@ impl LocalShellEditor {
                     this.write(Some(shell), cx);
                 }
             }),
+            cx.subscribe(&start_input, |this, input, event: &InputEvent, cx| {
+                if matches!(event, InputEvent::Change) {
+                    let value = input.read(cx).value().trim().to_owned();
+                    let path = (!value.is_empty()).then(|| std::path::PathBuf::from(value));
+                    this.store.update(cx, |store, cx| {
+                        store.update(
+                            |settings| settings.local_terminal.start_directory = path,
+                            cx,
+                        )
+                    });
+                }
+            }),
             // The field's own edits come back the same, but for the blanks
             // around them; anything else (重置, the settings file read
             // anew) shows in it.
@@ -98,6 +124,17 @@ impl LocalShellEditor {
                 if this.cmder_input.read(cx).value().trim() != cmder {
                     this.cmder_input
                         .update(cx, |input, cx| input.set_value(cmder, window, cx));
+                }
+                let start = store
+                    .read(cx)
+                    .settings()
+                    .local_terminal
+                    .start_directory
+                    .map(|path| path.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                if this.start_input.read(cx).value().trim() != start {
+                    this.start_input
+                        .update(cx, |input, cx| input.set_value(start, window, cx));
                 }
                 let shell = stored(&store, cx).unwrap_or_default();
                 if this.input.read(cx).value().trim() != shell {
@@ -129,6 +166,7 @@ impl LocalShellEditor {
             store,
             input,
             cmder_input,
+            start_input,
             cmder,
             found: None,
             _subscriptions: subscriptions,
@@ -152,6 +190,9 @@ impl LocalShellEditor {
         let placeholder = self.automatic_label();
         self.input.update(cx, |input, cx| {
             input.set_placeholder(placeholder, window, cx)
+        });
+        self.start_input.update(cx, |input, cx| {
+            input.set_placeholder(t!("settings.local_terminal.start_home"), window, cx)
         });
     }
 
@@ -197,6 +238,88 @@ impl LocalShellEditor {
             store.update(|settings| settings.local_terminal.shell = shell, cx)
         });
     }
+}
+
+pub(super) fn start_directory_field(
+    editor: &Entity<LocalShellEditor>,
+    options: &RenderOptions,
+    cx: &App,
+) -> Div {
+    let this = editor.read(cx);
+    let (choose, reset) = (editor.downgrade(), editor.downgrade());
+    h_flex()
+        .w_full()
+        .gap_2()
+        .child(
+            Input::new(&this.start_input)
+                .id("local-start-directory")
+                .aria_label(t!("settings.local_terminal.start_directory"))
+                .with_size(options.size())
+                .flex_1()
+                .min_w_0(),
+        )
+        .child(
+            Button::new("browse-local-start")
+                .outline()
+                .with_size(options.size())
+                .label(t!("settings.local_terminal.browse_directory"))
+                .on_click(move |_, _, cx| {
+                    let receiver = cx.prompt_for_paths(PathPromptOptions {
+                        files: false,
+                        directories: true,
+                        multiple: false,
+                        prompt: Some(t!("settings.local_terminal.browse_directory")),
+                    });
+                    let editor = choose.clone();
+                    cx.spawn(async move |cx| {
+                        let Ok(Ok(Some(paths))) = receiver.await else {
+                            return;
+                        };
+                        let Some(path) = paths.into_iter().next() else {
+                            return;
+                        };
+                        editor
+                            .update(cx, |editor, cx| {
+                                editor.store.update(cx, |store, cx| {
+                                    store.update(
+                                        |settings| {
+                                            settings.local_terminal.start_directory = Some(path)
+                                        },
+                                        cx,
+                                    )
+                                })
+                            })
+                            .ok();
+                    })
+                    .detach();
+                }),
+        )
+        .child(
+            Button::new("reset-local-start")
+                .ghost()
+                .with_size(options.size())
+                .label(t!("settings.local_terminal.start_home"))
+                .disabled(
+                    this.store
+                        .read(cx)
+                        .settings()
+                        .local_terminal
+                        .start_directory
+                        .is_none(),
+                )
+                .on_click(move |_, _, cx| {
+                    reset
+                        .update(cx, |editor, cx| {
+                            editor.store.update(cx, |store, cx| {
+                                store.update(
+                                    |settings| settings.local_terminal.start_directory = None,
+                                    cx,
+                                )
+                            })
+                        })
+                        .ok();
+                }),
+        )
 }
 
 /// The shell the settings hold, `None` for the default.

@@ -2,6 +2,67 @@
 
 use crate::support::*;
 
+#[gpui_kit::test]
+async fn default_start_folder_can_be_chosen_and_reset_from_settings(cx: &mut TestAppContext) {
+    let root = tempfile::tempdir().unwrap();
+    let (handle, workspace) = open_workspace(cx);
+    in_frame(cx, handle, |window, cx| window.click("open-settings", cx));
+    in_frame(cx, handle, |window, cx| {
+        window.within("settings").click("0-1", cx)
+    });
+    let position = in_frame(cx, handle, |window, _| {
+        window.find("terminal-font-preview").bounds().center()
+    });
+    for _ in 0..5 {
+        in_frame(cx, handle, |window, cx| {
+            window.dispatch_event(
+                gpui_kit::ScrollWheelEvent {
+                    position,
+                    delta: gpui_kit::ScrollDelta::Pixels(point(px(0.), px(-550.))),
+                    modifiers: gpui_kit::Modifiers::default(),
+                    touch_phase: gpui_kit::TouchPhase::Moved,
+                }
+                .to_platform_input(),
+                cx,
+            );
+        });
+    }
+    in_frame(cx, handle, |window, cx| {
+        window.click("browse-local-start", cx)
+    });
+    cx.simulate_path_prompt_response(|options| {
+        assert!(options.directories && !options.files);
+        Some(vec![root.path().to_path_buf()])
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(5), |_, cx| {
+        workspace
+            .read(cx)
+            .settings()
+            .read(cx)
+            .settings()
+            .local_terminal
+            .start_directory
+            .as_deref()
+            == Some(root.path())
+    })
+    .await;
+    in_frame(cx, handle, |window, cx| {
+        window.click("reset-local-start", cx)
+    });
+    cx.update(|cx| {
+        assert!(
+            workspace
+                .read(cx)
+                .settings()
+                .read(cx)
+                .settings()
+                .local_terminal
+                .start_directory
+                .is_none()
+        );
+    });
+}
+
 #[cfg(windows)]
 #[gpui_kit::test]
 async fn cmder_settings_choose_a_directory_and_return_to_auto_detection(cx: &mut TestAppContext) {

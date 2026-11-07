@@ -22,7 +22,10 @@ use crate::{
     monitor::MonitorDetail,
     processes::ProcessSort,
     services::ServiceCommand,
-    terminal::{LocalTerminalId, RemoteTerminalId, TerminalFindOption},
+    terminal::{
+        LocalTerminalId, LocalTerminalKind, LocalTerminalStart, RemoteTerminalId,
+        TerminalFindOption,
+    },
 };
 
 gpui_kit::actions!(
@@ -265,6 +268,11 @@ macro_rules! id_actions {
 id_actions! {
     AdbDeviceAction(crate::adb::DeviceCommand);
     DeviceLogAction(crate::device_logs::DeviceLogCommand);
+    /// Ask where a new local or Cmder terminal starts, and whether it opens
+    /// in an administrator window.
+    OpenLocalTerminalOptions(LocalTerminalKind);
+    /// Open the local terminal the options describe.
+    StartLocalTerminal(LocalTerminalStart);
     RemoveTerminalScheme(String);
     /// Open a new terminal connection for a host.
     ConnectHost(HostId);

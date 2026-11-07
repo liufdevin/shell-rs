@@ -10,6 +10,19 @@ use shellrs::settings::{SettingsProblem, SettingsStore};
 
 fn main() {
     let args = shellrs::cli::command_line_arguments().unwrap_or_default();
+    let admin_terminal = match shellrs::workspace::AdminTerminalRequest::parse_startup(&args) {
+        Ok(request) => request,
+        Err(error) => {
+            eprintln!("{error}");
+            std::process::exit(2);
+        }
+    };
+    if let Some(request) = &admin_terminal
+        && let Err(error) = request.validate_elevation()
+    {
+        eprintln!("{error}");
+        std::process::exit(1);
+    }
     // `ShellRS ssh://user@host:port` or `ShellRS -url … -newtab 名称`: a
     // bastion host opening ShellRS the way it opens Xshell. On every build,
     // a Windows release build above all, where bastion hosts run it.
@@ -18,14 +31,16 @@ fn main() {
     // Windows release build, which has nowhere to print: there the command
     // is `shelllf-cli.exe`, which 设置 → 外部 CLI puts on the PATH.
     #[cfg(any(not(windows), debug_assertions))]
-    if link.is_none() && !args.is_empty() {
+    if admin_terminal.is_none() && link.is_none() && !args.is_empty() {
         std::process::exit(shellrs::cli::main(args));
     }
     // One ShellRS per data directory. Each keeps the hosts in memory and
     // writes its changes through, so a second one would write over the
     // first one's; opened again, ShellRS brings the running one forward
     // and hands it the link.
-    if shellrs::cli::activate_running_app(&shellrs::app::cli_socket_path(), link.clone()) {
+    if admin_terminal.is_none()
+        && shellrs::cli::activate_running_app(&shellrs::app::cli_socket_path(), link.clone())
+    {
         return;
     }
     let app = gpui_kit::application().with_assets(shellrs::app::AppAssets);
@@ -54,9 +69,13 @@ fn main() {
         };
         shellrs::init(cx);
         // 显示或隐藏 ShellRS takes its key from the system; tests never do.
-        shellrs::app::listen_for_system_hotkey(cx);
         shellrs::app::show_logo_when_unbundled(cx);
         cx.activate(true);
+        if let Some(request) = admin_terminal {
+            shellrs::workspace::open_admin_terminal_window(request, &settings.settings(), cx);
+            return;
+        }
+        shellrs::app::listen_for_system_hotkey(cx);
 
         let saved = shellrs::workspace::WindowState::load(&shellrs::app::window_state_path());
         let options =

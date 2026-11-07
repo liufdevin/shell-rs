@@ -288,6 +288,9 @@ impl Workspace {
         folder: &Path,
         cx: &mut Context<Self>,
     ) {
+        if let Some(launch) = self.local_launches.get_mut(&tab) {
+            launch.directory = Some(folder.to_path_buf());
+        }
         let (Some(id), Some(folder)) = (self.saved_terminals.get(&tab).copied(), folder.to_str())
         else {
             return;
@@ -432,7 +435,8 @@ pub(super) fn local_launch(
     LocalLaunch {
         directory: saved
             .and_then(|terminal| terminal.directory.as_deref())
-            .map(PathBuf::from),
+            .map(PathBuf::from)
+            .or_else(|| settings.local_terminal.start_directory.clone()),
         replay,
         ..LocalLaunch::new(shell)
     }

@@ -18,6 +18,8 @@ mod forwards;
 mod front;
 mod imports;
 mod links;
+mod local_terminal_options;
+mod local_terminal_window;
 mod notices;
 mod projects;
 mod recent_hosts;
@@ -39,6 +41,10 @@ mod workspace_view;
 mod zmodem;
 
 pub use links::open_link_once_open;
+pub use local_terminal_window::{
+    AdminTerminalRequest, AdministratorTerminalLauncher, is_administrator,
+    open_admin_terminal_window,
+};
 pub use window_state::WindowState;
 pub use workspace_view::{Workspace, notify_once_open, window_options};
 
