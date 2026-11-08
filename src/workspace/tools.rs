@@ -104,9 +104,18 @@ impl Workspace {
     /// while it is on screen, else another that is.
     pub(super) fn tool_target(&self, cx: &App) -> Option<ToolTarget> {
         let visible = self.visible_center_tabs(cx);
-        self.tool_target_choice
+        let target = self
+            .tool_target_choice
             .filter(|target| visible.contains(&target.tab()))
-            .or_else(|| visible.iter().copied().find_map(ToolTarget::of))
+            .or_else(|| visible.iter().copied().find_map(ToolTarget::of));
+        target.filter(|target| match target {
+            ToolTarget::Local(id) => !self.lan_local_factories.contains_key(id),
+            ToolTarget::Remote(id) => self.terminals.get(id).is_none_or(|terminal| {
+                !self
+                    .lan_serial_transports
+                    .contains_key(&terminal.read(cx).host_id())
+            }),
+        })
     }
 
     /// The SSH terminal the right sidebar works on: none while it goes with

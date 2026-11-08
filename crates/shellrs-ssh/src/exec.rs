@@ -118,6 +118,19 @@ pub fn run_command(
     command: &str,
     output: &mut dyn FnMut(ExecStream, &[u8]) -> io::Result<()>,
 ) -> Result<ExecExit, ExecError> {
+    run_command_with_cancel(connector, config, command, output, &|| false)
+}
+
+pub fn run_command_with_cancel(
+    connector: &SshConnector,
+    config: &SshConnectionConfig,
+    command: &str,
+    output: &mut dyn FnMut(ExecStream, &[u8]) -> io::Result<()>,
+    cancelled: &(dyn Fn() -> bool + Sync),
+) -> Result<ExecExit, ExecError> {
+    if cancelled() {
+        return Err(ExecError::new(ExecErrorKind::Aborted, ExecFailure::Aborted));
+    }
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -127,7 +140,7 @@ pub fn run_command(
                 wrap(ExecFailure::RuntimeFailed, error),
             )
         })?;
-    runtime.block_on(run(connector, config, command, output))
+    runtime.block_on(run(connector, config, command, output, cancelled))
 }
 
 /// What the host-key check saw, which the connect error alone does not say.
@@ -142,6 +155,7 @@ async fn run(
     config: &SshConnectionConfig,
     command: &str,
     output: &mut dyn FnMut(ExecStream, &[u8]) -> io::Result<()>,
+    cancelled: &(dyn Fn() -> bool + Sync),
 ) -> Result<ExecExit, ExecError> {
     let seen = Arc::new(Mutex::new(HostKeySeen::default()));
     // Dropping the sender would read as a shutdown and cancel the login.
@@ -163,19 +177,26 @@ async fn run(
         })
     };
     let prompts = Arc::new(SshPrompts::new(events, shutdown).non_interactive());
-    let connected = timeout_excluding_prompts(
+    let connect = timeout_excluding_prompts(
         connector.connect(config, prompts.clone()),
         prompts.prompt_activity_receiver(),
         LOGIN_TIMEOUT,
-    )
-    .await
-    .and_then(|result| result);
+    );
+    let connected = tokio::select! {
+        connected = connect => connected.and_then(|result| result),
+        _ = wait_cancelled(cancelled) => return Err(ExecError::new(ExecErrorKind::Aborted, ExecFailure::Aborted)),
+    };
     let (handle, _) = connected.map_err(|error| login_failure(error, *lock(&seen), config))?;
 
-    let result = run_on(&handle, command, output).await;
-    let _ = handle
-        .disconnect(russh::Disconnect::ByApplication, "command finished", "en")
-        .await;
+    let result = tokio::select! {
+        result = run_on(&handle, command, output) => result,
+        _ = wait_cancelled(cancelled) => Err(ExecError::new(ExecErrorKind::Aborted, ExecFailure::Aborted)),
+    };
+    let _ = tokio::time::timeout(
+        Duration::from_secs(1),
+        handle.disconnect(russh::Disconnect::ByApplication, "command finished", "en"),
+    )
+    .await;
     result
 }
 
@@ -198,7 +219,8 @@ async fn run_on(
     // Until the channel closes, not just until EOF: the exit status can
     // arrive after the last output.
     loop {
-        match channel.wait().await {
+        let message = channel.wait().await;
+        match message {
             Some(ChannelMsg::Data { data }) => {
                 output(ExecStream::Stdout, &data).map_err(aborted)?
             }
@@ -219,6 +241,15 @@ async fn run_on(
         }
     }
     exit.ok_or_else(|| ExecError::new(ExecErrorKind::Connect, ExecFailure::Disconnected))
+}
+
+async fn wait_cancelled(cancelled: &(dyn Fn() -> bool + Sync)) {
+    loop {
+        if cancelled() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
 }
 
 /// Why logging in failed, sorted for the caller: the host key the check
@@ -245,4 +276,164 @@ fn login_failure(
         return ExecError::new(ExecErrorKind::MissingCredential, error);
     }
     ExecError::new(ExecErrorKind::Connect, error)
+}
+
+#[cfg(test)]
+mod cancellation_tests {
+    use super::*;
+    use std::net::TcpListener;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    };
+
+    struct NoSecrets;
+    impl crate::SecretSource for NoSecrets {
+        fn secret(
+            &self,
+            _: &crate::SecretRef,
+        ) -> anyhow::Result<Option<zeroize::Zeroizing<String>>> {
+            Ok(None)
+        }
+    }
+
+    #[test]
+    fn cancellation_interrupts_a_silent_login_without_waiting_for_its_timeout() {
+        let directory = tempfile::tempdir().unwrap();
+        let connector =
+            SshConnector::new(directory.path().join("known_hosts"), Arc::new(NoSecrets));
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (accepted, connected) = mpsc::channel();
+        let (close, closed) = mpsc::channel();
+        let server = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            accepted.send(()).unwrap();
+            let _ = closed.recv_timeout(Duration::from_secs(5));
+            drop(stream);
+        });
+        let configuration = SshConnectionConfig::from(&crate::HostLogin::new(
+            "127.0.0.1",
+            port,
+            "root",
+            crate::LoginMethod::NoPassword,
+        ));
+        let cancel = Arc::new(AtomicBool::new(false));
+        let check = cancel.clone();
+        let worker = std::thread::spawn(move || {
+            run_command_with_cancel(
+                &connector,
+                &configuration,
+                "true",
+                &mut |_, _| Ok(()),
+                &|| check.load(Ordering::Acquire),
+            )
+        });
+        connected.recv_timeout(Duration::from_secs(3)).unwrap();
+        let started = std::time::Instant::now();
+        cancel.store(true, Ordering::Release);
+        assert_eq!(
+            worker.join().unwrap().unwrap_err().kind,
+            ExecErrorKind::Aborted
+        );
+        assert!(started.elapsed() < Duration::from_secs(2));
+        let _ = close.send(());
+        server.join().unwrap();
+    }
+
+    struct SilentChannel {
+        opened: mpsc::Sender<()>,
+    }
+
+    impl russh::server::Handler for SilentChannel {
+        type Error = russh::Error;
+
+        async fn auth_none(&mut self, _: &str) -> Result<russh::server::Auth, Self::Error> {
+            Ok(russh::server::Auth::Accept)
+        }
+
+        async fn channel_open_session(
+            &mut self,
+            _: russh::Channel<russh::server::Msg>,
+            _: russh::server::ChannelOpenHandle,
+            _: &mut russh::server::Session,
+        ) -> Result<(), Self::Error> {
+            let _ = self.opened.send(());
+            std::future::pending().await
+        }
+    }
+
+    #[test]
+    fn cancellation_interrupts_a_server_that_never_answers_a_channel_request() {
+        let directory = tempfile::tempdir().unwrap();
+        let known_hosts = directory.path().join("known_hosts");
+        let connector = SshConnector::new(known_hosts.clone(), Arc::new(NoSecrets));
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let key = russh::keys::PrivateKey::random(
+            &mut russh::keys::key::safe_rng(),
+            russh::keys::Algorithm::Ed25519,
+        )
+        .unwrap();
+        russh::keys::known_hosts::learn_known_hosts_path(
+            "127.0.0.1",
+            port,
+            key.public_key(),
+            &known_hosts,
+        )
+        .unwrap();
+        let (opened, channel_requested) = mpsc::channel();
+        let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+        let server = std::thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            runtime.block_on(async move {
+                let listener = tokio::net::TcpListener::from_std(listener).unwrap();
+                let configuration = Arc::new(russh::server::Config {
+                    keys: vec![key],
+                    ..Default::default()
+                });
+                tokio::select! {
+                    _ = async {
+                        let (stream, _) = listener.accept().await.unwrap();
+                        let session = russh::server::run_stream(configuration, stream, SilentChannel { opened }).await.unwrap();
+                        let _ = session.await;
+                    } => {},
+                    _ = stopped => {},
+                }
+            });
+        });
+        let configuration = SshConnectionConfig::from(&crate::HostLogin::new(
+            "127.0.0.1",
+            port,
+            "root",
+            crate::LoginMethod::NoPassword,
+        ));
+        let cancel = Arc::new(AtomicBool::new(false));
+        let check = cancel.clone();
+        let (completed, result) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let outcome = run_command_with_cancel(
+                &connector,
+                &configuration,
+                "true",
+                &mut |_, _| Ok(()),
+                &|| check.load(Ordering::Acquire),
+            );
+            let _ = completed.send(outcome);
+        });
+        channel_requested
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap();
+        cancel.store(true, Ordering::Release);
+        let outcome = result.recv_timeout(Duration::from_secs(2));
+        let _ = stop.send(());
+        server.join().unwrap();
+        worker.join().unwrap();
+        assert_eq!(outcome.unwrap().unwrap_err().kind, ExecErrorKind::Aborted);
+    }
 }

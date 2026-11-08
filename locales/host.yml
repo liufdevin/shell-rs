@@ -814,6 +814,38 @@ host.import.title.ssh_config:
 host.import.title.known_hosts:
   zh-CN: 从 ~/.ssh/known_hosts 导入
   en: Import from ~/.ssh/known_hosts
+host.import.title.xshell:
+  zh-CN: 从 Xshell 导入
+  en: Import from Xshell
+host.import.choose_prompt.xshell:
+  zh-CN: 选择 Xshell 的 .xsh 文件，或含 .xsh 的未加密 .xts／ZIP 包
+  en: Choose Xshell .xsh files or an unencrypted .xts/ZIP archive containing .xsh files
+host.import.choose_prompt.xshell_folder:
+  zh-CN: 选择 Xshell 的 Sessions 目录
+  en: Choose the Xshell Sessions folder
+host.import.choose_folder:
+  zh-CN: 选择目录…
+  en: Choose folder…
+host.import.xshell.choose_source:
+  zh-CN: 请选择 .xsh 配置文件、未加密的 .xts／ZIP 包，或包含配置的 Sessions 目录
+  en: Choose .xsh files, an unencrypted .xts/ZIP archive, or a Sessions folder
+host.import.xshell.read_failed:
+  zh-CN: 无法读取所选配置。请检查文件权限，或从 Xshell 配置目录直接选择 .xsh 文件。仅支持包含 .xsh 的未加密 ZIP 格式导出包；每个文件最多 1 MiB，总计最多 32 MiB、10,000 个目录项，目录最多嵌套 32 层。
+  en: Could not read the selection. Check file permissions or choose .xsh files directly from the Xshell configuration folder. Only unencrypted ZIP-format archives containing .xsh files are supported. Limits are 1 MiB per file, 32 MiB total, 10,000 directory entries and 32 folder levels.
+host.import.note.xshell:
+  zh-CN: 迁移主机名称、协议、地址、端口、用户名、备注和目录分组。Xshell 保存的密码、私钥、代理、隧道和登录脚本不导入；连接时重新输入密码，或在下表选择已有凭据。依赖代理、格式无效或协议不支持的配置会跳过，现有主机不会被覆盖。
+  en: Imports names, protocols, addresses, ports, usernames, notes and folder groups. Saved passwords, private keys, proxies, tunnels and login scripts are not imported. Enter a password when connecting or choose an existing credential below. Proxy-dependent, invalid and unsupported configurations are skipped; existing hosts are not overwritten.
+host.import.note.xshell_skipped.one:
+  en: "%{count} configuration could not be imported and was skipped."
+host.import.note.xshell_skipped.other:
+  zh-CN: 已跳过 %{count} 个无法导入的配置。
+  en: "%{count} configurations could not be imported and were skipped."
+host.import.empty.xshell:
+  zh-CN: 未找到可导入的 SSH 或 Telnet 配置，请选择 .xsh 文件或包含这些文件的目录
+  en: No importable SSH or Telnet configurations were found. Choose .xsh files or a folder containing them.
+host.import.column.protocol_port:
+  zh-CN: 协议／端口
+  en: Protocol/port
 host.import.note.ssh_config:
   zh-CN: 列出 Host 行里写明名称的主机，通配符条目里的设置会带上。ProxyJump 和 ProxyCommand 不导入，主机按直接连接导入；Match 块不读。
   en: Lists the hosts named on Host lines, with the settings of the wildcard entries that match them. ProxyJump and ProxyCommand aren’t imported, so the hosts connect directly; Match blocks are skipped.

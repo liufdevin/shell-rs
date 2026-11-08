@@ -27,6 +27,7 @@ mod host_dialog;
 mod host_import;
 mod host_tree;
 mod kubernetes;
+mod lan;
 mod monitor;
 mod netstat;
 mod processes;

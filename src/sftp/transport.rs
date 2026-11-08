@@ -77,6 +77,7 @@ pub enum SftpRoute {
     Login,
     NetworkSidebar,
     ExternalSidebar(Arc<dyn FileTransportSource>),
+    External(Arc<dyn FileTransportSource>),
     /// A channel beside the shell of a remote terminal, on whichever
     /// connection the terminal has: the right sidebar's 文件. No login and
     /// no questions; it is up when the terminal is.
@@ -107,7 +108,9 @@ impl SshSftpTransportProvider {
 impl SftpTransportProvider for SshSftpTransportProvider {
     fn create(&self, login: &HostLogin, route: SftpRoute) -> Box<dyn SftpTransport> {
         let route = match route {
-            SftpRoute::ExternalSidebar(source) => return source.create(),
+            SftpRoute::ExternalSidebar(source) | SftpRoute::External(source) => {
+                return source.create();
+            }
             SftpRoute::Login | SftpRoute::NetworkSidebar => engine::SftpRoute::Login(login.clone()),
             SftpRoute::Terminal(channels) => engine::SftpRoute::Channel {
                 endpoint: login.endpoint(),

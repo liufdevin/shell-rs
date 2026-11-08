@@ -1,0 +1,308 @@
+_version: 2
+
+settings.category.lan:
+  zh-CN: 局域网协作
+  en: LAN cooperation
+lan.description:
+  zh-CN: 在局域网内配对两台 ShellLF，像本机终端一样使用对方白名单中的串口和 ADB 设备。设备在对方电脑上打开，数据经过加密传输。默认关闭，仅支持 IPv4 局域网。
+  en: Pair two ShellLF computers on your LAN and use whitelisted serial ports and ADB devices in interactive terminal tabs. Devices open on the sharing computer and traffic is encrypted. Off by default; IPv4 LAN only.
+lan.network_help:
+  zh-CN: 两端都需开启协作。使用 TCP 45838 加密连接、UDP 45837 发现设备；请在系统防火墙中允许 ShellLF 的私有网络入站连接。串口参数在被控电脑的主机配置中设置。
+  en: Enable cooperation on both computers. Encrypted connections use TCP 45838; discovery uses UDP 45837. Allow ShellLF inbound connections on private networks in the system firewall. Configure serial parameters in the sharing computer’s saved hosts.
+lan.pairing_expired:
+  zh-CN: 配对请求已过期或未能加入等待队列，请重新发起
+  en: The pairing request expired or could not be queued. Request pairing again.
+lan.access_refused:
+  zh-CN: 对方未授权此操作，或已撤销授权／取消共享，请刷新主机列表或重新配对
+  en: The other computer has not permitted this operation, revoked access or unshared the host. Refresh the host list or pair again.
+lan.cancelled:
+  zh-CN: 远程任务已取消或超时
+  en: The remote task was cancelled or timed out
+lan.output_limit:
+  zh-CN: 输出已达到第一版的 1 MiB 上限，任务已停止
+  en: Output reached this version’s 1 MiB limit and the task was stopped
+lan.host_key_unknown:
+  zh-CN: 请先在被控电脑连接此主机并确认主机密钥，再执行远程命令
+  en: Connect to this host on the sharing computer and verify its host key before executing remote commands
+lan.host_key_changed:
+  zh-CN: 共享主机的密钥已改变，请由被控电脑的用户核实
+  en: The shared host’s key has changed; its owner must verify it on the sharing computer
+lan.host_credentials_missing:
+  zh-CN: 被控电脑缺少可用凭据，请由其用户连接该主机并保存所需凭据
+  en: Usable credentials are missing on the sharing computer. Its owner must connect to the host and save the required credentials.
+lan.host_connect_failed:
+  zh-CN: 共享主机连接失败，请在被控电脑检查主机地址、路由与凭据
+  en: Could not connect to the shared host. Check its address, route and credentials on the sharing computer.
+lan.enable:
+  zh-CN: 开启协作
+  en: Enable cooperation
+lan.disable:
+  zh-CN: 关闭协作
+  en: Disable cooperation
+lan.discover:
+  zh-CN: 发现设备
+  en: Discover devices
+lan.working:
+  zh-CN: 正在处理…
+  en: Working…
+lan.ready:
+  zh-CN: 已就绪
+  en: Ready
+lan.unavailable:
+  zh-CN: 局域网协作尚未就绪、未开启或应用已锁定
+  en: LAN cooperation is not ready, disabled or the app is locked
+lan.password_help:
+  zh-CN: 配对密码（至少 12 个字符）。开启前必须设置。更换密码会撤销所有已授予的远程访问权限。
+  en: Pairing password (at least 12 characters). Required before enabling. Changing it revokes all granted remote access.
+lan.repeat_password:
+  zh-CN: 再次输入配对密码
+  en: Repeat pairing password
+lan.password_mismatch:
+  zh-CN: 两次密码必须一致，且至少为 12 个字符
+  en: Passwords must match and contain at least 12 characters
+lan.save_password:
+  zh-CN: 设置配对密码
+  en: Set pairing password
+lan.password_required:
+  zh-CN: 请先设置配对密码，再开启局域网协作
+  en: Set a pairing password before enabling LAN cooperation
+lan.shared_hosts:
+  zh-CN: 共享给配对设备的 SSH 主机
+  en: SSH hosts shared with paired devices
+lan.allow_execution:
+  zh-CN: 允许配对设备执行命令
+  en: Allow paired devices to execute commands
+lan.execution_help:
+  zh-CN: 默认仅查看。开启后，知道配对密码的设备可在选中的主机上按其登录账号的权限执行命令；也可逐台授予执行权限。取消共享、撤销授权或锁定应用会中止相关执行连接。
+  en: View-only by default. When enabled, devices knowing your pairing password can execute commands on selected hosts with their login accounts’ permissions. Execution can also be granted per device. Unsharing, revoking access or locking the app aborts affected execution connections.
+lan.connect:
+  zh-CN: 连接另一台电脑
+  en: Connect to another computer
+lan.inspect:
+  zh-CN: 连接设备…
+  en: Connect to device…
+lan.target_identity:
+  zh-CN: "目标：%{address}，设备公钥指纹：%{identity}"
+  en: "Target: %{address}. Device public-key fingerprint: %{identity}"
+lan.pair_code:
+  zh-CN: "配对核对码：%{code}"
+  en: "Pairing verification code: %{code}"
+lan.request_pair:
+  zh-CN: 请求对方确认
+  en: Request approval
+lan.remote_password:
+  zh-CN: 对方的配对密码（核对目标设备指纹后输入）
+  en: Other computer’s pairing password (verify its fingerprint first)
+lan.password_pair:
+  zh-CN: 使用密码配对
+  en: Pair with password
+lan.password_refused:
+  zh-CN: 配对密码不正确或尝试过于频繁，请核对后稍后重试
+  en: The pairing password is incorrect or attempts are too frequent. Check it and try again later.
+lan.waiting:
+  zh-CN: 已发送配对请求，等待对方接受或拒绝
+  en: Pairing requested; waiting for the other computer to accept or reject
+lan.paired:
+  zh-CN: 已配对，可查看对方共享的主机
+  en: Paired; you can view the shared hosts
+lan.rejected:
+  zh-CN: 对方电脑已拒绝本次配对请求
+  en: The other computer rejected this pairing request
+lan.blocked_by_device:
+  zh-CN: 你的 IP 已被对方电脑拉黑，请联系对方从黑名单中移除
+  en: Your IP address has been blocked by the other computer. Ask its owner to remove it from the blacklist.
+lan.failed:
+  zh-CN: "操作失败：%{reason}"
+  en: "Operation failed: %{reason}"
+lan.finished:
+  zh-CN: "命令已结束，退出码：%{code}"
+  en: "Command finished with exit code %{code}"
+lan.paired_devices:
+  zh-CN: 已配对的远程设备
+  en: Paired remote devices
+lan.view_hosts:
+  zh-CN: 查看共享主机
+  en: View shared hosts
+lan.forget:
+  zh-CN: 忘记设备
+  en: Forget device
+lan.execute:
+  zh-CN: 执行命令
+  en: Execute command
+lan.cancel:
+  zh-CN: 取消任务
+  en: Cancel task
+lan.authorized_devices:
+  zh-CN: 允许访问本机的设备
+  en: Devices allowed to access this computer
+lan.revoke:
+  zh-CN: 撤销授权
+  en: Revoke access
+lan.grant_execute:
+  zh-CN: 此设备可执行命令
+  en: This device may execute commands
+lan.blacklist:
+  zh-CN: IP 黑名单
+  en: IP blacklist
+lan.unblock:
+  zh-CN: 移出黑名单
+  en: Unblock
+lan.pair_request_title:
+  zh-CN: 是否接受局域网配对？
+  en: Accept LAN pairing?
+lan.pair_request_detail:
+  zh-CN: "设备「%{name}」（来源 IP：%{ip}）请求访问本机共享的 SSH 主机。"
+  en: "Device “%{name}” (source IP: %{ip}) requests access to this computer’s shared SSH hosts."
+lan.pair_permission:
+  zh-CN: 核对两端显示的配对码。“接受，仅查看”不授予串口或 ADB 控制权；“接受并允许设备控制”授予当前白名单设备的交互访问。密码配对成功则自动取得当前白名单设备权限。
+  en: Compare the verification codes on both computers. View-only acceptance grants no serial or ADB control. Accepting device control grants interactive access to the current whitelist. Successful password pairing grants the current whitelisted device permissions automatically.
+lan.devices.local_title:
+  zh-CN: 串口与 ADB 设备共享
+  en: Serial and ADB device sharing
+lan.devices.help:
+  zh-CN: 先在本机保存串口主机及波特率等参数，再加入白名单；ADB 设备需在本机完成 USB 调试授权后刷新。控制端在终端标签中实时读写，支持串口十六进制收发和 Break；不把设备映射为系统 COM 端口。
+  en: Save serial hosts and their baud rates on this computer, then whitelist them. Authorize USB debugging locally before refreshing ADB devices. The controller uses interactive terminal tabs, including serial hex input/output and Break. No system-wide COM port is created.
+lan.devices.enable:
+  zh-CN: 允许远程控制白名单中的串口和 ADB
+  en: Allow remote control of whitelisted serial and ADB devices
+lan.devices.refresh_local:
+  zh-CN: 刷新本机设备（含 ADB）
+  en: Refresh local devices (including ADB)
+lan.devices.whitelist:
+  zh-CN: 设备白名单
+  en: Device whitelist
+lan.devices.no_local:
+  zh-CN: 尚无可共享设备。请先保存串口主机，或连接并授权 ADB 设备后刷新。
+  en: No devices to share. Save a serial host, or connect and authorize an ADB device and refresh.
+lan.devices.serial:
+  zh-CN: 串口
+  en: Serial
+lan.devices.adb:
+  zh-CN: ADB
+  en: ADB
+lan.devices.remove_missing:
+  zh-CN: "移除已失效的白名单项：%{device}"
+  en: "Remove unavailable whitelist entry: %{device}"
+lan.devices.permissions:
+  zh-CN: 配对电脑的独立设备权限
+  en: Device permissions per paired computer
+lan.devices.permission_help:
+  zh-CN: 密码配对会自动授予当前白名单权限；确认式配对可选择允许设备控制。之后可在此逐项撤销或授权，撤权或取消白名单会立即断开受影响的设备通道，不影响其他已授权设备。新增白名单项不会自动授权给旧配对。仍知道密码的电脑可重新配对取得权限，长期禁止请拉黑 IP 或更换密码。
+  en: Password pairing grants the current whitelist automatically; approval pairing can grant device control explicitly. Adjust individual permissions here later. Revocation or unsharing disconnects affected streams without interrupting other authorized devices. New whitelist entries are not granted to existing pairs automatically. A computer still knowing the password can pair again; block its IP or change the password to prevent this.
+lan.devices.revoke_control:
+  zh-CN: 撤销此电脑的全部设备控制权
+  en: Revoke all device control for this computer
+lan.devices.view:
+  zh-CN: 查看串口与 ADB
+  en: View serial and ADB devices
+lan.devices.remote_title:
+  zh-CN: 对方授权的串口与 ADB
+  en: Serial and ADB devices shared with you
+lan.devices.select_peer:
+  zh-CN: 配对后，点击远程电脑的“查看串口与 ADB”。
+  en: After pairing, choose “View serial and ADB devices” on the remote computer.
+lan.devices.no_remote:
+  zh-CN: 对方尚未向本机授权可用设备。请检查对方的设备共享开关、白名单和本机的独立权限，或在白名单更新后重新配对。
+  en: No available devices are authorized for this computer. Check the other computer’s device-sharing switch, whitelist and per-computer permissions, or pair again after whitelist changes.
+lan.devices.open:
+  zh-CN: 打开交互终端
+  en: Open interactive terminal
+lan.devices.refresh_first:
+  zh-CN: 请先刷新对方的共享设备列表，再打开设备。
+  en: Refresh the remote device list before opening a device.
+lan.devices.active:
+  zh-CN: 本机正在共享的设备连接
+  en: Active shared-device connections on this computer
+lan.devices.disconnect:
+  zh-CN: 立即断开
+  en: Disconnect now
+lan.devices.audit:
+  zh-CN: 设备操作日志（最近 50 条）
+  en: Device activity log (latest 50)
+lan.devices.audit_help:
+  zh-CN: 本机持久保留最近 500 条连接、拒绝、权限变更和 Break 记录，以及连接收发字节数。不记录逐键输入、终端内容或密码。完整记录位于数据目录的 lan/device-audit.json。
+  en: The latest 500 connection, denial, permission-change and Break records and connection byte counts are saved locally. Keystrokes, terminal contents and passwords are not recorded. The complete log is in lan/device-audit.json under the data directory.
+lan.devices.audit_line:
+  zh-CN: "%{time} · %{action} · %{peer} · %{source} · %{device} · 收 %{incoming} / 发 %{outgoing} B · %{outcome}"
+  en: "%{time} · %{action} · %{peer} · %{source} · %{device} · In %{incoming} / out %{outgoing} B · %{outcome}"
+lan.devices.audit_sharing:
+  zh-CN: 修改共享范围
+  en: Sharing scope changed
+lan.devices.audit_permission:
+  zh-CN: 修改设备权限
+  en: Device permissions changed
+lan.devices.audit_open:
+  zh-CN: 请求打开设备
+  en: Device open requested
+lan.devices.audit_denied:
+  zh-CN: 拒绝设备操作
+  en: Device access denied
+lan.devices.audit_closed:
+  zh-CN: 设备连接结束
+  en: Device connection ended
+lan.devices.audit_break:
+  zh-CN: 发送 Break
+  en: Break requested
+lan.devices.audit_revoked:
+  zh-CN: 本机断开设备
+  en: Device disconnected locally
+lan.devices.accept_control:
+  zh-CN: 接受并允许设备控制
+  en: Accept and allow device control
+lan.devices.audit_failed:
+  zh-CN: "设备操作日志保存失败：%{reason}。请检查数据目录；新的设备操作和授权可能被拒绝。"
+  en: "Could not save the device activity log: %{reason}. Check the data directory; new device operations and grants may be refused."
+lan.devices.no_side_channels:
+  zh-CN: 此终端不提供旁路命令或监控。ADB 投屏、APK 安装和文件管理请从局域网设备列表打开。
+  en: Side-channel commands and monitoring are unavailable in this terminal. Open ADB mirroring, APK installation and files from the LAN device list.
+lan.devices.adb_tools:
+  zh-CN: 投屏 / 安装 APK…
+  en: Mirror / install APK…
+lan.devices.adb_files:
+  zh-CN: 文件管理…
+  en: Browse files…
+lan.devices.files_title:
+  zh-CN: ADB 文件
+  en: ADB files
+lan.devices.apk_too_large:
+  zh-CN: 远程 APK 安装最大支持 2 GiB，请选择较小的 APK 文件。
+  en: Remote APK installation supports files up to 2 GiB. Choose a smaller APK.
+lan.devices.adb_local_server_required:
+  zh-CN: 局域网 ADB 共享仅支持被控电脑的 127.0.0.1:5037。请移除自定义 ADB server 环境变量后重新刷新设备。
+  en: LAN ADB sharing requires the owning computer's server at 127.0.0.1:5037. Remove custom ADB server environment variables and refresh devices.
+lan.devices.access_denied:
+  zh-CN: 设备控制权限不足或已被撤销。请检查对方的共享开关、白名单和独立设备授权，再重新连接。
+  en: Device control is not authorized or was revoked. Check the remote sharing switch, whitelist and per-computer device permissions, then reconnect.
+lan.devices.busy:
+  zh-CN: 此设备正被另一个远程终端使用，请先关闭或断开原连接。
+  en: Another remote terminal is using this device. Close or disconnect the existing connection first.
+lan.devices.serial_open_failed:
+  zh-CN: 对方电脑无法打开串口，设备可能已拔出、被本机程序占用或没有访问权限。
+  en: The other computer could not open the serial port. It may be unplugged, busy in a local program or inaccessible.
+lan.devices.disconnected:
+  zh-CN: 设备或局域网连接已断开，请检查对方设备后重新连接。
+  en: The device or LAN connection closed. Check the remote device and reconnect.
+lan.devices.backpressure:
+  zh-CN: 设备写入超时或输入队列已满，连接已停止以避免丢弃数据。请检查流控或减小粘贴数据量后重连。
+  en: Device writes timed out or the input queue filled. The connection stopped rather than silently dropping data. Check flow control or paste less data and reconnect.
+lan.devices.cancelled:
+  zh-CN: 设备连接已关闭或本机协作已停止。
+  en: The device connection closed or cooperation stopped locally.
+lan.devices.open_timed_out:
+  zh-CN: 对方设备打开超时，请检查串口或 ADB 状态后重连。
+  en: Opening the remote device timed out. Check its serial or ADB state and reconnect.
+lan.devices.unavailable:
+  zh-CN: 共享设备已移除或配置已变更，请刷新列表并核对授权。
+  en: The shared device was removed or reconfigured. Refresh the list and check its permissions.
+lan.reject:
+  zh-CN: 拒绝
+  en: Reject
+lan.accept_read:
+  zh-CN: 接受，仅查看
+  en: Accept, view only
+lan.accept_exec:
+  zh-CN: 接受并允许执行
+  en: Accept and allow commands
+lan.block_on_reject:
+  zh-CN: 拒绝并拉黑此 IP，不再显示此 IP 的请求
+  en: Block this IP when rejecting and stop showing its requests

@@ -191,6 +191,8 @@ pub struct Workspace {
     /// 目录跟随: what each terminal's current connection was found to be.
     pub(super) directory_follow: HashMap<RemoteTerminalId, super::follow::FollowState>,
     pub(super) local_terminals: HashMap<LocalTerminalId, Entity<LocalTerminalPanel>>,
+    pub(super) lan_local_factories: HashMap<LocalTerminalId, SharedTerminalTransportFactory>,
+    pub(super) lan_serial_transports: HashMap<HostId, HostTerminalTransports>,
     cmder: Entity<crate::terminal::Cmder>,
     pub(super) local_launches: HashMap<LocalTerminalId, crate::terminal::LocalLaunch>,
     /// The local terminals kept in 项目, by the tab each is open in.
@@ -217,6 +219,7 @@ pub struct Workspace {
     /// 同步. Without services in UI tests, so it never reaches a folder
     /// unless a test hands it a store.
     pub(super) sync: Entity<SyncService>,
+    lan: Entity<crate::lan::LanService>,
     /// 匿名使用统计. Production only, like the CLI server: UI tests hand in
     /// one that only records.
     pub(super) analytics: Option<super::analytics::Reporting>,
@@ -228,6 +231,7 @@ pub struct Workspace {
     sftp_provider: SharedSftpTransportProvider,
     pub(super) adb_detector: Arc<dyn crate::adb::AdbDetector>,
     pub(super) android_manager: Option<Entity<crate::adb::DeviceManager>>,
+    pub(super) android_manager_remote: bool,
     pub(super) android_tools: Arc<dyn crate::adb::AndroidTools>,
     pub(super) local_directory_provider: SharedLocalDirectoryProvider,
     /// Backs the host dialog's 「测试连接」.
@@ -338,6 +342,7 @@ impl Workspace {
             integration.update_outdated(cx);
         });
         let secrets = this.store.read(cx).secrets();
+        let lan_connector = connector.clone();
         let backend = Arc::new(SshCliBackend::new(connector, sftp, secrets));
         let server = match server {
             Some(server) => {
@@ -359,6 +364,16 @@ impl Workspace {
             ),
         }
         this.sync_cli_server(cx);
+        let lan_store = this.store.clone();
+        this.lan.update(cx, |lan, cx| {
+            lan.attach(
+                crate::app::data_dir().join("lan"),
+                lan_connector,
+                lan_store,
+                crate::app_lock::is_locked(cx),
+                cx,
+            )
+        });
         this.remember_window(crate::app::window_state_path(), window, cx);
         let bundle = cx.app_path().ok();
         this.updater.update(cx, |updater, cx| {
@@ -380,7 +395,10 @@ impl Workspace {
     /// Tell the CLI server what it may use: whether 启用外部 CLI is on, and
     /// the hosts as they are now.
     fn sync_cli_server(&self, cx: &App) {
+        self.lan.read(cx).set_locked(crate::app_lock::is_locked(cx));
+        self.lan.read(cx).set_hosts(self.store.read(cx));
         if let Some(server) = &self.cli_server {
+            server.set_lan(self.lan.read(cx).core());
             let ready =
                 crate::app_lock::AppLock::global(cx).is_none_or(|lock| lock.read(cx).is_ready());
             server.set_enabled(
@@ -445,6 +463,7 @@ impl Workspace {
             sync.set_location(sync_location, cx);
             sync
         });
+        let lan = cx.new(crate::lan::LanService::new);
         let forward_panel = cx.new(|cx| {
             ForwardPanel::new(
                 store.clone(),
@@ -475,6 +494,14 @@ impl Workspace {
 
         let mut sidebar_width = dock_area.read(cx).dock_size(DockPlacement::Left);
         let mut subscriptions = vec![
+            cx.observe(&lan, |this, _, cx| this.sync_cli_server(cx)),
+            cx.subscribe_in(
+                &lan,
+                window,
+                |this, service, _: &crate::lan::LanEvent, window, cx| {
+                    crate::lan::show_pair_request(service, &this.focus_handle, window, cx);
+                },
+            ),
             // What the saved terminals show, for the next launch to draw: the
             // workspace goes with its window, as ShellRS quits (and on
             // Windows and Linux as the window closes, before it quits).
@@ -757,6 +784,8 @@ impl Workspace {
             file_sidebars: HashMap::new(),
             directory_follow: HashMap::new(),
             local_terminals,
+            lan_local_factories: HashMap::new(),
+            lan_serial_transports: HashMap::new(),
             cmder,
             local_launches: HashMap::new(),
             saved_terminals,
@@ -768,6 +797,7 @@ impl Workspace {
             locked_links: Vec::new(),
             updater,
             sync,
+            lan,
             analytics: None,
             local_terminal_provider,
             administrator_launcher: None,
@@ -776,6 +806,7 @@ impl Workspace {
             sftp_provider,
             adb_detector: Arc::new(crate::adb::NoAdbDetector),
             android_manager: None,
+            android_manager_remote: false,
             android_tools: Arc::new(crate::adb::SystemAndroidTools),
             local_directory_provider,
             connection_tester,
@@ -1055,6 +1086,10 @@ impl Workspace {
 
     pub fn settings(&self) -> &Entity<SettingsStore> {
         &self.settings
+    }
+
+    pub fn lan(&self) -> &Entity<crate::lan::LanService> {
+        &self.lan
     }
 
     pub fn set_administrator_launcher(
@@ -1542,7 +1577,10 @@ impl Workspace {
         self.next_remote_terminal_id += 1;
         let (panel, subscription) = new_terminal_panel(
             &self.store,
-            self.host_terminals.clone(),
+            self.lan_serial_transports
+                .get(&host_id)
+                .cloned()
+                .unwrap_or_else(|| self.host_terminals.clone()),
             terminal_id,
             host_id,
             copy,
@@ -1888,6 +1926,7 @@ impl Workspace {
         let cmder = self.cmder.clone();
         let panel =
             cx.new(|cx| SettingsPanel::new(store, integration, updater, sync, cmder, window, cx));
+        panel.update(cx, |panel, cx| panel.set_lan(self.lan.clone(), window, cx));
         let subscription = cx.subscribe_in(
             &panel,
             window,
@@ -2499,7 +2538,9 @@ impl Workspace {
                 .get(&action.0)
                 .and_then(|id| self.store.read(cx).saved_terminal(*id))
                 .cloned();
-            let factory = if panel.read(cx).is_command_terminal() {
+            let factory = if let Some(factory) = self.lan_local_factories.get(&action.0) {
+                factory.clone()
+            } else if panel.read(cx).is_command_terminal() {
                 crate::terminal::command_terminal_factory()
             } else if let Some(launch) = self.local_launches.get(&action.0) {
                 let mut launch = launch.clone();
@@ -3526,6 +3567,7 @@ fn new_local_terminal_panel(
                 this.finish_detached_tab(CenterTab::LocalTerminal(*id), cx);
                 this.keep_what_it_shows(*id, panel, cx);
                 this.local_terminals.remove(id);
+                this.lan_local_factories.remove(id);
                 this.local_launches.remove(id);
                 this.saved_terminals.remove(id);
                 if this.front_saved_terminal == Some(*id) {
@@ -3566,6 +3608,181 @@ impl Render for Workspace {
 }
 
 impl Workspace {
+    fn on_lan_action(
+        &mut self,
+        action: &crate::app::LanAction,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let crate::lan::LanCommand::OpenDevice { peer, device } = &action.0 {
+            self.open_lan_device(peer, device, window, cx);
+            return;
+        }
+        match &action.0 {
+            crate::lan::LanCommand::ManageAdb { peer, device } => {
+                self.open_lan_adb(peer, device, false, window, cx);
+                return;
+            }
+            crate::lan::LanCommand::AdbFiles { peer, device } => {
+                self.open_lan_adb(peer, device, true, window, cx);
+                return;
+            }
+            _ => {}
+        }
+        self.lan
+            .update(cx, |lan, cx| lan.dispatch(action.0.clone(), cx));
+    }
+
+    fn open_lan_adb(
+        &mut self,
+        peer: &str,
+        device: &str,
+        files: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some((core, target, owner)) = self
+            .lan
+            .read(cx)
+            .device_target(peer, device)
+            .filter(|(_, target, _)| target.kind == shellrs_lan::DeviceKind::Adb)
+        else {
+            return;
+        };
+        let result = crate::adb::AdbProxy::start(
+            core,
+            peer.to_owned(),
+            device.to_owned(),
+            target.address.clone(),
+        )
+        .and_then(|proxy| {
+            crate::adb::AdbConnection::remote(
+                target.address,
+                format!("LAN · {owner} · {}", target.name),
+                proxy,
+            )
+        });
+        let connection = match result {
+            Ok(connection) => connection,
+            Err(error) => {
+                window.push_notification(Notification::error(error.to_string()), cx);
+                return;
+            }
+        };
+        if !files {
+            self.open_remote_android_manager(connection, window, cx);
+            return;
+        }
+        let draft = crate::host::HostDraft::new(
+            connection.display_name(),
+            "lan-adb",
+            22,
+            "shell",
+            crate::host::AuthKind::NoPassword,
+            None,
+        );
+        let host_id = self
+            .store
+            .update(cx, |store, cx| store.insert_temporary(draft, None, cx));
+        let store = self.store.read(cx);
+        let host = store.host(host_id).unwrap().clone();
+        let login = store.login(host_id).unwrap();
+        let id = ExplorerId(self.next_explorer_id);
+        self.next_explorer_id += 1;
+        let (panel, subscription) = new_explorer_panel(
+            self,
+            id,
+            host,
+            login,
+            SftpRoute::External(Arc::new(connection)),
+            window,
+            cx,
+        );
+        self._subscriptions.push(subscription);
+        let focus = panel.read(cx).focus_handle(cx);
+        self._subscriptions
+            .push(follow_focus(CenterTab::Explorer(id), &focus, window, cx));
+        self.explorers.insert(id, panel.clone());
+        self.dock_area.update(cx, |area, cx| {
+            area.add_panel_view(panel_handle(panel), DockPlacement::Center, None, window, cx)
+        });
+    }
+
+    fn open_lan_device(
+        &mut self,
+        peer: &str,
+        device: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some((core, target, owner)) = self.lan.read(cx).device_target(peer, device) else {
+            window.push_notification(Notification::error(t!("lan.devices.refresh_first")), cx);
+            return;
+        };
+        let factory = Arc::new(crate::lan::DeviceTerminalFactory::new(
+            core,
+            peer.to_owned(),
+            target.clone(),
+        ));
+        let title = format!("LAN · {owner} · {} · {}", target.name, target.detail);
+        if target.kind == shellrs_lan::DeviceKind::Serial {
+            let mut settings = crate::host::SerialSettings::default();
+            if let Some(parameters) = &target.serial {
+                settings.baud = parameters.baud;
+                settings.data_bits =
+                    crate::host::DataBits::from_value(i64::from(parameters.data_bits))
+                        .unwrap_or(settings.data_bits);
+                settings.parity =
+                    crate::host::Parity::from_stored(&parameters.parity).unwrap_or(settings.parity);
+                settings.stop_bits =
+                    crate::host::StopBits::from_value(i64::from(parameters.stop_bits))
+                        .unwrap_or(settings.stop_bits);
+                settings.flow = crate::host::FlowControl::from_stored(&parameters.flow)
+                    .unwrap_or(settings.flow);
+            }
+            let draft = crate::host::HostDraft::serial(
+                title,
+                format!("lan-device:{peer}:{device}"),
+                settings,
+                None,
+            )
+            .with_terminal_encoding(
+                crate::host::TerminalEncoding::from_key(&target.encoding).unwrap_or_default(),
+            );
+            let host = self
+                .store
+                .update(cx, |store, cx| store.insert_temporary(draft, None, cx));
+            let mut transports = self.host_terminals.clone();
+            transports.serial = factory;
+            self.lan_serial_transports.insert(host, transports);
+            self.open_remote_terminal(host, None, window, cx);
+        } else {
+            let id = LocalTerminalId(self.next_local_terminal_id);
+            self.next_local_terminal_id += 1;
+            let factory: SharedTerminalTransportFactory = factory;
+            let name = Some(SavedName {
+                name: title.into(),
+                fixed: true,
+                title: None,
+            });
+            let (panel, subscription) =
+                new_local_terminal_panel(id, factory.clone(), name, window, cx);
+            self._subscriptions.push(subscription);
+            let focus = panel.read(cx).focus_handle(cx);
+            self._subscriptions.push(follow_focus(
+                CenterTab::LocalTerminal(id),
+                &focus,
+                window,
+                cx,
+            ));
+            self.lan_local_factories.insert(id, factory);
+            self.local_terminals.insert(id, panel.clone());
+            self.dock_area.update(cx, |area, cx| {
+                area.add_panel_view(panel_handle(panel), DockPlacement::Center, None, window, cx)
+            });
+        }
+    }
+
     pub(super) fn render_window(
         &mut self,
         detached: Option<(CenterTab, AnyView)>,
@@ -3641,6 +3858,7 @@ impl Workspace {
             .on_action(cx.listener(Self::on_return_detached_tab))
             .on_action(cx.listener(Self::on_close_detached_tab))
             .on_action(cx.listener(Self::on_new_host))
+            .on_action(cx.listener(Self::on_lan_action))
             .on_action(cx.listener(Self::on_new_temporary_connection))
             .on_action(cx.listener(Self::on_quick_connect))
             .on_action(cx.listener(Self::on_new_local_terminal))
@@ -3663,6 +3881,7 @@ impl Workspace {
             .on_action(cx.listener(Self::on_new_host_in_group))
             .on_action(cx.listener(Self::on_new_group))
             .on_action(cx.listener(Self::on_import_ssh_config))
+            .on_action(cx.listener(Self::on_import_xshell))
             .on_action(cx.listener(Self::on_import_terminal_schemes))
             .on_action(cx.listener(Self::on_remove_terminal_scheme))
             .on_action(cx.listener(Self::on_import_known_hosts))

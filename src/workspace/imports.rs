@@ -8,13 +8,22 @@ use gpui_kit::component::{WindowExt as _, notification::Notification};
 use gpui_kit::*;
 
 use crate::analytics::Counter;
-use crate::app::{ImportKnownHosts, ImportSshConfig};
+use crate::app::{ImportKnownHosts, ImportSshConfig, ImportXshell};
 use crate::host::{ImportOutcome, ImportSource, open_import_dialog};
 use crate::i18n::tn;
 
 use super::workspace_view::Workspace;
 
 impl Workspace {
+    pub(super) fn on_import_xshell(
+        &mut self,
+        _: &ImportXshell,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_import(ImportSource::Xshell, window, cx);
+    }
+
     pub(super) fn on_import_ssh_config(
         &mut self,
         _: &ImportSshConfig,
@@ -47,7 +56,13 @@ impl Workspace {
                     .ok();
             },
         );
-        let return_focus = self.host_panel.read(cx).focus_handle(cx);
+        let return_focus = if source == ImportSource::Xshell {
+            self.settings_tab()
+                .map(|panel| panel.read(cx).focus_handle(cx))
+                .unwrap_or_else(|| self.host_panel.read(cx).focus_handle(cx))
+        } else {
+            self.host_panel.read(cx).focus_handle(cx)
+        };
         open_import_dialog(
             source,
             self.ssh_dir.clone(),
@@ -65,10 +80,11 @@ impl Workspace {
         if outcome.hosts == 0 {
             return;
         }
-        self.count(match outcome.source {
-            ImportSource::SshConfig => Counter::ImportSshConfig,
-            ImportSource::KnownHosts => Counter::ImportKnownHosts,
-        });
+        match outcome.source {
+            ImportSource::SshConfig => self.count(Counter::ImportSshConfig),
+            ImportSource::KnownHosts => self.count(Counter::ImportKnownHosts),
+            ImportSource::Xshell => {}
+        }
         if outcome.failed {
             return;
         }

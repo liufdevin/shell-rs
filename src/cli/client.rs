@@ -259,6 +259,10 @@ where
                     progress.clear(console.stderr);
                 }
                 match reply {
+                    Reply::Lan { value } => {
+                        writeln!(console.stdout, "{}", ascii_json(&value))?;
+                        return Ok(0);
+                    }
                     Reply::Progress(counters) => {
                         if console.stderr_is_terminal {
                             progress.show(console.stderr, &progress_line(counters));

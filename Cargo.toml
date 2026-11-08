@@ -31,8 +31,9 @@ members = [
     "crates/shellrs-ssh",
     "crates/shellrs-hosts",
     "crates/shellrs-mobile",
+    "crates/shellrs-lan",
 ]
-default-members = [".", "crates/shellrs-sync", "crates/shellrs-ssh", "crates/shellrs-hosts"]
+default-members = [".", "crates/shellrs-sync", "crates/shellrs-ssh", "crates/shellrs-hosts", "crates/shellrs-lan"]
 resolver = "3"
 
 [dependencies]
@@ -60,6 +61,7 @@ gpui-kit = { version = "0.6.1", features = [
 alacritty_terminal = "0.26"
 anyhow = "1"
 encoding_rs = "0.8"
+zip = { version = "9", default-features = false, features = ["deflate-flate2"] }
 argon2 = { version = "0.6", default-features = false, features = ["alloc", "zeroize"] }
 subtle = "2"
 async-channel = "2"
@@ -86,6 +88,7 @@ russh = "0.63"
 rust-i18n = "4.2"
 russh-sftp = "=3.0.0"
 serde_json = "1"
+smol_str = "0.3"
 sys-locale = "0.3"
 sha2 = "0.10"
 uuid = { version = "1", features = ["v4"] }
@@ -108,6 +111,7 @@ shellrs-ssh = { path = "crates/shellrs-ssh" }
 # The hosts, their database and the sync rounds; its own crate, under MIT,
 # so the mobile apps can link it too.
 shellrs-hosts = { path = "crates/shellrs-hosts" }
+shellrs-lan = { path = "crates/shellrs-lan" }
 trash = "5"
 # Online update: the signed manifest, its versions and the downloads. The
 # default features keep rustls with the OS trust store and the system proxy
@@ -161,9 +165,6 @@ windows-sys = { version = "0.61", features = [
 ] }
 # The window's handle, to restore it from maximized: GPUI only maximizes.
 raw-window-handle = "0.6"
-# The Windows portable package updates itself from a zip. Deflate through
-# flate2, which keeps its default Rust backend: our own `flate2` asks for it.
-zip = { version = "9", default-features = false, features = ["deflate-flate2"] }
 
 # The icon in the Windows executables (build.rs).
 [target.'cfg(windows)'.build-dependencies]

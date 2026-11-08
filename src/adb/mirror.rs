@@ -65,7 +65,12 @@ pub(super) struct ScrcpyProcess {
     ended: bool,
 }
 
-fn mirror_command(device: &AdbConnection, executable: &Path, adb: &Path, audio: bool) -> Command {
+pub(super) fn mirror_command(
+    device: &AdbConnection,
+    executable: &Path,
+    adb: &Path,
+    audio: bool,
+) -> Command {
     let mut command = Command::new(executable);
     command
         .args(["--serial", device.serial(), "--window-title"])
@@ -76,6 +81,11 @@ fn mirror_command(device: &AdbConnection, executable: &Path, adb: &Path, audio: 
         ))
         .env("ADB", adb)
         .stdin(Stdio::null());
+    if let Some(server) = device.server_socket() {
+        command
+            .env("ADB_SERVER_SOCKET", server)
+            .arg("--force-adb-forward");
+    }
     if !audio {
         command.arg("--no-audio");
     }

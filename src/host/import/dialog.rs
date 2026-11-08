@@ -71,6 +71,7 @@ pub fn open_import_dialog(
             .title(match source {
                 ImportSource::SshConfig => t!("host.import.title.ssh_config"),
                 ImportSource::KnownHosts => t!("host.import.title.known_hosts"),
+                ImportSource::Xshell => t!("host.import.title.xshell"),
             })
             .w(rems(72.)
                 .to_pixels(window.rem_size())
@@ -114,6 +115,7 @@ enum LoadState {
     /// Read; `hashed` known_hosts entries could not be.
     Loaded {
         hashed: usize,
+        skipped: usize,
     },
 }
 
@@ -132,6 +134,8 @@ pub struct ImportDialog {
     ssh_dir: Option<PathBuf>,
     /// The file read: the source's own in `ssh_dir`, or one the user chose.
     path: Option<PathBuf>,
+    extra_paths: Vec<PathBuf>,
+    choosing: bool,
     store: Entity<HostStore>,
     state: LoadState,
     /// The rows' values; the inputs write into them.
@@ -139,6 +143,7 @@ pub struct ImportDialog {
     editors: HashMap<usize, RowEditors>,
     scroll: UniformListScrollHandle,
     _load: Task<()>,
+    _choose: Option<Task<()>>,
     _store_changes: Subscription,
     _locale: Subscription,
 }
@@ -163,17 +168,22 @@ impl ImportDialog {
                 });
             }
         });
-        let path = ssh_dir.as_deref().map(|dir| source.default_path(dir));
+        let path = (source != ImportSource::Xshell)
+            .then(|| ssh_dir.as_deref().map(|dir| source.default_path(dir)))
+            .flatten();
         let mut this = Self {
             source,
             ssh_dir,
             path,
+            extra_paths: Vec::new(),
+            choosing: false,
             store,
             state: LoadState::Loading,
             rows: Vec::new(),
             editors: HashMap::new(),
             scroll: UniformListScrollHandle::new(),
             _load: Task::ready(()),
+            _choose: None,
             _store_changes: store_changes,
             _locale: locale,
         };
@@ -193,6 +203,7 @@ impl ImportDialog {
         };
         self.state = LoadState::Loading;
         let source = self.source;
+        let extra_paths = self.extra_paths.clone();
         let ssh_dir = self
             .ssh_dir
             .clone()
@@ -200,7 +211,14 @@ impl ImportDialog {
             .unwrap_or_default();
         self._load = cx.spawn_in(window, async move |this, cx| {
             let load = cx
-                .background_spawn(async move { read_source(source, &path, &ssh_dir) })
+                .background_spawn(async move {
+                    if source == ImportSource::Xshell {
+                        let paths: Vec<_> = std::iter::once(path).chain(extra_paths).collect();
+                        super::xshell::read_paths(&paths)
+                    } else {
+                        read_source(source, &path, &ssh_dir)
+                    }
+                })
                 .await;
             this.update(cx, |this, cx| this.loaded(load, cx)).ok();
         });
@@ -213,6 +231,7 @@ impl ImportDialog {
                 self.rows = import_rows(&scan, self.store.read(cx));
                 LoadState::Loaded {
                     hashed: scan.hashed,
+                    skipped: scan.skipped,
                 }
             }
             ImportLoad::Missing => LoadState::Missing,
@@ -222,30 +241,39 @@ impl ImportDialog {
     }
 
     /// Read another file of the same kind, picked with the system's picker.
-    fn choose_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn choose_file(&mut self, directory: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if self.choosing {
+            return;
+        }
+        self.choosing = true;
+        cx.notify();
         let receiver = cx.prompt_for_paths(PathPromptOptions {
-            files: true,
-            directories: false,
-            multiple: false,
+            files: !directory,
+            directories: directory,
+            multiple: self.source == ImportSource::Xshell && !directory,
             prompt: Some(match self.source {
                 ImportSource::SshConfig => t!("host.import.choose_prompt.ssh_config"),
                 ImportSource::KnownHosts => t!("host.import.choose_prompt.known_hosts"),
+                ImportSource::Xshell if directory => t!("host.import.choose_prompt.xshell_folder"),
+                ImportSource::Xshell => t!("host.import.choose_prompt.xshell"),
             }),
         });
-        cx.spawn_in(window, async move |this, cx| {
-            let Ok(Ok(Some(paths))) = receiver.await else {
-                return;
-            };
-            let Some(path) = paths.into_iter().next() else {
-                return;
-            };
+        self._choose = Some(cx.spawn_in(window, async move |this, cx| {
+            let result = receiver.await;
             this.update_in(cx, |this, window, cx| {
-                this.path = Some(path);
-                this.load(window, cx);
+                this.choosing = false;
+                if let Ok(Ok(Some(paths))) = result {
+                    let mut paths = paths.into_iter();
+                    if let Some(path) = paths.next() {
+                        this.path = Some(path);
+                        this.extra_paths = paths.collect();
+                        this.load(window, cx);
+                    }
+                }
+                cx.notify();
             })
             .ok();
-        })
-        .detach();
+        }));
     }
 
     /// How many hosts the commit button would import.
@@ -322,12 +350,24 @@ impl ImportDialog {
                 .unwrap_or_default();
             choices.push((t!("host.import.auth.new_key", name = name), RowAuth::NewKey));
         }
-        choices.extend(store.credentials().iter().map(|credential| {
-            (
-                credential_option(credential, store.key_dir()),
-                RowAuth::Credential(credential.id),
-            )
-        }));
+        let telnet = self
+            .rows
+            .get(ix)
+            .is_some_and(|row| row.candidate.options.protocol.is_telnet());
+        choices.extend(
+            store
+                .credentials()
+                .iter()
+                .filter(|credential| {
+                    !telnet || credential.kind == super::super::CredentialKind::Password
+                })
+                .map(|credential| {
+                    (
+                        credential_option(credential, store.key_dir()),
+                        RowAuth::Credential(credential.id),
+                    )
+                }),
+        );
         choices
     }
 
@@ -421,11 +461,17 @@ impl ImportDialog {
         let mut sentences = vec![match self.source {
             ImportSource::SshConfig => t!("host.import.note.ssh_config"),
             ImportSource::KnownHosts => t!("host.import.note.known_hosts"),
+            ImportSource::Xshell => t!("host.import.note.xshell"),
         }];
-        if let LoadState::Loaded { hashed } = self.state
+        if let LoadState::Loaded { hashed, .. } = self.state
             && hashed > 0
         {
             sentences.push(tn!("host.import.note.hashed", hashed));
+        }
+        if let LoadState::Loaded { skipped, .. } = self.state
+            && skipped > 0
+        {
+            sentences.push(tn!("host.import.note.xshell_skipped", skipped));
         }
         let note = join_sentences(sentences).unwrap_or_default();
         div()
@@ -443,6 +489,7 @@ impl ImportDialog {
             None => match self.source {
                 ImportSource::SshConfig => "~/.ssh/config".to_string(),
                 ImportSource::KnownHosts => "~/.ssh/known_hosts".to_string(),
+                ImportSource::Xshell => t!("host.import.xshell.choose_source").to_string(),
             },
         };
         let source = t!("host.import.source", path = path);
@@ -481,11 +528,24 @@ impl ImportDialog {
                             .outline()
                             .small()
                             .label(t!("host.import.choose_file"))
-                            .on_click(
-                                cx.listener(|this, _, window, cx| this.choose_file(window, cx)),
-                            ),
+                            .disabled(self.choosing)
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.choose_file(false, window, cx)
+                            })),
                     ),
             )
+            .when(self.source == ImportSource::Xshell, |row| {
+                row.child(
+                    Button::new("import-choose-folder")
+                        .outline()
+                        .small()
+                        .label(t!("host.import.choose_folder"))
+                        .disabled(self.choosing)
+                        .on_click(
+                            cx.listener(|this, _, window, cx| this.choose_file(true, window, cx)),
+                        ),
+                )
+            })
             .child(
                 div()
                     .id("import-counts")
@@ -520,7 +580,11 @@ impl ImportDialog {
                 t!("host.import.column.name"),
                 t!("host.import.column.group"),
                 t!("host.import.column.address"),
-                t!("host.import.column.port"),
+                if self.source == ImportSource::Xshell {
+                    t!("host.import.column.protocol_port")
+                } else {
+                    t!("host.import.column.port")
+                },
                 t!("host.import.column.user"),
                 t!("host.import.column.auth"),
                 t!("host.import.column.status"),
@@ -647,10 +711,22 @@ impl ImportDialog {
             .tooltip(move |window, cx| Tooltip::new(full_address.clone()).build(window, cx))
             .child(row.candidate.address.clone())
             .into_any_element();
+        let port_text = if self.source == ImportSource::Xshell {
+            format!(
+                "{} {}",
+                row.candidate.options.protocol.as_str().to_uppercase(),
+                row.candidate.port
+            )
+        } else {
+            row.candidate.port.to_string()
+        };
         let port = div()
+            .id(("import-port", ix))
+            .test_support()
+            .aria_label(port_text.clone())
             .font_family(theme.mono_font_family.clone())
             .when(row.existing, |port| port.text_color(muted))
-            .child(row.candidate.port.to_string())
+            .child(port_text)
             .into_any_element();
         let checkbox = Checkbox::new(("import-select", ix))
             .small()
@@ -687,6 +763,9 @@ impl ImportDialog {
             .min(rems(26.).to_pixels(rem));
         let placeholder = match &self.state {
             LoadState::Loading => Some(t!("host.import.loading")),
+            LoadState::Missing if self.source == ImportSource::Xshell && self.path.is_none() => {
+                Some(t!("host.import.xshell.choose_source"))
+            }
             LoadState::Missing => Some(t!(
                 "host.import.missing",
                 path = self
@@ -696,12 +775,14 @@ impl ImportDialog {
                     .unwrap_or_else(|| match self.source {
                         ImportSource::SshConfig => "~/.ssh/config".to_string(),
                         ImportSource::KnownHosts => "~/.ssh/known_hosts".to_string(),
+                        ImportSource::Xshell => t!("host.import.xshell.choose_source").to_string(),
                     })
             )),
             LoadState::Failed(error) => Some(t!("host.import.failed", error = error)),
             LoadState::Loaded { .. } if self.rows.is_empty() => Some(match self.source {
                 ImportSource::SshConfig => t!("host.import.empty.ssh_config"),
                 ImportSource::KnownHosts => t!("host.import.empty.known_hosts"),
+                ImportSource::Xshell => t!("host.import.empty.xshell"),
             }),
             LoadState::Loaded { .. } => None,
         };
@@ -793,7 +874,7 @@ fn row_frame(frame: Stateful<Div>, checkbox: AnyElement, cells: [AnyElement; 7])
         .child(cell(None, name))
         .child(cell(None, group))
         .child(cell(None, address))
-        .child(cell(Some(3.5), port))
+        .child(cell(Some(6.), port))
         .child(cell(Some(7.), user))
         .child(cell(Some(14.), auth))
         .child(cell(Some(4.5), status))

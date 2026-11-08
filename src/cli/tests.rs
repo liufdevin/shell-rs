@@ -692,6 +692,29 @@ fn exec_takes_its_command_as_one_argument_or_from_stdin() {
 }
 
 #[test]
+fn lan_cli_keeps_remote_device_and_host_identifiers_separate() {
+    let parsed =
+        Cli::try_parse_from(["shelllf-cli", "lan", "exec", "PEER", "HOST", "uname -a"]).unwrap();
+    assert!(
+        matches!(parsed.command, Command::Lan { command: super::LanCommand::Exec { peer, host, command: Some(command), stdin: false, .. } }
+        if peer == "PEER" && host == "HOST" && command == "uname -a")
+    );
+    assert!(Cli::try_parse_from(["shelllf-cli", "lan", "exec", "PEER", "HOST", "--stdin"]).is_ok());
+    assert!(Cli::try_parse_from(["shelllf-cli", "lan", "exec", "PEER", "HOST"]).is_err());
+    let fixture = fixture();
+    let (code, _, stderr) = run(
+        &fixture.socket,
+        Request::Lan {
+            request: shellrs_lan::ClientRequest::Peers,
+        },
+        true,
+    );
+    assert_eq!(code, 255);
+    assert!(String::from_utf8(stderr).unwrap().contains("not_enabled"));
+    assert!(fixture.backend.calls.lock().unwrap().is_empty());
+}
+
+#[test]
 fn a_command_reaches_the_remote_shell_with_unix_line_ends() {
     assert_eq!(
         normalize_command("\u{feff}cd /srv\r\nls -l\r\n"),

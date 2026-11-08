@@ -119,6 +119,10 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    Lan {
+        #[command(subcommand)]
+        command: LanCommand,
+    },
     /// Show, create, change or delete saved hosts.
     Hosts {
         #[command(subcommand)]
@@ -263,6 +267,24 @@ enum HostsCommand {
 }
 
 #[derive(Debug, Subcommand)]
+enum LanCommand {
+    Peers,
+    Hosts {
+        peer: String,
+    },
+    Exec {
+        peer: String,
+        host: String,
+        #[arg(required_unless_present = "stdin")]
+        command: Option<String>,
+        #[arg(long, conflicts_with = "command")]
+        stdin: bool,
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
 enum CredentialsCommand {
     /// List the credentials.
     List {
@@ -345,6 +367,36 @@ pub fn main(args: Vec<OsString>) -> i32 {
 /// cannot be sent.
 fn request(command: Command, console: &mut Console) -> Result<Request, i32> {
     Ok(match command {
+        Command::Lan { command } => {
+            let request = match command {
+                LanCommand::Peers => shellrs_lan::ClientRequest::Peers,
+                LanCommand::Hosts { peer } => shellrs_lan::ClientRequest::Hosts { peer },
+                LanCommand::Exec {
+                    peer,
+                    host,
+                    command,
+                    stdin,
+                    json,
+                } => {
+                    console.exec_json = json;
+                    let command = if stdin {
+                        read_stdin(console)?
+                    } else {
+                        command.unwrap_or_default()
+                    };
+                    let command = normalize_command(&command);
+                    if command.trim().is_empty() || command.len() > shellrs_lan::MAX_COMMAND {
+                        return Err(console.error(ErrorCode::BadRequest, &t!("cli.exec.empty")));
+                    }
+                    shellrs_lan::ClientRequest::Execute {
+                        peer,
+                        host,
+                        command,
+                    }
+                }
+            };
+            Request::Lan { request }
+        }
         Command::Exec {
             id,
             command,

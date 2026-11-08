@@ -25,6 +25,7 @@ pub mod history;
 pub mod host;
 pub mod i18n;
 pub mod kubernetes;
+pub mod lan;
 pub mod monitor;
 pub mod netstat;
 pub mod processes;

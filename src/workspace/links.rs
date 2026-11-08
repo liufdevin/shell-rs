@@ -58,6 +58,7 @@ impl Workspace {
             return;
         }
         self.cancel_prompts_for_host(host, window, cx);
+        self.lan_serial_transports.remove(&host);
         self.store
             .update(cx, |store, cx| store.remove_temporary(host, cx));
     }

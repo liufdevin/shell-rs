@@ -560,7 +560,7 @@ impl DeviceManager {
                     }
                     let _ = sender.send(Message::MirrorStarted(id.clone(), mirror_id));
                     loop {
-                        if cancel.load(Ordering::Acquire) {
+                        if cancel.load(Ordering::Acquire) || device.remote_cancelled() {
                             process.stop();
                             return Ok(());
                         }

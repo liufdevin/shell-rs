@@ -68,6 +68,7 @@ pub struct SettingsPanel {
     updater: Entity<Updater>,
     /// Where sync stands, for 同步.
     sync: Entity<SyncService>,
+    lan_page: Option<Entity<crate::lan::LanPage>>,
     /// The rule table of 关键字高亮, whose fields keep their state across
     /// the page's renders.
     highlight_rules: Entity<HighlightRulesEditor>,
@@ -130,6 +131,7 @@ impl SettingsPanel {
             integration,
             updater,
             sync,
+            lan_page: None,
             highlight_rules,
             shortcuts,
             local_shell,
@@ -144,6 +146,16 @@ impl SettingsPanel {
 
     pub fn tab_group(&self) -> Option<WeakEntity<TabGroup>> {
         self.tab_group.clone()
+    }
+
+    pub fn set_lan(
+        &mut self,
+        service: Entity<crate::lan::LanService>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.lan_page = Some(cx.new(|cx| crate::lan::LanPage::new(service, window, cx)));
+        cx.notify();
     }
 
     /// Take the focus, and tell the workspace this is the tab ⌘W closes.
@@ -265,7 +277,7 @@ struct Category {
 type CategoryGroups = fn(&SettingsPanel, &App) -> Vec<SettingGroup>;
 
 /// The categories, in the order the left column lists them.
-const CATEGORIES: [Category; 9] = [
+const CATEGORIES: [Category; 10] = [
     Category {
         title: "settings.category.appearance",
         icon: CatalogIcon::Palette,
@@ -311,7 +323,30 @@ const CATEGORIES: [Category; 9] = [
         icon: CatalogIcon::Info,
         groups: about_groups,
     },
+    Category {
+        title: "settings.category.lan",
+        icon: CatalogIcon::Laptop,
+        groups: lan_groups,
+    },
 ];
+
+fn lan_groups(panel: &SettingsPanel, _: &App) -> Vec<SettingGroup> {
+    let Some(page) = panel.lan_page.clone() else {
+        return Vec::new();
+    };
+    vec![
+        SettingGroup::new()
+            .title(t!("settings.category.lan"))
+            .items([
+                SettingItem::render(move |_, _, _| page.clone().into_any_element()).keywords([
+                    t!("settings.category.lan"),
+                    t!("lan.password_help"),
+                    t!("lan.blacklist"),
+                    t!("lan.shared_hosts"),
+                ]),
+            ]),
+    ]
+}
 
 impl Category {
     /// The page of the category at `ix` in `CATEGORIES`.

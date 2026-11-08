@@ -1,0 +1,27 @@
+# shellrs-lan
+
+Device cooperation now also supports whitelisted interactive serial/ADB streams through an injected `DeviceProvider`. Device control is separate from SSH execution: a password pair receives the current whitelist only while the device-sharing switch is enabled, while approval pairing can remain view-only. Later per-computer revocation, whitelist changes, application lock and network shutdown cancel live streams. A holder of the pairing password can pair again; blocking its IP or rotating the password is needed to prevent re-pairing.
+
+Devices are opened only by provider-owned IDs, never by an arbitrary path supplied over the wire. Sixteen device streams, 8 KiB chunks and bounded queues limit memory. Serial resource leases prevent opening the same physical endpoint through multiple aliases; ADB resources may have concurrent channels. Resize and Break are explicit controls; terminal bytes are not interpreted as local OS commands. `device-audit.json` atomically retains 500 metadata-only entries, with no terminal contents or keystrokes. New grants fail closed on audit errors; reductions cancel current streams before persistence, and persistence errors are surfaced to the desktop.
+
+`Core::stream_adb` opens a whitelisted device service through `DeviceProvider::run_adb`, using the same revocable leases as terminals. Only device shell/exec, sync and named scrcpy abstract sockets are accepted; host ADB commands, local filesystem sockets and arbitrary TCP forwarding are rejected. The desktop supplies a loopback-only, single-device smart-socket proxy so existing ADB file tools, streaming APK installation and local scrcpy windows work without exposing the owner's ADB server or selecting another device. Audit entries classify files, installation, mirroring and shell channels without storing their payloads. Device-side effects cannot be rolled back by cancellation.
+
+LAN discovery, authenticated pairing and a small encrypted RPC protocol for ShellLF. This crate does not depend on GPUI, the application shell, host storage or an OS credential store. An injected `Executor` supplies non-secret shared-host descriptors and executes approved host commands on the sharing computer.
+
+Cooperation is opt-in and cannot listen until a pairing password has been configured. The password is stored only as a salted Argon2id verifier; the local device has a separate persistent Ed25519 identity. On Windows the LAN directory is restricted to its owner and SYSTEM; on Unix it is mode 0700 and new private identity files are 0600. Corrupt storage is not silently replaced with a new identity.
+
+UDP discovery (45837) is advisory. Subsequent SSH key exchange and public-key signatures establish possession of device identities. Inspecting a device shows its fingerprint before a password can be sent. Paired connections pin the remote key. Password pairing verifies the password on the sharing device and grants its configured scope; request pairing queues a signed identity for local approval. Requests have fresh tokens and expire, so old dialogs cannot approve replacement requests. Pending/rejected status is available only for the authenticated caller's own identity; unapproved keys cannot obtain host lists or execute commands.
+
+Every execution checks its device grant, shared host, execution switch, application lock and source IP before starting and while streaming. Revocation, IP blocking, cancellation, connection loss and time/output limits signal the executor's cancellation flag. Executors must observe that flag even for silent commands; terminating a connection does not undo remote side effects or guarantee termination of daemonized work.
+
+The server only implements these RPCs over SSH exec channels. It does not provide an owner-computer OS login shell, filesystem access, arbitrary forwarding or host/credential management. Authorized ADB device streams can transfer files on the selected device, not on the owning computer. Endpoint parsing allows private/link-local/loopback IPv4 only. Discovery replies never contain host details or credentials.
+
+Limits: 16 inbound connections, 16 pending requests, 64 grants and outbound peers, 256 shared hosts, four concurrent commands, two concurrent Argon2 password checks, five failed password attempts per IP per five minutes, 16 KiB commands, 1 MiB combined output and a 120-second server execution deadline. A successful password authentication rechecks that the verifier and blacklist have not changed while hashing.
+
+`Core::load` reads device-local state without starting networking. `Network::start` owns the TCP/UDP listeners, whose lifetime follows the returned guard. `Core` is thread-safe; `revision()` lets a UI poll changes without network threads touching its executor. `ClientRequest` is intended for the app's existing protected local CLI IPC; the CLI should not read device keys itself.
+
+```text
+cargo test -p shellrs-lan --offline -- --test-threads=1
+```
+
+Tests run two real loopback nodes with temporary identity/config directories and an injected fake executor. They exercise encrypted discovery/pairing, authentication failures, scoped/read-only access, changed server keys, blacklisting/unblocking, cancellation and revocation. No user SSH server or keychain is accessed. See `docs/lan.zh.md` in the workspace for desktop usage.

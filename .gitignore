@@ -1,4 +1,6 @@
 /target/
+/dist/
+/lan-*-2026-11-08.md
 /.idea/
 .DS_Store
 .env

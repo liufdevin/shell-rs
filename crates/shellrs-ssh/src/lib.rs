@@ -34,7 +34,10 @@ pub use error::{
     KnownHostsError, MissingCredential, PasswordWanted, ProxyError, RouteFailure, WrapErr, Wrapped,
     find_cause, link_as, wrap, wrap_shared,
 };
-pub use exec::{ExecError, ExecErrorKind, ExecExit, ExecFailure, ExecStream, run_command};
+pub use exec::{
+    ExecError, ExecErrorKind, ExecExit, ExecFailure, ExecStream, run_command,
+    run_command_with_cancel,
+};
 pub use latency::{LATENCY_INTERVAL, Latency, LatencyLevel, round_trip};
 pub use login::{
     DEFAULT_KEY_FILES, HostLogin, JumpLogin, LoginMethod, LoginRoute, ProxyKind, ProxyLogin,

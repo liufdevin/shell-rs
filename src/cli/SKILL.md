@@ -49,6 +49,18 @@ EOF
 - Programs that ask for a password wait in the user's tab: use `sudo -n` and other non-interactive flags. Give your own tool a timeout; when the command is given up, it gets Ctrl-C.
 - Files cannot be transferred this way; write a small text file with a heredoc in the command.
 
+## LAN Cooperation
+
+For a host shared by another ShellLF computer, use the paired route rather than this computer's normal `exec` command:
+
+```bash
+shelllf-cli lan peers
+shelllf-cli lan hosts '<peer-id>'
+shelllf-cli lan exec '<peer-id>' '<shared-host-id>' 'uname -a' --json
+```
+
+Use `--stdin` for a complex command. The peer ID comes from `lan peers`; the shared host ID comes from `lan hosts`. Both apps need LAN cooperation enabled and GUI pairing completed; only the controlling computer needs the external CLI enabled. The sharing computer executes with its saved credentials, which are not sent back. Pairing passwords, approval, execution permissions and IP blacklists are managed in Settings; do not ask the user to put pairing passwords into CLI arguments. The first version supports saved SSH hosts and non-interactive commands only, with a 120-second execution deadline and 1 MiB combined output limit. Revoked, locked or blocked routes must be reauthorized by the owner, not worked around.
+
 ## File Transfer
 
 ```bash

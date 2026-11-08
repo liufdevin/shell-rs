@@ -105,6 +105,7 @@ pub struct ExplorerPanel {
     /// connection: the remote pane alone, with no tab of its own. The local
     /// pane is never shown, nor listed; it only holds where downloads go.
     sidebar: bool,
+    external: bool,
     /// The sidebar's 目录跟随: it goes where the terminal's shell reports
     /// it is, as `follow_directory` hears of it.
     follow: bool,
@@ -133,8 +134,9 @@ impl ExplorerPanel {
         cx: &mut Context<Self>,
     ) -> Self {
         let host_id = host.id;
+        let external = matches!(route, SftpRoute::External(_));
         let endpoint = match &route {
-            SftpRoute::ExternalSidebar(source) => source.endpoint(),
+            SftpRoute::ExternalSidebar(source) | SftpRoute::External(source) => source.endpoint(),
             _ => login.endpoint(),
         };
         let sidebar = matches!(
@@ -276,6 +278,7 @@ impl ExplorerPanel {
             custom_title: None,
             last_remote: true,
             sidebar,
+            external,
             follow: false,
             follow_target: None,
             panes_split: cx.new(|_| ResizableState::default()),
@@ -1068,7 +1071,7 @@ impl Panel for ExplorerPanel {
     /// A terminal tab's buttons that apply here too.
     fn toolbar_buttons(&mut self, _: &mut Window, _: &mut Context<Self>) -> Option<Vec<Button>> {
         let (id, host_id) = (self.id, self.host_id);
-        Some(vec![
+        let buttons = vec![
             Button::new(("open-sftp", id.0))
                 .icon(Icon::new(CatalogIcon::FolderTree))
                 .label("SFTP")
@@ -1086,7 +1089,13 @@ impl Panel for ExplorerPanel {
                         cx,
                     )
                 }),
-        ])
+        ];
+        Some(
+            buttons
+                .into_iter()
+                .skip(usize::from(self.external))
+                .collect(),
+        )
     }
     fn inner_padding(&self, _: &App) -> bool {
         false
@@ -1094,7 +1103,11 @@ impl Panel for ExplorerPanel {
 }
 impl RenamableTab for ExplorerPanel {
     fn default_title(&self, _: &App) -> SharedString {
-        format!("{} · SFTP", self.host.name).into()
+        if self.external {
+            format!("{} · {}", self.host.name, t!("lan.devices.files_title")).into()
+        } else {
+            format!("{} · SFTP", self.host.name).into()
+        }
     }
     fn tab_title(&self, cx: &App) -> SharedString {
         self.custom_title
@@ -1188,7 +1201,7 @@ impl ExplorerPanel {
             id: self.id,
             host_id: self.host_id,
             host_is_ip: self.host.address_is_ip(),
-            host_exists: self.store.read(cx).host(self.host_id).is_some(),
+            host_exists: !self.external && self.store.read(cx).host(self.host_id).is_some(),
             can_reconnect: self.can_reconnect(),
             group: self.tab_group.clone(),
             panel: cx.entity_id(),

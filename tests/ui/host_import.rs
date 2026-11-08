@@ -75,6 +75,160 @@ fn type_into(
 }
 
 #[gpui_kit::test]
+async fn xshell_import_from_sync_previews_groups_accounts_and_protocols_before_persisting(
+    cx: &mut TestAppContext,
+) {
+    let directory = tempfile::tempdir().unwrap();
+    let sessions = directory.path().join("Sessions");
+    let group = sessions.join("生产").join("华东");
+    std::fs::create_dir_all(&group).unwrap();
+    std::fs::write(group.join("app.xsh"), "[CONNECTION]\nProtocol=SSH\nHost=server.example.com\nPort=2222\nDescription=迁移的主机\n[CONNECTION:AUTHENTICATION]\nUserName=deploy\nPassword=DO_NOT_IMPORT\n").unwrap();
+    std::fs::write(group.join("root.xsh"), "[CONNECTION]\nProtocol=SSH\nHost=server.example.com\nPort=2222\n[CONNECTION:AUTHENTICATION]\nUserName=root\n").unwrap();
+    std::fs::write(group.join("switch.xsh"), "[CONNECTION]\nProtocol=TELNET\nHost=10.0.0.5\n[CONNECTION:AUTHENTICATION]\nUserName=admin\n").unwrap();
+    std::fs::write(
+        group.join("unsupported.xsh"),
+        "[CONNECTION]\nProtocol=RLOGIN\nHost=other\n",
+    )
+    .unwrap();
+    let database = directory.path().join("hosts.db");
+    let mut store = HostStore::load(HostDatabase::open(&database).unwrap()).unwrap();
+    let existing = store.insert_unnotified(HostDraft::new(
+        "已有主机",
+        "server.example.com",
+        2222,
+        "root",
+        AuthKind::Password,
+        None,
+    ));
+    HostDatabase::open(&database)
+        .unwrap()
+        .insert_host(store.host(existing).unwrap())
+        .unwrap();
+    let (handle, workspace) = open_workspace_with_store(cx, store);
+    in_frame(cx, handle, |window, cx| window.click("open-settings", cx));
+    in_frame(cx, handle, |window, cx| {
+        window.within("settings").click("0-6", cx)
+    });
+    in_frame(cx, handle, |window, cx| window.click("import-xshell", cx));
+    in_frame(cx, handle, |window, cx| {
+        window.click("import-choose-folder", cx)
+    });
+    assert!(cx.did_prompt_for_paths());
+    cx.simulate_path_prompt_response(|_| Some(vec![sessions]));
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window.try_find(("import-address", 0usize)).is_some()
+    })
+    .await;
+    in_frame(cx, handle, |window, _| {
+        assert_eq!(window.find(("import-name", 0usize)).value(), Some("app"));
+        assert_eq!(
+            window.find(("import-group", 0usize)).value(),
+            Some("生产/华东")
+        );
+        assert_eq!(window.find(("import-user", 0usize)).value(), Some("deploy"));
+        assert_eq!(window.find(("import-auth", 0usize)).label(), Some("密码"));
+        assert_eq!(
+            window.find(("import-status", 1usize)).label(),
+            Some("已存在")
+        );
+        assert_eq!(
+            window.find(("import-port", 2usize)).label(),
+            Some("TELNET 23")
+        );
+        assert!(
+            window
+                .find("import-note")
+                .label()
+                .unwrap()
+                .contains("已跳过 1 个")
+        );
+        assert_eq!(
+            window.find("import-counts").label(),
+            Some("共 3 台 · 1 台已存在 · 已选 2 台")
+        );
+    });
+    assert_eq!(
+        cx.update(|cx| workspace.read(cx).store().read(cx).hosts().len()),
+        1
+    );
+    in_frame(cx, handle, |window, cx| window.click("commit", cx));
+    wait_for_dialog_to_close(cx, handle).await;
+    cx.update(|cx| {
+        let store = workspace.read(cx).store().read(cx);
+        assert_eq!(store.hosts().len(), 3);
+        let imported = store
+            .hosts()
+            .iter()
+            .find(|host| host.name.as_ref() == "app")
+            .unwrap();
+        assert_eq!(imported.user.as_ref(), "deploy");
+        assert_eq!(imported.notes.as_ref(), "迁移的主机");
+        assert_eq!(store.group_path(imported.group.unwrap()), "生产 / 华东");
+        let telnet = store
+            .hosts()
+            .iter()
+            .find(|host| host.name.as_ref() == "switch")
+            .unwrap();
+        assert!(telnet.protocol.is_telnet());
+        assert_eq!(telnet.user.as_ref(), "admin");
+        assert!(store.credentials().is_empty());
+    });
+    let reloaded = HostStore::load(HostDatabase::open(&database).unwrap()).unwrap();
+    assert_eq!(reloaded.hosts().len(), 3);
+    assert_eq!(reloaded.groups().len(), 2);
+    assert!(!format!("{:?}", reloaded.hosts()).contains("DO_NOT_IMPORT"));
+}
+
+#[gpui_kit::test]
+async fn xshell_file_selection_and_cancel_leave_existing_data_untouched(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let valid = directory.path().join("valid.xsh");
+    let invalid = directory.path().join("invalid.xsh");
+    std::fs::write(
+        &valid,
+        "[CONNECTION]\nProtocol=SSH\nHost=example.com\nUserName=ops\n",
+    )
+    .unwrap();
+    std::fs::write(&invalid, "[CONNECTION]\nProtocol=FTP\nHost=invalid\n").unwrap();
+    let (handle, workspace) = open_workspace_with_store(cx, HostStore::empty());
+    in_frame(cx, handle, |window, cx| window.click("open-settings", cx));
+    in_frame(cx, handle, |window, cx| {
+        window.within("settings").click("0-6", cx)
+    });
+    in_frame(cx, handle, |window, cx| window.click("import-xshell", cx));
+    in_frame(cx, handle, |window, cx| {
+        window.click("import-choose-file", cx)
+    });
+    cx.simulate_path_prompt_response(|_| Some(vec![valid, invalid]));
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, _| {
+        window.try_find(("import-address", 0usize)).is_some()
+    })
+    .await;
+    in_frame(cx, handle, |window, cx| {
+        assert!(
+            window
+                .find("import-note")
+                .label()
+                .unwrap()
+                .contains("已跳过 1 个")
+        );
+        window.press("escape", cx);
+    });
+    wait_for_dialog_to_close(cx, handle).await;
+    assert!(cx.update(|cx| workspace.read(cx).store().read(cx).hosts().is_empty()));
+    in_frame(cx, handle, |window, cx| window.click("import-xshell", cx));
+    in_frame(cx, handle, |window, cx| {
+        window.click("import-choose-file", cx)
+    });
+    cx.simulate_path_prompt_response(|_| None);
+    cx.run_until_parked();
+    in_frame(cx, handle, |window, _| {
+        assert!(!enabled(&window.find("commit")));
+        assert!(enabled(&window.find("import-choose-file")));
+    });
+}
+
+#[gpui_kit::test]
 async fn hosts_from_ssh_config_are_added_with_their_groups_and_keys(cx: &mut TestAppContext) {
     let home = ssh_home(&[
         (

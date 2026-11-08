@@ -1,11 +1,12 @@
-//! 导入主机: the hosts OpenSSH already knows about, read from
-//! `~/.ssh/config` or `~/.ssh/known_hosts`, previewed in a dialog and added
+//! 导入主机: OpenSSH and Xshell configurations, read from
+//! files, folders or archives, previewed in a dialog and added
 //! to the store. Existing hosts are never changed: an import only adds.
 
 mod dialog;
 mod known_hosts;
 mod plan;
 mod ssh_config;
+mod xshell;
 
 use std::fs::File;
 use std::io::{self, Read as _};
@@ -23,6 +24,7 @@ pub enum ImportSource {
     SshConfig,
     /// `~/.ssh/known_hosts`: the hosts OpenSSH has connected to.
     KnownHosts,
+    Xshell,
 }
 
 impl ImportSource {
@@ -31,6 +33,7 @@ impl ImportSource {
         ssh_dir.join(match self {
             ImportSource::SshConfig => "config",
             ImportSource::KnownHosts => "known_hosts",
+            ImportSource::Xshell => "Sessions",
         })
     }
 }
@@ -46,6 +49,16 @@ pub struct ImportCandidate {
     /// not try anyway: the file is there, is no public key and is not one
     /// of the default keys.
     pub identity: Option<PathBuf>,
+    pub options: CandidateOptions,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CandidateOptions {
+    pub protocol: super::ProtocolKind,
+    pub group: String,
+    pub password: bool,
+    pub match_user: bool,
+    pub notes: String,
 }
 
 /// What reading a source found.
@@ -54,6 +67,7 @@ pub struct ImportScan {
     pub candidates: Vec<ImportCandidate>,
     /// known_hosts entries whose names are hashed, so cannot be read back.
     pub hashed: usize,
+    pub skipped: usize,
 }
 
 /// The outcome of reading a source's file.
@@ -72,6 +86,9 @@ const MAX_FILE_SIZE: u64 = 16 * 1024 * 1024;
 /// key files named exist, so it runs on the background executor.
 /// `ssh_dir` is where relative includes resolve and what `~` is under.
 pub fn read_source(source: ImportSource, path: &Path, ssh_dir: &Path) -> ImportLoad {
+    if source == ImportSource::Xshell {
+        return xshell::read_paths(&[path.to_path_buf()]);
+    }
     let text = match read_capped(path) {
         Ok(text) => text,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return ImportLoad::Missing,
@@ -95,9 +112,11 @@ pub fn read_source(source: ImportSource, path: &Path, ssh_dir: &Path) -> ImportL
             ImportScan {
                 candidates,
                 hashed: 0,
+                skipped: 0,
             }
         }
         ImportSource::KnownHosts => known_hosts::parse(&text),
+        ImportSource::Xshell => unreachable!(),
     };
     scan.candidates.retain(|candidate| !is_git_host(candidate));
     ImportLoad::Loaded(scan)

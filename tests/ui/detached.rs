@@ -123,6 +123,45 @@ async fn closing_a_detached_terminal_closes_only_its_connection(cx: &mut TestApp
 }
 
 #[gpui_kit::test]
+async fn detached_window_language_changes_without_observing_workspace_updates(
+    cx: &mut TestAppContext,
+) {
+    let (main, workspace) = open_workspace(cx);
+    in_frame(cx, main, |window, cx| {
+        window.dispatch_action(
+            Box::new(DetachTab(CenterTab::Terminal(RemoteTerminalId(
+                INITIAL_WEB_TERMINAL,
+            )))),
+            cx,
+        );
+    });
+    let detached = other_window(cx, main);
+    in_frame(cx, detached, |window, _| {
+        assert_eq!(
+            window.find("return-detached-tab").label(),
+            Some("移回主窗口")
+        );
+    });
+    cx.update(|cx| {
+        let settings = workspace.read(cx).settings().clone();
+        settings.update(cx, |settings, cx| {
+            settings.update(
+                |settings| settings.language = InterfaceLanguage::English,
+                cx,
+            );
+        });
+    });
+    cx.wait_for(detached.into(), Duration::from_secs(2), |window, _| {
+        window.find("return-detached-tab").label() == Some("Move to main window")
+    })
+    .await;
+    in_frame(cx, detached, |window, cx| {
+        window.click("return-detached-tab", cx);
+    });
+    assert_eq!(cx.update(|cx| cx.windows().len()), 1);
+}
+
+#[gpui_kit::test]
 fn settings_can_move_to_a_window_and_return_without_duplication(cx: &mut TestAppContext) {
     let (main, _) = open_workspace(cx);
     in_frame(cx, main, |window, cx| window.click("open-settings", cx));

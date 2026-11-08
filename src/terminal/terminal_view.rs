@@ -50,6 +50,17 @@ pub const TERMINAL_KEY_CONTEXT: &str = "Terminal";
 /// Key context of a terminal's find bar.
 pub const TERMINAL_FIND_KEY_CONTEXT: &str = "TerminalFind";
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct TerminalPresentation {
+    status: TerminalStatus,
+    generation: u64,
+    title: Option<String>,
+    unread_output: bool,
+    latency: Option<Latency>,
+    recording: Option<PathBuf>,
+    modes: super::SerialDataModes,
+}
+
 /// How long typing in the find bar pauses before the scrollback is searched.
 /// A full search of a long scrollback takes a frame or more, so it waits for
 /// the query to settle rather than running on every keystroke.
@@ -678,6 +689,18 @@ impl TerminalView {
 
     pub fn status(&self, cx: &App) -> TerminalStatus {
         self.engine.read(cx).status()
+    }
+
+    pub(super) fn presentation(&self, cx: &App) -> TerminalPresentation {
+        TerminalPresentation {
+            status: self.status(cx),
+            generation: self.generation(cx),
+            title: self.title(cx),
+            unread_output: self.unread_output,
+            latency: self.latency(cx),
+            recording: self.recording_path(cx),
+            modes: self.serial_modes(cx),
+        }
     }
 
     pub fn lifecycle(&self, cx: &App) -> TerminalLifecycle {

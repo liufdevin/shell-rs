@@ -98,7 +98,7 @@ pub fn check(line: &SerialLine) -> Result<(), String> {
 ///
 /// macOS sets the rate with an ioctl that only a real port takes, so a
 /// pseudo-terminal posing as one (socat's) does not open there.
-fn open(line: &SerialLine) -> io::Result<SerialPort> {
+pub(crate) fn open(line: &SerialLine) -> io::Result<SerialPort> {
     let settings = line.settings;
     let port = SerialPort::open(&line.device, move |mut port: serial2::Settings| {
         port.set_raw();

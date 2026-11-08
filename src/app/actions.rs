@@ -44,6 +44,7 @@ gpui_kit::actions!(
         ImportSshConfig,
         /// Open the import dialog for the hosts `~/.ssh/known_hosts` names.
         ImportKnownHosts,
+        ImportXshell,
         ImportTerminalSchemes,
         /// Open a new local login-shell terminal.
         NewLocalTerminal,
@@ -266,6 +267,7 @@ macro_rules! id_actions {
 }
 
 id_actions! {
+    LanAction(crate::lan::LanCommand);
     AdbDeviceAction(crate::adb::DeviceCommand);
     DeviceLogAction(crate::device_logs::DeviceLogCommand);
     /// Ask where a new local or Cmder terminal starts, and whether it opens

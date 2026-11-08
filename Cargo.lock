@@ -7984,8 +7984,10 @@ dependencies = [
  "serial2",
  "sha2 0.10.9",
  "shellrs-hosts",
+ "shellrs-lan",
  "shellrs-ssh",
  "shellrs-sync",
+ "smol_str",
  "subtle",
  "sys-locale",
  "tempfile",
@@ -8018,6 +8020,26 @@ dependencies = [
  "shellrs-sync",
  "tempfile",
  "url",
+ "zeroize",
+]
+
+[[package]]
+name = "shellrs-lan"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "argon2",
+ "aws-lc-rs",
+ "base64 0.22.1",
+ "rand 0.10.2",
+ "russh",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "subtle",
+ "tempfile",
+ "tokio",
+ "windows-sys 0.61.2",
  "zeroize",
 ]
 

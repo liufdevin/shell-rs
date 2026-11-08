@@ -1,7 +1,7 @@
 //! What an import adds: the rows the dialog lists, with their defaults,
 //! checked as a whole before anything is written, then written in one go.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use gpui_kit::{Context, SharedString};
@@ -55,12 +55,12 @@ pub fn import_rows(scan: &ImportScan, store: &HostStore) -> Vec<ImportRow> {
     scan.candidates
         .iter()
         .map(|candidate| {
-            let existing = is_saved(store, &candidate.address, candidate.port);
+            let existing = is_saved(store, candidate, &candidate.user);
             ImportRow {
                 candidate: candidate.clone(),
                 selected: !existing,
                 name: candidate.name.clone(),
-                group: String::new(),
+                group: candidate.options.group.clone(),
                 user: candidate.user.clone(),
                 auth: default_auth(candidate, store),
                 existing,
@@ -74,7 +74,7 @@ pub fn import_rows(scan: &ImportScan, store: &HostStore) -> Vec<ImportRow> {
 /// deleted meanwhile leaves its rows without a password.
 pub fn refresh_rows(rows: &mut [ImportRow], store: &HostStore) {
     for row in rows {
-        let existing = is_saved(store, &row.candidate.address, row.candidate.port);
+        let existing = is_saved(store, &row.candidate, &row.user);
         if existing && !row.existing {
             row.selected = false;
         }
@@ -88,9 +88,13 @@ pub fn refresh_rows(rows: &mut [ImportRow], store: &HostStore) {
 }
 
 /// Whether a saved SSH host is at this address (any case) and port.
-fn is_saved(store: &HostStore, address: &str, port: u16) -> bool {
+fn is_saved(store: &HostStore, candidate: &ImportCandidate, user: &str) -> bool {
     store.hosts().iter().any(|host| {
-        host.is_ssh() && host.port == port && host.address.eq_ignore_ascii_case(address)
+        host.protocol.kind() == candidate.options.protocol
+            && host.port == candidate.port
+            && host.address.eq_ignore_ascii_case(&candidate.address)
+            && (!candidate.options.match_user
+                || host.user.as_ref() == candidate_user(candidate, user))
     })
 }
 
@@ -100,6 +104,7 @@ fn default_auth(candidate: &ImportCandidate, store: &HostStore) -> RowAuth {
             Some(id) => RowAuth::Credential(id),
             None => RowAuth::NewKey,
         },
+        None if candidate.options.password => RowAuth::Password,
         None => RowAuth::NoPassword,
     }
 }
@@ -128,6 +133,14 @@ fn login_user(user: &str) -> String {
     match user.trim() {
         "" => DEFAULT_USER.to_string(),
         user => user.to_string(),
+    }
+}
+
+fn candidate_user(candidate: &ImportCandidate, user: &str) -> String {
+    if candidate.options.protocol.is_telnet() {
+        user.trim().to_owned()
+    } else {
+        login_user(user)
     }
 }
 
@@ -198,9 +211,17 @@ pub fn plan_import(rows: &[ImportRow], store: &HostStore) -> Result<ImportPlan, 
     let mut entries = Vec::new();
     let mut credentials = Vec::new();
     let mut new_keys: HashMap<(PathBuf, String), usize> = HashMap::new();
+    let mut planned = HashSet::new();
     for row in rows.iter().filter(|row| row.will_import()) {
         let candidate = &row.candidate;
-        if is_saved(store, &candidate.address, candidate.port) {
+        let user = match row.auth {
+            RowAuth::Credential(id) => store
+                .credential(id)
+                .map(|credential| credential.user.to_string())
+                .unwrap_or_else(|| candidate_user(candidate, &row.user)),
+            _ => candidate_user(candidate, &row.user),
+        };
+        if is_saved(store, candidate, &user) {
             continue;
         }
         let shown_name = match row.name.trim() {
@@ -213,7 +234,15 @@ pub fn plan_import(rows: &[ImportRow], store: &HostStore) -> Result<ImportPlan, 
                 name: shown_name.clone(),
                 error,
             })?;
-        let user = login_user(&row.user);
+        let endpoint = (
+            candidate.options.protocol.as_str(),
+            candidate.address.to_lowercase(),
+            candidate.port,
+            user.clone(),
+        );
+        if !planned.insert(endpoint) {
+            continue;
+        }
         let (auth, login) = match row.auth {
             RowAuth::NoPassword => (AuthKind::NoPassword, Login::Own),
             RowAuth::Password => (AuthKind::Password, Login::Own),
@@ -238,16 +267,19 @@ pub fn plan_import(rows: &[ImportRow], store: &HostStore) -> Result<ImportPlan, 
                 None => (AuthKind::NoPassword, Login::Own),
             },
         };
-        let draft = HostDraft::new(
+        let mut draft = HostDraft::new(
             row.name.trim().to_string(),
             candidate.address.clone(),
             candidate.port,
             user,
             auth,
             None,
-        )
-        .validated()
-        .map_err(|error| ImportError::Host {
+        );
+        if candidate.options.protocol == super::super::ProtocolKind::Telnet {
+            draft.protocol = super::super::Protocol::Telnet(Default::default());
+        }
+        draft.notes = candidate.options.notes.clone().into();
+        let draft = draft.validated().map_err(|error| ImportError::Host {
             name: shown_name,
             error,
         })?;
@@ -355,6 +387,7 @@ mod tests {
             port: 22,
             user: "deploy".into(),
             identity: identity.map(PathBuf::from),
+            options: Default::default(),
         }
     }
 
@@ -362,6 +395,7 @@ mod tests {
         ImportScan {
             candidates,
             hashed: 0,
+            skipped: 0,
         }
     }
 
@@ -517,6 +551,19 @@ mod tests {
         assert_eq!(plan_import(&rows, &store).unwrap().entries.len(), 1);
         rows[0].existing = true;
         assert_eq!(plan_import(&rows, &store).unwrap().entries.len(), 0);
+    }
+
+    #[test]
+    fn different_accounts_survive_one_batch_and_edited_duplicates_are_not_added_twice() {
+        let store = HostStore::empty();
+        let mut root = candidate("root", "server.example.com", None);
+        root.user = "root".into();
+        let mut deploy = candidate("deploy", "server.example.com", None);
+        deploy.user = "deploy".into();
+        let mut rows = import_rows(&scan(vec![root, deploy]), &store);
+        assert_eq!(plan_import(&rows, &store).unwrap().entries.len(), 2);
+        rows[1].user = "root".into();
+        assert_eq!(plan_import(&rows, &store).unwrap().entries.len(), 1);
     }
 
     #[gpui_kit::test]

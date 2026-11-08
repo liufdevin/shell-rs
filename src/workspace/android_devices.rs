@@ -13,6 +13,33 @@ use gpui_kit::{
 };
 
 impl Workspace {
+    pub(super) fn open_remote_android_manager(
+        &mut self,
+        connection: crate::adb::AdbConnection,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if window.has_active_dialog(cx) {
+            return;
+        }
+        struct RemoteDetector(crate::adb::AdbConnection);
+        impl crate::adb::AdbDetector for RemoteDetector {
+            fn detect(&self, _: Option<&str>) -> crate::adb::AdbDetection {
+                crate::adb::AdbDetection::Matched(self.0.clone())
+            }
+        }
+        self.android_manager = Some(cx.new(|cx| {
+            DeviceManager::new(
+                std::sync::Arc::new(RemoteDetector(connection)),
+                self.android_tools.clone(),
+                self.focus_handle.clone(),
+                window,
+                cx,
+            )
+        }));
+        self.android_manager_remote = true;
+        self.show_android_manager(window, cx);
+    }
     pub(super) fn on_open_adb_devices(
         &mut self,
         _: &OpenAdbDevices,
@@ -22,20 +49,28 @@ impl Workspace {
         if window.has_active_dialog(cx) {
             return;
         }
-        let manager = self
-            .android_manager
-            .get_or_insert_with(|| {
-                cx.new(|cx| {
-                    DeviceManager::new(
-                        self.adb_detector.clone(),
-                        self.android_tools.clone(),
-                        self.focus_handle.clone(),
-                        window,
-                        cx,
-                    )
-                })
+        if self.android_manager_remote {
+            self.android_manager = None;
+            self.android_manager_remote = false;
+        }
+        self.android_manager.get_or_insert_with(|| {
+            cx.new(|cx| {
+                DeviceManager::new(
+                    self.adb_detector.clone(),
+                    self.android_tools.clone(),
+                    self.focus_handle.clone(),
+                    window,
+                    cx,
+                )
             })
-            .clone();
+        });
+        self.show_android_manager(window, cx);
+    }
+
+    fn show_android_manager(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(manager) = self.android_manager.clone() else {
+            return;
+        };
         manager.update(cx, |manager, cx| {
             manager.command(DeviceCommand::Refresh, window, cx)
         });

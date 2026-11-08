@@ -86,9 +86,107 @@ pub struct AdbConnection {
     boot_id: Option<String>,
     transport_id: Option<u64>,
     pty_required: Arc<AtomicBool>,
+    server: Option<Arc<super::lan_proxy::AdbProxy>>,
 }
 
 impl AdbConnection {
+    pub(crate) fn lan_identity(&self) -> String {
+        format!("{}:{:?}:{:?}", self.serial, self.transport_id, self.boot_id)
+    }
+
+    pub(crate) fn remote(
+        serial: String,
+        name: String,
+        proxy: Arc<super::lan_proxy::AdbProxy>,
+    ) -> Result<Self> {
+        let mut device = Self::new(
+            find_adb().ok_or_else(|| anyhow!(t!("adb.missing")))?,
+            serial,
+        )?;
+        device.name = Some(name);
+        device.server = Some(proxy);
+        Ok(device)
+    }
+
+    pub(crate) fn server_socket(&self) -> Option<String> {
+        self.server.as_ref().map(|server| server.socket())
+    }
+
+    pub(crate) fn remote_cancelled(&self) -> bool {
+        self.server
+            .as_ref()
+            .is_some_and(|server| server.is_stopped())
+    }
+
+    pub(crate) fn open_lan_service(
+        &self,
+        service: &str,
+        cancel: &AtomicBool,
+    ) -> Result<std::net::TcpStream> {
+        shellrs_lan::validate_adb_service(service)?;
+        for (variable, allowed) in [
+            (
+                "ADB_SERVER_SOCKET",
+                &["tcp:127.0.0.1:5037", "tcp:localhost:5037"][..],
+            ),
+            (
+                "ANDROID_ADB_SERVER_ADDRESS",
+                &["127.0.0.1", "localhost"][..],
+            ),
+            ("ANDROID_ADB_SERVER_PORT", &["5037"][..]),
+        ] {
+            if std::env::var_os(variable)
+                .is_some_and(|value| !allowed.iter().any(|allowed| value == *allowed))
+            {
+                bail!(t!("lan.devices.adb_local_server_required"));
+            }
+        }
+        self.verify(&mut || cancel.load(Ordering::Acquire))?;
+        if cancel.load(Ordering::Acquire) {
+            bail!(t!("adb.interrupted"));
+        }
+        let mut stream = std::net::TcpStream::connect_timeout(
+            &std::net::SocketAddr::from(([127, 0, 0, 1], 5037)),
+            Duration::from_secs(3),
+        )?;
+        stream.set_read_timeout(Some(Duration::from_secs(3)))?;
+        stream.set_write_timeout(Some(Duration::from_secs(3)))?;
+        let transport = self
+            .transport_id
+            .map(|id| format!("host:transport-id:{id}"))
+            .unwrap_or_else(|| format!("host:transport:{}", self.serial));
+        for request in [&transport, service] {
+            use std::io::Write as _;
+            if cancel.load(Ordering::Acquire) {
+                bail!(t!("adb.interrupted"));
+            }
+            stream.write_all(format!("{:04x}{request}", request.len()).as_bytes())?;
+            let mut status = [0; 4];
+            stream.read_exact(&mut status)?;
+            if &status != b"OKAY" {
+                bail!(t!("adb.invalid_response"));
+            }
+        }
+        stream.set_nonblocking(true)?;
+        Ok(stream)
+    }
+
+    pub(crate) fn lan_terminal_command(
+        &self,
+        cancelled: &AtomicBool,
+    ) -> Result<portable_pty::CommandBuilder> {
+        self.verify(&mut || cancelled.load(Ordering::Acquire))?;
+        let mut command = portable_pty::CommandBuilder::new(
+            self.program().ok_or_else(|| anyhow!(t!("adb.missing")))?,
+        );
+        if let Some(id) = self.transport_id {
+            command.args(["-t", &id.to_string()]);
+        } else {
+            command.args(["-s", &self.serial]);
+        }
+        command.args(["shell", "-tt"]);
+        Ok(command)
+    }
     pub(super) fn program(&self) -> Option<PathBuf> {
         self.runner.program()
     }
@@ -108,6 +206,7 @@ impl AdbConnection {
             boot_id: None,
             transport_id: None,
             pty_required: Arc::new(AtomicBool::new(false)),
+            server: None,
         })
     }
 
@@ -166,7 +265,17 @@ impl AdbConnection {
             None => vec![OsString::from("-s"), OsString::from(&self.serial)],
         };
         command.extend(args.iter().map(|value| value.to_os_string()));
-        self.runner.run(&command, timeout, cancel)
+        if let Some(server) = &self.server {
+            let runner = SystemRunner(self.program().ok_or_else(|| anyhow!(t!("adb.missing")))?);
+            runner.run_at(
+                &command,
+                timeout,
+                &mut || cancel() || server.is_stopped(),
+                Some(&server.socket()),
+            )
+        } else {
+            self.runner.run(&command, timeout, cancel)
+        }
     }
 
     pub(super) fn shell(&self, script: &str, cancel: &mut dyn FnMut() -> bool) -> Result<Vec<u8>> {
@@ -290,6 +399,7 @@ impl AdbConnection {
             boot_id: Some("00000000-0000-4000-8000-000000000001".into()),
             transport_id: None,
             pty_required: Arc::new(AtomicBool::new(false)),
+            server: None,
         }
     }
 
@@ -401,6 +511,7 @@ fn discover(runner: Arc<dyn Runner>, boot_id: Option<&str>) -> Result<AdbDetecti
             boot_id: None,
             transport_id,
             pty_required: Arc::new(AtomicBool::new(false)),
+            server: None,
         };
         device.boot_id = device.identity(&mut || false).ok().flatten();
         devices.push(device);
@@ -544,7 +655,22 @@ impl Runner for SystemRunner {
         timeout: Duration,
         cancel: &mut dyn FnMut() -> bool,
     ) -> Result<Vec<u8>> {
+        self.run_at(args, timeout, cancel, None)
+    }
+}
+
+impl SystemRunner {
+    fn run_at(
+        &self,
+        args: &[OsString],
+        timeout: Duration,
+        cancel: &mut dyn FnMut() -> bool,
+        server: Option<&str>,
+    ) -> Result<Vec<u8>> {
         let mut command = Command::new(&self.0);
+        if let Some(server) = server {
+            command.env("ADB_SERVER_SOCKET", server);
+        }
         command
             .args(args)
             .stdin(Stdio::null())

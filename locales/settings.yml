@@ -85,8 +85,23 @@ settings.category.external_cli:
   zh-CN: 外部 CLI
   en: External CLI
 settings.category.sync:
-  zh-CN: 云同步
-  en: Cloud sync
+  zh-CN: 同步
+  en: Sync
+settings.sync.import:
+  zh-CN: 迁移主机
+  en: Import hosts
+settings.sync.import_xshell:
+  zh-CN: Xshell 配置
+  en: Xshell configuration
+settings.sync.import_xshell_description:
+  zh-CN: 导入 Xshell 的 SSH、Telnet 主机和目录分组，预览后选择要添加的主机。无需开启云同步。
+  en: Preview and import SSH and Telnet hosts and folder groups from Xshell. Cloud sync is not required.
+settings.sync.import_xshell_button:
+  zh-CN: 从 Xshell 导入…
+  en: Import from Xshell…
+settings.sync.import_keywords:
+  zh-CN: Xshell xsh xts zip 导入 迁移 主机
+  en: Xshell xsh xts zip import migration hosts
 settings.category.application:
   zh-CN: 应用
   en: General

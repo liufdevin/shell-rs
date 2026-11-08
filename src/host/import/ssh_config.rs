@@ -123,6 +123,7 @@ impl SshConfig {
                 port,
                 user,
                 identity,
+                options: Default::default(),
             });
         }
         hosts

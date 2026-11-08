@@ -27,6 +27,7 @@ use crate::shared::{
 };
 
 use super::session_io::{DailyLog, TerminalOptions};
+use super::terminal_view::TerminalPresentation;
 use super::{
     HostTerminalTransports, RemoteTerminalId, ReportedDirectory, TerminalEvent, TerminalLifecycle,
     TerminalMenuItems, TerminalNotice, TerminalStatus, TerminalView, ZmodemDirection, ZmodemReply,
@@ -59,6 +60,7 @@ pub struct TerminalPanel {
     host_id: HostId,
     store: Entity<HostStore>,
     terminal: Entity<TerminalView>,
+    presentation: TerminalPresentation,
     transports: HostTerminalTransports,
     /// The host as it was when the tab opened: what the tab shows, what
     /// it offers (only SSH has SFTP, only a serial port no address to copy)
@@ -205,6 +207,7 @@ impl TerminalPanel {
             terminal
         });
         let hex_input = cx.new(|cx| InputState::new(window, cx).placeholder("00 FF 0D 0A"));
+        let presentation = terminal.read(cx).presentation(cx);
         let subscriptions = vec![
             cx.subscribe_in(&hex_input, window, move |_, _, event, window, cx| {
                 if matches!(event, InputEvent::PressEnter { .. }) {
@@ -225,7 +228,12 @@ impl TerminalPanel {
                 }
                 cx.notify();
             }),
-            cx.observe(&terminal, |this, _, cx| {
+            cx.observe(&terminal, |this, terminal, cx| {
+                let presentation = terminal.read(cx).presentation(cx);
+                if this.presentation == presentation {
+                    return;
+                }
+                this.presentation = presentation;
                 cx.emit(TerminalPanelEvent::StatusChanged(this.id, this.host_id));
                 cx.notify();
             }),
@@ -304,6 +312,7 @@ impl TerminalPanel {
             host_id,
             store,
             terminal,
+            presentation,
             transports,
             host,
             connection,

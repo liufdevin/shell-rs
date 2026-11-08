@@ -201,6 +201,7 @@ impl ChangeReply {
 
 /// What the listener and the request threads share with the app.
 struct Shared {
+    lan: RwLock<Option<Arc<shellrs_lan::Core>>>,
     enabled: AtomicBool,
     targets: RwLock<Vec<CliTarget>>,
     credentials: RwLock<Vec<CliCredential>>,
@@ -252,7 +253,7 @@ impl CliUse {
             | Request::CreateCredential { .. }
             | Request::UpdateCredential { .. }
             | Request::DeleteCredential { .. } => Some(Self::Credentials),
-            Request::Activate { .. } => None,
+            Request::Activate { .. } | Request::Lan { .. } => None,
         }
     }
 }
@@ -279,6 +280,7 @@ impl CliServer {
     /// Only activation requests are accepted until a backend and hosts exist.
     pub fn reserve(endpoint: PathBuf) -> io::Result<Self> {
         let shared = Arc::new(Shared {
+            lan: RwLock::new(None),
             enabled: AtomicBool::new(false),
             targets: RwLock::new(Vec::new()),
             credentials: RwLock::new(Vec::new()),
@@ -302,6 +304,14 @@ impl CliServer {
             .backend
             .write()
             .unwrap_or_else(|error| error.into_inner()) = Some(backend);
+    }
+
+    pub fn set_lan(&self, core: Option<Arc<shellrs_lan::Core>>) {
+        *self
+            .shared
+            .lan
+            .write()
+            .unwrap_or_else(|error| error.into_inner()) = core;
     }
 
     pub fn set_enabled(&self, enabled: bool) {
@@ -728,6 +738,65 @@ fn respond(
             .push(usage);
     }
     match envelope.request {
+        Request::Lan { request } => {
+            let core = shared
+                .lan
+                .read()
+                .unwrap_or_else(|error| error.into_inner())
+                .clone()
+                .filter(|core| core.is_active())
+                .ok_or_else(|| CliError::new(ErrorCode::NotEnabled, t!("lan.unavailable")))?;
+            let failure = |error: anyhow::Error| {
+                CliError::new(ErrorCode::ConnectFailed, crate::lan::describe_error(&error))
+            };
+            match request {
+                shellrs_lan::ClientRequest::Peers => Ok(Reply::Lan {
+                    value: serde_json::to_value(core.peers())
+                        .map_err(|error| failure(error.into()))?,
+                }),
+                shellrs_lan::ClientRequest::Hosts { peer } => {
+                    let response = core
+                        .request(
+                            &peer,
+                            shellrs_lan::RemoteRequest::Hosts,
+                            &AtomicBool::new(false),
+                            &mut |_, _| Ok(()),
+                        )
+                        .map_err(failure)?;
+                    Ok(Reply::Lan {
+                        value: serde_json::to_value(response)
+                            .map_err(|error| failure(error.into()))?,
+                    })
+                }
+                shellrs_lan::ClientRequest::Execute {
+                    peer,
+                    host,
+                    command,
+                } => {
+                    let response = core
+                        .request(
+                            &peer,
+                            shellrs_lan::RemoteRequest::Execute { host, command },
+                            &AtomicBool::new(false),
+                            &mut |stderr, bytes| {
+                                write_frame(
+                                    writer,
+                                    if stderr {
+                                        FrameKind::Stderr
+                                    } else {
+                                        FrameKind::Stdout
+                                    },
+                                    bytes,
+                                )
+                            },
+                        )
+                        .map_err(failure)?;
+                    Ok(Reply::Exit {
+                        code: response.exit_code.unwrap_or(255),
+                    })
+                }
+            }
+        }
         Request::List { query } => {
             let targets = shared
                 .targets

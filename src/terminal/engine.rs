@@ -1,6 +1,7 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
@@ -21,6 +22,7 @@ use alacritty_terminal::vte::ansi::{
 };
 use futures::future::{Either, select};
 use gpui_kit::SharedString;
+use smol_str::SmolStr;
 
 use crate::connection::{ConnectionPrompt, ConnectionPromptReply, Latency};
 use crate::host::{HostOs, TerminalEncoding};
@@ -54,9 +56,67 @@ pub type AlacrittyTerm = Term<TerminalEventProxy>;
 
 const AI_CITATION_PATTERN: &str = r"\x{e200}cite\x{e202}turn[0-9]+(?:view|search)[0-9]+(?:\x{e202}turn[0-9]+(?:view|search)[0-9]+)*\x{e201}";
 
+const OUTPUT_QUEUE_CAPACITY: usize = 64;
+
+#[derive(Clone, Default)]
+struct DisplaySearches {
+    links: Rc<RefCell<Option<RegexSearch>>>,
+    citations: Rc<RefCell<Option<RegexSearch>>>,
+}
+
+impl gpui_kit::Global for DisplaySearches {}
+
+impl DisplaySearches {
+    fn links(
+        &self,
+        term: &AlacrittyTerm,
+    ) -> Vec<(alacritty_terminal::term::search::Match, SharedString)> {
+        visible_links(term, self.links.borrow_mut().get_or_insert_with(url_search))
+    }
+
+    fn citations(&self, term: &AlacrittyTerm) -> Vec<alacritty_terminal::term::search::Match> {
+        visible_matches(
+            term,
+            self.citations.borrow_mut().get_or_insert_with(|| {
+                RegexSearch::new(AI_CITATION_PATTERN).expect("the citation pattern is valid")
+            }),
+        )
+    }
+}
+
+#[derive(Default)]
+struct EventPolling {
+    idle_ticks: u32,
+}
+
+impl EventPolling {
+    fn interval(&self, focused: bool) -> Duration {
+        if focused || self.idle_ticks < 8 {
+            Duration::from_millis(16)
+        } else {
+            Duration::from_millis(100)
+        }
+    }
+
+    fn observe(&mut self, active: bool) {
+        self.idle_ticks = if active {
+            0
+        } else {
+            self.idle_ticks.saturating_add(1)
+        };
+    }
+}
+
+fn cell_text(cell: &alacritty_terminal::term::cell::Cell) -> SmolStr {
+    std::iter::once(cell.c)
+        .chain(cell.zerowidth().unwrap_or_default().iter().copied())
+        .collect()
+}
+
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct TerminalCell {
-    pub character: String,
+    pub character: SmolStr,
     pub foreground: Color,
     pub background: Color,
     pub flags: Flags,
@@ -120,9 +180,9 @@ pub struct TerminalEngine {
     /// The open find, if any. Rendering reads it through `&self` and still
     /// has to advance the search engine's cache, hence the `RefCell`.
     search: RefCell<Option<TerminalSearch>>,
-    /// Finds the web addresses on screen, built once.
-    url_search: RefCell<RegexSearch>,
-    citation_search: RefCell<RegexSearch>,
+    display_searches: DisplaySearches,
+    focused: Rc<Cell<bool>>,
+    poll_wakeup: async_channel::Sender<()>,
     /// The 关键字高亮 rules, shared with the parser thread, which checks new
     /// lines against them; swapped when the settings change them.
     highlights: SharedHighlights,
@@ -168,6 +228,7 @@ impl TerminalEngine {
         // threads therefore never wake GPUI's local executor directly, and a
         // burst of terminal bytes results in a single render notification.
         let (event_sender, event_receiver) = mpsc::channel();
+        let (poll_wakeup, poll_wakeups) = async_channel::bounded(1);
         let highlights = Arc::new(Mutex::new(TerminalHighlights::current(cx)));
         let theme = Arc::new(Mutex::new(TerminalColors::current(cx).clone()));
         let io = Arc::new(SessionIo::default());
@@ -233,10 +294,9 @@ impl TerminalEngine {
             title: None,
             latency: None,
             search: RefCell::new(None),
-            url_search: RefCell::new(url_search()),
-            citation_search: RefCell::new(
-                RegexSearch::new(AI_CITATION_PATTERN).expect("the citation pattern is valid"),
-            ),
+            display_searches: cx.default_global::<DisplaySearches>().clone(),
+            focused: Rc::default(),
+            poll_wakeup,
             highlights,
             _highlights_observer: highlights_observer,
             theme,
@@ -262,13 +322,21 @@ impl TerminalEngine {
             reconnect_task: None,
             reconnect_settings: reconnect,
         };
-        this.event_task = Some(Self::listen(event_receiver, this.io.clone(), cx));
+        this.event_task = Some(Self::listen(
+            event_receiver,
+            this.io.clone(),
+            this.focused.clone(),
+            poll_wakeups,
+            cx,
+        ));
         this
     }
 
     fn listen(
         events: mpsc::Receiver<TerminalUiEvent>,
         io: Arc<SessionIo>,
+        focused: Rc<Cell<bool>>,
+        poll_wakeups: async_channel::Receiver<()>,
         cx: &mut gpui_kit::Context<Self>,
     ) -> gpui_kit::Task<()> {
         cx.spawn(async move |this, cx| {
@@ -277,12 +345,17 @@ impl TerminalEngine {
             // (`crate::app::frame_due`).
             let mut drawn: Option<Instant> = None;
             let mut undrawn = false;
+            let mut polling = EventPolling::default();
             loop {
-                cx.background_executor()
-                    .timer(Duration::from_millis(16))
-                    .await;
+                let timer = std::pin::pin!(
+                    cx.background_executor()
+                        .timer(polling.interval(focused.get()))
+                );
+                let wakeup = std::pin::pin!(poll_wakeups.recv());
+                let _ = select(timer, wakeup).await;
                 let batch: Vec<_> = events.try_iter().collect();
                 let recording_error = io.take_error();
+                polling.observe(!batch.is_empty() || undrawn || recording_error.is_some());
                 if batch.is_empty() && !undrawn && recording_error.is_none() {
                     continue;
                 }
@@ -871,6 +944,10 @@ impl TerminalEngine {
     }
 
     pub fn set_focused(&self, focused: bool) {
+        self.focused.set(focused);
+        if focused {
+            let _ = self.poll_wakeup.try_send(());
+        }
         let mut term = self.runtime.term.lock();
         if term.is_focused == focused {
             return;
@@ -1074,20 +1151,17 @@ impl TerminalEngine {
             .unwrap_or_default();
         let mut marker = MatchMarker::new(&matches, focused.as_ref());
         let citations = if hide_ai_citations {
-            visible_matches(&term, &mut self.citation_search.borrow_mut())
+            self.display_searches.citations(&term)
         } else {
             Vec::new()
         };
         let mut citation_marker = MatchMarker::new(&citations, None);
-        let mut links = LinkMarker::new(visible_links(&term, &mut self.url_search.borrow_mut()));
+        let mut links = LinkMarker::new(self.display_searches.links(&term));
         let highlights = current(&self.highlights).screen(&term);
         let mut cells: Vec<_> = content
             .display_iter
             .map(|indexed| {
-                let mut character = indexed.cell.c.to_string();
-                if let Some(zerowidth) = indexed.cell.zerowidth() {
-                    character.extend(zerowidth);
-                }
+                let character = cell_text(indexed.cell);
                 let citation_hidden = citation_marker.mark(indexed.point) != SearchMark::None;
                 let link = links.mark(indexed.point, indexed.cell.hyperlink());
                 TerminalCell {
@@ -1237,6 +1311,7 @@ pub enum TerminalEvent {
 
 struct TerminalRuntime {
     encoding: TerminalEncoding,
+    events: async_channel::Receiver<TerminalTransportEvent>,
     term: Arc<FairMutex<AlacrittyTerm>>,
     commands: mpsc::Sender<TerminalTransportCommand>,
     size: Arc<Mutex<TerminalSize>>,
@@ -1279,7 +1354,8 @@ impl TerminalRuntime {
         } = options;
         transport.set_encoding(encoding);
         let (commands, command_receiver) = mpsc::channel();
-        let (transport_events, transport_receiver) = async_channel::unbounded();
+        let (transport_events, transport_receiver) = async_channel::bounded(OUTPUT_QUEUE_CAPACITY);
+        let events = transport_receiver.clone();
         let shared_size = Arc::new(Mutex::new(size));
         let wakeup_pending = Arc::new(AtomicBool::new(false));
         let received_output = Arc::new(AtomicU64::new(0));
@@ -1491,6 +1567,7 @@ impl TerminalRuntime {
         Self {
             term,
             encoding,
+            events,
             commands,
             size: shared_size,
             wakeup_pending,
@@ -1523,6 +1600,7 @@ impl TerminalRuntime {
     }
 
     fn shutdown(&self) {
+        self.events.close();
         let _ = self.commands.send(TerminalTransportCommand::Shutdown);
     }
 
@@ -2122,6 +2200,158 @@ mod tests {
     use super::*;
     use alacritty_terminal::index::{Column, Line};
     use alacritty_terminal::vte::ansi::NamedColor;
+
+    #[test]
+    fn idle_background_polling_backs_off_without_throttling_active_terminals() {
+        let mut polling = EventPolling::default();
+        assert_eq!(polling.interval(false), Duration::from_millis(16));
+        for _ in 0..8 {
+            polling.observe(false);
+        }
+        assert_eq!(polling.interval(false), Duration::from_millis(100));
+        assert_eq!(polling.interval(true), Duration::from_millis(16));
+        polling.observe(true);
+        assert_eq!(polling.interval(false), Duration::from_millis(16));
+    }
+
+    #[test]
+    fn ordinary_cell_text_is_inline_and_combining_sequences_are_preserved() {
+        for character in [' ', 'a', '中', '🦀'] {
+            let mut cell = alacritty_terminal::term::cell::Cell {
+                c: character,
+                ..Default::default()
+            };
+            let text = cell_text(&cell);
+            assert_eq!(text, character.to_string());
+            assert!(!text.is_heap_allocated());
+            cell.push_zerowidth('\u{301}');
+            let text = cell_text(&cell);
+            assert_eq!(text, format!("{character}\u{301}"));
+            assert!(!text.is_heap_allocated());
+            for _ in 0..32 {
+                cell.push_zerowidth('\u{301}');
+            }
+            assert_eq!(
+                cell_text(&cell),
+                format!("{character}{}", "\u{301}".repeat(33))
+            );
+        }
+    }
+
+    #[gpui_kit::test]
+    fn terminal_display_matchers_share_one_lazy_cache_per_app(cx: &mut gpui_kit::TestAppContext) {
+        cx.update(|cx| {
+            let first = cx.default_global::<DisplaySearches>().clone();
+            let second = cx.default_global::<DisplaySearches>().clone();
+            assert!(Rc::ptr_eq(&first.links, &second.links));
+            assert!(Rc::ptr_eq(&first.citations, &second.citations));
+            assert!(first.links.borrow().is_none());
+            assert!(first.citations.borrow().is_none());
+            let mut linked = test_term(80, 4);
+            feed(&mut linked, b"https://example.com");
+            let plain = test_term(80, 4);
+            assert_eq!(first.links(&linked).len(), 1);
+            assert!(second.links(&plain).is_empty());
+            assert_eq!(second.links(&linked)[0].1.as_ref(), "https://example.com");
+            assert!(first.citations.borrow().is_none());
+            feed(
+                &mut linked,
+                " \u{e200}cite\u{e202}turn0view0\u{e201}".as_bytes(),
+            );
+            assert_eq!(second.citations(&linked).len(), 1);
+            assert!(first.citations(&plain).is_empty());
+        });
+    }
+
+    #[test]
+    fn output_queue_applies_backpressure_and_shutdown_releases_blocked_senders() {
+        struct ObservedTransport(mpsc::Sender<async_channel::Sender<TerminalTransportEvent>>);
+
+        impl super::super::TerminalTransport for ObservedTransport {
+            fn run(
+                self: Box<Self>,
+                _: TerminalSize,
+                commands: mpsc::Receiver<TerminalTransportCommand>,
+                events: async_channel::Sender<TerminalTransportEvent>,
+            ) -> anyhow::Result<()> {
+                self.0.send(events)?;
+                while let Ok(command) = commands.recv() {
+                    if matches!(command, TerminalTransportCommand::Shutdown) {
+                        break;
+                    }
+                }
+                Ok(())
+            }
+        }
+
+        let (transport, ready) = mpsc::channel();
+        let runtime = run_test_transport(
+            Box::new(ObservedTransport(transport)),
+            TerminalEncoding::Utf8,
+            Arc::default(),
+        );
+        let sender = ready.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert_eq!(runtime.events.capacity(), Some(OUTPUT_QUEUE_CAPACITY));
+        let grid = runtime.term.lock();
+        sender
+            .try_send(TerminalTransportEvent::Output(b"first".to_vec()))
+            .unwrap();
+        assert!(eventually(|| runtime.events.is_empty()));
+        for _ in 0..OUTPUT_QUEUE_CAPACITY {
+            sender
+                .try_send(TerminalTransportEvent::Output(vec![b'x'; 8192]))
+                .unwrap();
+        }
+        assert!(matches!(
+            sender.try_send(TerminalTransportEvent::Output(vec![b'x'; 8192])),
+            Err(async_channel::TrySendError::Full(_))
+        ));
+        let (done, completed) = mpsc::channel();
+        let worker = thread::spawn(move || {
+            let result = sender.send_blocking(TerminalTransportEvent::Output(vec![b'x'; 8192]));
+            done.send(result.is_err()).unwrap();
+        });
+        assert!(completed.recv_timeout(Duration::from_millis(20)).is_err());
+        runtime.shutdown();
+        assert!(completed.recv_timeout(Duration::from_secs(2)).unwrap());
+        worker.join().unwrap();
+        let released = Arc::downgrade(&runtime.term);
+        drop(grid);
+        drop(runtime);
+        assert!(eventually(|| released.strong_count() == 0));
+    }
+
+    #[test]
+    fn output_larger_than_the_queue_is_parsed_in_order_without_loss() {
+        let mut script: Vec<_> = (0..256)
+            .map(|number| TerminalTransportEvent::Output(format!("{number}\r\n").into_bytes()))
+            .collect();
+        script.push(TerminalTransportEvent::Output(b"burst-finished".to_vec()));
+        let runtime = run_script(script);
+        assert!(screen_once_it_shows(&runtime, "burst-finished").contains("burst-finished"));
+        let term = runtime.term.lock();
+        let text = term.bounds_to_string(
+            Point::new(term.topmost_line(), Column(0)),
+            Point::new(term.bottommost_line(), term.last_column()),
+        );
+        let expected = (0..256)
+            .map(|number| format!("{number}\n"))
+            .collect::<String>();
+        assert_eq!(text.trim_end(), format!("{expected}burst-finished"));
+    }
+
+    #[test]
+    fn closing_many_terminals_releases_parser_grids() {
+        let runtimes: Vec<_> = (0..24).map(|_| run_script(Vec::new())).collect();
+        let grids: Vec<_> = runtimes
+            .iter()
+            .map(|runtime| Arc::downgrade(&runtime.term))
+            .collect();
+        drop(runtimes);
+        assert!(eventually(|| grids
+            .iter()
+            .all(|grid| grid.strong_count() == 0)));
+    }
 
     #[test]
     fn output_activity_ignores_cursor_title_style_and_identical_tui_redraws() {
@@ -3087,11 +3317,19 @@ mod tests {
         encoding: TerminalEncoding,
         io: Arc<SessionIo>,
     ) -> TerminalRuntime {
+        run_test_transport(Box::new(ScriptedTransport(script)), encoding, io)
+    }
+
+    fn run_test_transport(
+        transport: Box<dyn super::super::TerminalTransport>,
+        encoding: TerminalEncoding,
+        io: Arc<SessionIo>,
+    ) -> TerminalRuntime {
         let (ui_events, _) = mpsc::channel();
         TerminalRuntime::start(
             1,
             TerminalSize::new(40, 4, 8, 16),
-            Box::new(ScriptedTransport(script)),
+            transport,
             ui_events,
             RuntimeOptions {
                 highlights: Arc::default(),

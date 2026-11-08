@@ -373,7 +373,8 @@ fn the_about_category_is_hidden_in_both_languages(cx: &mut TestAppContext) {
         });
         in_frame(cx, handle, |window, cx| {
             assert!(window.within("settings").try_find("0-7").is_some());
-            assert!(window.within("settings").try_find("0-8").is_none());
+            assert!(window.within("settings").try_find("0-8").is_some());
+            assert!(window.within("settings").try_find("0-9").is_none());
             window.within("settings").click("0-7", cx);
             assert!(window.try_find("about-version").is_none());
             assert!(window.try_find("check-for-updates").is_none());

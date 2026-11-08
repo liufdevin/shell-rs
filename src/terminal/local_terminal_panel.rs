@@ -17,6 +17,7 @@ use crate::app::{CatalogIcon, CenterTab, CloseLocalTerminal, RestartLocalTermina
 use crate::i18n::t;
 use crate::shared::{ClosableTabTitle, close_tab_items};
 
+use super::terminal_view::TerminalPresentation;
 use super::{
     LocalTerminalId, SharedTerminalTransportFactory, TerminalEvent, TerminalLifecycle,
     TerminalNotice, TerminalStatus, TerminalView, ZmodemDirection, ZmodemReply,
@@ -55,6 +56,7 @@ pub struct LocalTerminalPanel {
     /// Its name in 项目, for a terminal kept there.
     name: Option<SavedName>,
     terminal: Entity<TerminalView>,
+    presentation: TerminalPresentation,
     tab_group: Option<WeakEntity<TabGroup>>,
     broadcast: Option<super::BroadcastSelection>,
     _subscriptions: Vec<Subscription>,
@@ -78,8 +80,14 @@ impl LocalTerminalPanel {
                 cx,
             )
         });
+        let presentation = terminal.read(cx).presentation(cx);
         let subscriptions = vec![
-            cx.observe(&terminal, move |_, _, cx| {
+            cx.observe(&terminal, move |this, terminal, cx| {
+                let presentation = terminal.read(cx).presentation(cx);
+                if this.presentation == presentation {
+                    return;
+                }
+                this.presentation = presentation;
                 cx.emit(LocalTerminalPanelEvent::StatusChanged(id));
                 cx.notify();
             }),
@@ -114,6 +122,7 @@ impl LocalTerminalPanel {
             id,
             name,
             terminal,
+            presentation,
             tab_group: None,
             broadcast: None,
             _subscriptions: subscriptions,

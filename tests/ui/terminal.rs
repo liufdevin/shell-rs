@@ -1984,6 +1984,77 @@ async fn tab_output_indicator_marks_only_unread_background_output(cx: &mut TestA
 }
 
 #[gpui_kit::test]
+async fn local_output_repaints_without_notifying_the_workspace(cx: &mut TestAppContext) {
+    let (handle, workspace) =
+        open_running_local_terminal(cx, Arc::new(FakeTerminalFactory::default())).await;
+    in_frame(cx, handle, |window, cx| {
+        window.click(("local-terminal", 1u64), cx)
+    });
+    cx.run_until_parked();
+    let notifications = Arc::new(AtomicUsize::new(0));
+    let counted = notifications.clone();
+    let _subscription = cx.update(|cx| {
+        cx.observe(&workspace, move |_, _| {
+            counted.fetch_add(1, Ordering::SeqCst);
+        })
+    });
+    for round in 0..5 {
+        let marker = format!("local-frame-{round}");
+        in_frame(cx, handle, |window, cx| window.input(&marker, cx));
+        cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+            window.find(("local-terminal", 1u64)).visible()
+                && local_screen(&workspace, cx).contains(&marker)
+        })
+        .await;
+    }
+    assert_eq!(notifications.load(Ordering::SeqCst), 0);
+}
+
+#[gpui_kit::test]
+async fn remote_output_repaints_without_notifying_the_workspace(cx: &mut TestAppContext) {
+    let (store, host) = one_host_store(AuthKind::Password);
+    let (handle, workspace) =
+        open_workspace_with_remote_factory(cx, store, Arc::new(FakeTerminalFactory::default()));
+    in_frame(cx, handle, |window, cx| {
+        window.dispatch_action(Box::new(ConnectHost(host)), cx)
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(2), |_, cx| {
+        workspace
+            .read(cx)
+            .remote_terminal(RemoteTerminalId(1))
+            .is_some_and(|panel| panel.read(cx).lifecycle(cx).accepts_input())
+    })
+    .await;
+    in_frame(cx, handle, |window, cx| {
+        window.click(("terminal", 1u64), cx)
+    });
+    cx.run_until_parked();
+    let notifications = Arc::new(AtomicUsize::new(0));
+    let counted = notifications.clone();
+    let _subscription = cx.update(|cx| {
+        cx.observe(&workspace, move |_, _| {
+            counted.fetch_add(1, Ordering::SeqCst);
+        })
+    });
+    for round in 0..5 {
+        let marker = format!("remote-frame-{round}");
+        in_frame(cx, handle, |window, cx| window.input(&marker, cx));
+        cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+            let owner = workspace.read(cx);
+            let terminal = owner
+                .remote_terminal(RemoteTerminalId(1))
+                .unwrap()
+                .read(cx)
+                .terminal();
+            window.find(("terminal", 1u64)).visible()
+                && terminal.read(cx).screen_text(cx).contains(&marker)
+        })
+        .await;
+    }
+    assert_eq!(notifications.load(Ordering::SeqCst), 0);
+}
+
+#[gpui_kit::test]
 async fn tab_output_indicator_does_not_reappear_for_an_idle_cli_redraw(cx: &mut TestAppContext) {
     let (handle, workspace) =
         open_running_local_terminal(cx, Arc::new(FakeTerminalFactory::default())).await;

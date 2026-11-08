@@ -35,7 +35,8 @@ impl DetachedView {
         cx: &mut Context<Self>,
     ) -> Self {
         let mut subscriptions = vec![
-            cx.observe(&workspace, |_, _, cx| cx.notify()),
+            cx.observe_global::<crate::i18n::UiLocale>(|_, cx| cx.notify()),
+            cx.observe_global::<gpui_kit::component::Theme>(|_, cx| cx.notify()),
             cx.on_focus_in(&root_focus, window, |this, window, cx| {
                 this.activate(window, cx)
             }),
@@ -75,8 +76,10 @@ impl DetachedView {
 
     fn activate(&self, window: &mut Window, cx: &mut Context<Self>) {
         self.workspace.update(cx, |workspace, cx| {
-            workspace.active_tab = Some(self.tab);
-            cx.notify();
+            if workspace.active_tab != Some(self.tab) {
+                workspace.active_tab = Some(self.tab);
+                cx.notify();
+            }
         });
         window.refresh();
     }

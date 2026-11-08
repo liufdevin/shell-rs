@@ -117,12 +117,18 @@ impl AndroidTools for SystemAndroidTools {
             bail!(t!("android.invalid_apk"));
         }
         let apk = apk.canonicalize()?;
+        if device.server_socket().is_some() && apk.metadata()?.len() > 2 * 1024 * 1024 * 1024 {
+            bail!(t!("lan.devices.apk_too_large"));
+        }
         verify(device, cancel)?;
-        let output = device.run(
-            &[OsStr::new("install"), OsStr::new("-r"), apk.as_os_str()],
-            Duration::from_secs(300),
-            &mut || cancel.load(Ordering::Acquire),
-        )?;
+        let mut arguments = vec![OsStr::new("install"), OsStr::new("-r")];
+        if device.server_socket().is_some() {
+            arguments.push(OsStr::new("--streaming"));
+        }
+        arguments.push(apk.as_os_str());
+        let output = device.run(&arguments, Duration::from_secs(300), &mut || {
+            cancel.load(Ordering::Acquire)
+        })?;
         check_install(&String::from_utf8(output)?)
     }
     fn launch(&self, device: &AdbConnection, package: &str, cancel: &AtomicBool) -> Result<()> {

@@ -1,4 +1,4 @@
-//! 设置 › 云同步: off, the three ways to turn it on (a folder, a WebDAV
+//! 设置 › 同步: off, the three ways to turn it on (a folder, a WebDAV
 //! server, an S3 bucket); on, where this computer stands, the other
 //! devices, and the sync password.
 
@@ -16,8 +16,8 @@ use shellrs_sync::RemoteDevice;
 
 use super::settings_panel::keywords;
 use crate::app::{
-    CatalogIcon, ChangeSyncLogin, ChangeSyncPassword, RemoveSyncDevice, ReviewSync, SetUpS3Sync,
-    SetUpSync, SetUpWebDavSync, SyncNow, TurnOffSync,
+    CatalogIcon, ChangeSyncLogin, ChangeSyncPassword, ImportXshell, RemoveSyncDevice, ReviewSync,
+    SetUpS3Sync, SetUpSync, SetUpWebDavSync, SyncNow, TurnOffSync,
 };
 use crate::host::ErrorMessage as _;
 use crate::i18n::{t, tn};
@@ -27,7 +27,7 @@ use crate::sync::{Attention, JobError, SyncPhase, SyncService, SyncSnapshot};
 pub(super) fn sync_groups(sync: &Entity<SyncService>, cx: &App) -> Vec<SettingGroup> {
     let snapshot = sync.read(cx).snapshot(cx);
     let Some(location) = snapshot.location.clone() else {
-        return vec![set_up_group(snapshot.available)];
+        return vec![import_group(), set_up_group(snapshot.available)];
     };
     let name = snapshot
         .device
@@ -36,6 +36,7 @@ pub(super) fn sync_groups(sync: &Entity<SyncService>, cx: &App) -> Vec<SettingGr
         .unwrap_or_default();
     let busy = snapshot.busy;
     vec![
+        import_group(),
         SettingGroup::new()
             .title(t!("settings.sync.this_computer"))
             .description(t!("settings.sync.this_computer_description", name = name))
@@ -62,6 +63,19 @@ pub(super) fn sync_groups(sync: &Entity<SyncService>, cx: &App) -> Vec<SettingGr
                 || Box::new(ChangeSyncPassword),
             )]),
     ]
+}
+
+fn import_group() -> SettingGroup {
+    SettingGroup::new()
+        .title(t!("settings.sync.import"))
+        .items([command_item(
+            t!("settings.sync.import_xshell"),
+            t!("settings.sync.import_xshell_description"),
+            ("import-xshell", t!("settings.sync.import_xshell_button")),
+            false,
+            || Box::new(ImportXshell),
+        )
+        .keywords(keywords(t!("settings.sync.import_keywords")))])
 }
 
 /// Sync is off: what it does, and the two places it can go through.

@@ -64,7 +64,10 @@ pub fn fake_stamp(bytes: &[u8], modified: u32) -> FileStamp {
 impl SftpTransportProvider for FakeSftpProvider {
     fn create(&self, _: &HostLogin, route: SftpRoute) -> Box<dyn SftpTransport> {
         let terminal = match route {
-            SftpRoute::Login | SftpRoute::NetworkSidebar | SftpRoute::ExternalSidebar(_) => None,
+            SftpRoute::Login
+            | SftpRoute::NetworkSidebar
+            | SftpRoute::ExternalSidebar(_)
+            | SftpRoute::External(_) => None,
             SftpRoute::Terminal(channels) => {
                 *self.on_terminal.lock().unwrap() += 1;
                 Some(channels)

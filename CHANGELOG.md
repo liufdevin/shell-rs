@@ -8,6 +8,14 @@ One section per version, titled `## [version]`, optionally followed by a date. E
 
 ### Added
 
+- LAN ADB sharing adds controller-side scrcpy mirroring, streamed APK installation and a dedicated dual-pane file browser. These use existing device whitelists, per-computer grants and immediate revocation. Encrypted channels stay pinned to one device without exposing the owner's ADB server, other devices or local disks; bounded audit logs record channel categories and byte counts.
+
+- LAN cooperation now opens interactive serial and ADB terminals: live bidirectional serial data, hex input/output and Break, plus ADB shells with terminal resizing. Devices open on the owning computer, with whitelists, per-computer device grants, immediate revocation/disconnect and bounded metadata-only audit logs. Password pairing grants the current whitelist without depending on SSH hosts or SSH execution permissions.
+
+- Opt-in LAN cooperation in Settings: discover IPv4 peers, require a pairing password before enabling, pair with a password or an approval dialog, share selected SSH hosts with view/execute permissions, and run bounded non-interactive commands through the owning computer without transferring credentials. Rejected requests can blacklist their source IP, and Settings can remove blocks. Paired routes are available through `shelllf-cli lan`.
+
+- Settings now uses “Sync” for migration and cross-device sync. Import Xshell SSH/Telnet hosts from .xsh files, folders or unencrypted ZIP-format .xts/.zip archives, previewing hosts and preserving folder groups without overwriting existing hosts. Saved secrets and scripts are not imported.
+
 - Device logs support Android app/PID/Tag, time and crash filters; Ubuntu system/service/file sources; and service-detail shortcuts, bookmarks and copying complete entries.
 - Export diagnostic ZIP bundles for Android and Ubuntu with selectable system, resource, log and service/app information. Android optionally includes screenshots and a device-matched full bugreport; a manifest records failures and truncation.
 - New local and Cmder terminals accept a start folder for that launch, with a global default folder in Settings. Windows can open a separate ShellLF administrator terminal window.
@@ -27,10 +35,14 @@ One section per version, titled `## [version]`, optionally followed by a date. E
 
 ### Improved
 
+- Terminal content and cursor refreshes no longer broadcast unchanged tab/status metadata to the workspace. Detached windows refresh their own content instead of observing every workspace notification.
+
 - Hardware bandwidth channels are discovered dynamically from mtop and are only sampled over connected SSH/ADB channels. Serial sampling skips mtop, pauses quietly during terminal use and keeps the last readings.
 - The monitor uses a compact pause indicator instead of a multiline notice that shifts the data. Unsupported ADB devices show a shorter mirroring message.
 
 ### Fixed
+
+- Reduce multi-terminal overhead with shared, lazy display matchers and inline cell text. Idle, unfocused terminals poll less often; output queues apply backpressure, and closing a terminal releases blocked output producers without reducing scrollback.
 
 - Keep local terminal launch settings stable during directory checks, prevent overlapping administrator authorization requests, and reject invalid administrator arguments instead of starting the regular app.
 
