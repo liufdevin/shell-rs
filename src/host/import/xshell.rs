@@ -112,7 +112,7 @@ impl Reader {
         for index in 0..archive.len() {
             self.entry()?;
             let entry = archive.by_index(index)?;
-            let Some(path) = entry.enclosed_name() else {
+            let Some(path) = archive_path(&entry) else {
                 self.scan.skipped += 1;
                 continue;
             };
@@ -150,6 +150,33 @@ impl Reader {
             Err(_) => self.scan.skipped += 1,
         }
     }
+}
+
+fn archive_path(entry: &zip::read::ZipFile<'_, File>) -> Option<PathBuf> {
+    let name = decode(entry.name_raw())
+        .ok()
+        .or_else(|| entry.name().ok())?;
+    if name.starts_with(['/', '\\']) {
+        return None;
+    }
+    let mut path = PathBuf::new();
+    for component in name.split(['/', '\\']) {
+        match component {
+            "" | "." => {}
+            ".." => {
+                if !path.pop() {
+                    return None;
+                }
+            }
+            component => {
+                if component.contains(':') || component.chars().any(char::is_control) {
+                    return None;
+                }
+                path.push(component);
+            }
+        }
+    }
+    (!path.as_os_str().is_empty()).then_some(path)
 }
 
 fn extension(path: &Path) -> String {
@@ -328,6 +355,115 @@ mod tests {
             ImportLoad::Loaded(scan) => scan,
             other => panic!("{other:?}"),
         }
+    }
+
+    fn archive_with_raw_name(name: &[u8]) -> Vec<u8> {
+        let mut archive = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        archive
+            .start_file(
+                "x".repeat(name.len()),
+                zip::write::SimpleFileOptions::default(),
+            )
+            .unwrap();
+        archive.write_all(config("SSH", "root").as_bytes()).unwrap();
+        let mut bytes = archive.finish().unwrap().into_inner();
+        let (local_name, central_name) = {
+            let mut reader = zip::ZipArchive::new(Cursor::new(&bytes)).unwrap();
+            let entry = reader.by_index(0).unwrap();
+            (
+                entry.header_start() as usize + 30,
+                entry.central_header_start() as usize + 46,
+            )
+        };
+        bytes[local_name..local_name + name.len()].copy_from_slice(name);
+        bytes[central_name..central_name + name.len()].copy_from_slice(name);
+        bytes
+    }
+
+    #[test]
+    fn legacy_chinese_archive_names_and_groups_are_decoded_before_path_parsing() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("legacy.xts");
+        for name in [
+            "Sessions/生产/华东/公司服务器.xsh",
+            "Sessions\\生产\\华东\\公司服务器.xsh",
+            "Sessions/生产/华东/乗.xsh",
+        ] {
+            let (encoded, _, errors) = encoding_rs::GB18030.encode(name);
+            assert!(!errors);
+            fs::write(&path, archive_with_raw_name(&encoded)).unwrap();
+            let scan = loaded(&path);
+            assert_eq!(scan.candidates.len(), 1);
+            assert_eq!(scan.skipped, 0);
+            let expected = name
+                .rsplit(['/', '\\'])
+                .next()
+                .unwrap()
+                .strip_suffix(".xsh")
+                .unwrap();
+            assert_eq!(scan.candidates[0].name, expected);
+            assert_eq!(scan.candidates[0].options.group, "生产/华东");
+        }
+    }
+
+    #[test]
+    fn utf8_and_cp437_archive_names_remain_supported() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("names.xts");
+        for (name, expected) in [
+            ("Sessions/主机.xsh".as_bytes(), "主机"),
+            (b"Sessions/caf\x82.xsh".as_slice(), "café"),
+            (b"Sessions/server.xsh".as_slice(), "server"),
+        ] {
+            fs::write(&path, archive_with_raw_name(name)).unwrap();
+            let scan = loaded(&path);
+            assert_eq!(scan.candidates.len(), 1);
+            assert_eq!(scan.candidates[0].name, expected);
+            assert!(scan.candidates[0].options.group.is_empty());
+        }
+    }
+
+    #[test]
+    fn decoded_archive_names_cannot_escape_the_archive_root() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("unsafe.xts");
+        for name in [
+            "../outside.xsh",
+            "生产/../../outside.xsh",
+            "..\\outside.xsh",
+            "/outside.xsh",
+            "C:/outside.xsh",
+            "C:outside.xsh",
+            "\\\\server\\share\\outside.xsh",
+            "Sessions/invalid\0.xsh",
+        ] {
+            let (encoded, _, errors) = encoding_rs::GB18030.encode(name);
+            assert!(!errors);
+            fs::write(&path, archive_with_raw_name(&encoded)).unwrap();
+            let scan = loaded(&path);
+            assert!(scan.candidates.is_empty(), "{name}");
+            assert_eq!(scan.skipped, 1, "{name}");
+        }
+    }
+
+    #[test]
+    #[ignore = "requires a local backup and expected host name through SHELLRS_XSHELL_TEST_ARCHIVE and SHELLRS_XSHELL_TEST_HOST_NAME"]
+    fn local_xshell_backup_preserves_the_expected_host_name_without_modifying_the_backup() {
+        let path = PathBuf::from(std::env::var_os("SHELLRS_XSHELL_TEST_ARCHIVE").unwrap());
+        let expected = std::env::var("SHELLRS_XSHELL_TEST_HOST_NAME").unwrap();
+        let original = fs::read(&path).unwrap();
+        let scan = loaded(&path);
+        assert!(
+            scan.candidates
+                .iter()
+                .any(|candidate| candidate.name == expected)
+        );
+        assert!(fs::read(&path).unwrap() == original);
+        println!(
+            "Imported {} candidates in memory; skipped {}; backup unchanged",
+            scan.candidates.len(),
+            scan.skipped
+        );
     }
 
     #[test]

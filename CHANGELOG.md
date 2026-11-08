@@ -52,6 +52,8 @@ One section per version, titled `## [version]`, optionally followed by a date. E
 
 ### Fixed
 
+- Fixed garbled host and group names when importing legacy Chinese Xshell `.xts`/`.zip` backups. Archive paths are decoded from their original UTF-8 or GBK/GB18030 bytes before validation, retaining CP437 compatibility and traversal protection without modifying backups or existing hosts.
+
 - Reduce multi-terminal overhead with shared, lazy display matchers and inline cell text. Idle, unfocused terminals poll less often; output queues apply backpressure, and closing a terminal releases blocked output producers without reducing scrollback.
 
 - Keep local terminal launch settings stable during directory checks, prevent overlapping administrator authorization requests, and reject invalid administrator arguments instead of starting the regular app.
