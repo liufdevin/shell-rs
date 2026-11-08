@@ -1,9 +1,11 @@
+mod address;
 mod audit;
 #[cfg(test)]
 mod device_tests;
 mod device_transport;
 mod devices;
 mod discovery;
+mod interface;
 mod password;
 mod storage;
 #[cfg(test)]
@@ -25,6 +27,8 @@ use russh::keys::{Algorithm, HashAlg, PrivateKey};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use address::is_lan;
+pub use address::parse_endpoint;
 pub use audit::{AuditAction, AuditEntry};
 pub use devices::{
     ActiveDevice, DEVICE_CHUNK, DeviceEvent, DeviceInput, DeviceKind, DeviceProvider, DeviceSize,
@@ -195,7 +199,8 @@ impl Core {
             Err(error) => return Err(error.into()),
         };
         ensure!(!key.is_encrypted(), "device identity must be usable");
-        let configuration = match storage::read_file(&directory.join("access.json"), 256 * 1024) {
+        let mut configuration = match storage::read_file(&directory.join("access.json"), 256 * 1024)
+        {
             Ok(bytes) => {
                 ensure!(bytes.len() <= 256 * 1024, "access file too large");
                 serde_json::from_slice::<Configuration>(&bytes)?
@@ -207,12 +212,21 @@ impl Core {
             configuration.grants.len() <= MAX_PEERS && configuration.peers.len() <= MAX_PEERS,
             "too many devices"
         );
-        for (id, peer) in &configuration.peers {
+        configuration.blocked_ips = configuration
+            .blocked_ips
+            .into_iter()
+            .map(address::normalize_ip)
+            .collect();
+        for (id, peer) in &mut configuration.peers {
+            peer.endpoint = address::normalize_endpoint(peer.endpoint);
             ensure!(
                 *id == fingerprint(&russh::keys::PublicKey::from_openssh(&peer.public_key)?),
                 "invalid peer identity"
             );
-            ensure!(is_lan(peer.endpoint.ip()), "peer is outside LAN");
+            ensure!(
+                address::valid_stored_endpoint(peer.endpoint),
+                "invalid peer address"
+            );
         }
         for (id, grant) in &configuration.grants {
             ensure!(
@@ -301,6 +315,7 @@ impl Core {
             .collect()
     }
     pub fn is_blocked(&self, address: IpAddr) -> bool {
+        let address = address::normalize_ip(address);
         self.state
             .lock()
             .unwrap()
@@ -339,6 +354,7 @@ impl Core {
     }
 
     pub fn unblock(&self, address: IpAddr) -> Result<()> {
+        let address = address::normalize_ip(address);
         let mut state = self.state.lock().unwrap();
         let mut configuration = state.configuration.clone();
         configuration.blocked_ips.remove(&address);
@@ -785,19 +801,6 @@ impl Core {
     }
 }
 
-pub fn parse_endpoint(text: &str) -> Result<SocketAddr> {
-    let endpoint = text.trim().parse::<SocketAddr>().or_else(|_| {
-        text.trim()
-            .parse::<std::net::Ipv4Addr>()
-            .map(|ip| SocketAddr::new(ip.into(), TCP_PORT))
-    })?;
-    ensure!(
-        is_lan(endpoint.ip()) && endpoint.port() != 0,
-        "use a private LAN address"
-    );
-    Ok(endpoint)
-}
-
 fn fingerprint(key: &russh::keys::PublicKey) -> String {
     key.fingerprint(HashAlg::Sha256).to_string()
 }
@@ -818,10 +821,4 @@ fn clean_name(name: &str) -> String {
         .filter(|character| !character.is_control())
         .take(64)
         .collect()
-}
-fn is_lan(ip: IpAddr) -> bool {
-    match ip {
-        IpAddr::V4(ip) => ip.is_private() || ip.is_loopback() || ip.is_link_local(),
-        IpAddr::V6(_) => false,
-    }
 }

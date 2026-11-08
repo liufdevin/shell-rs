@@ -27,6 +27,55 @@ impl Executor for NoCommands {
 }
 
 #[gpui_kit::test]
+async fn ipv6_addresses_connect_from_the_lan_settings_without_protocol_notices(
+    cx: &mut TestAppContext,
+) {
+    let controller_directory = tempfile::tempdir().unwrap();
+    let owner_directory = tempfile::tempdir().unwrap();
+    let controller = Core::load(controller_directory.path(), "A", Arc::new(NoCommands)).unwrap();
+    let owner = Core::load(owner_directory.path(), "B", Arc::new(NoCommands)).unwrap();
+    controller.set_password("test pairing password").unwrap();
+    owner.set_password("test pairing password").unwrap();
+    let _controller_network =
+        Network::start(controller.clone(), std::net::Ipv6Addr::LOCALHOST, 0, 0).unwrap();
+    let owner_network = Network::start(owner.clone(), std::net::Ipv6Addr::LOCALHOST, 0, 0).unwrap();
+    let (handle, workspace) = open_workspace(cx);
+    cx.update(|cx| {
+        let service = workspace.read(cx).lan().clone();
+        service.update(cx, |service, cx| service.attach_core(controller, cx));
+    });
+    in_frame(cx, handle, |window, cx| window.click("open-settings", cx));
+    in_frame(cx, handle, |window, cx| {
+        window.within("settings").click("0-8", cx)
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.scroll(
+            "lan-enable",
+            gpui_kit::ScrollDelta::Pixels(point(px(0.), px(-2000.))),
+            cx,
+        );
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.click("lan-address", cx);
+        window.input(&owner_network.tcp_address.to_string(), cx);
+        window.click("lan-inspect", cx);
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(8), |window, _| {
+        window.try_find("lan-remote-password").is_some()
+    })
+    .await;
+    in_frame(cx, handle, |window, cx| {
+        window.click("lan-remote-password", cx);
+        window.input("test pairing password", cx);
+        window.click("lan-password-pair", cx);
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(8), |_, _| {
+        !owner.grants().is_empty()
+    })
+    .await;
+}
+
+#[gpui_kit::test]
 fn settings_search_finds_lan_and_exposes_its_status_to_assistive_technology(
     cx: &mut TestAppContext,
 ) {

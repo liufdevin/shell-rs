@@ -8,6 +8,8 @@ One section per version, titled `## [version]`, optionally followed by a date. E
 
 ### Added
 
+- LAN cooperation adds dual-stack listeners, scoped direct connections and per-interface multicast discovery, deduplicated by device identity. Hidden discovery, pairing, source-IP blocks and revocation apply across listeners. Removed the protocol-support notice and duplicate LAN settings heading.
+
 - LAN cooperation uses an off-by-default switch and requires a pairing password before enabling. A separate, off-by-default discovery switch controls visibility while retaining direct IP pairing. Visibility is persisted and applies without restarting networking.
 
 - LAN ADB sharing adds controller-side scrcpy mirroring, streamed APK installation and a dedicated dual-pane file browser. These use existing device whitelists, per-computer grants and immediate revocation. Encrypted channels stay pinned to one device without exposing the owner's ADB server, other devices or local disks; bounded audit logs record channel categories and byte counts.

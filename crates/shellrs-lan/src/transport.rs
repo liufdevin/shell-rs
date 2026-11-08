@@ -1,5 +1,5 @@
 use std::io;
-use std::net::{Ipv4Addr, SocketAddr, TcpListener, UdpSocket};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener, UdpSocket};
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, Ordering},
@@ -60,23 +60,91 @@ pub struct Network {
     workers: Vec<std::thread::JoinHandle<()>>,
     pub tcp_address: SocketAddr,
     pub discovery_address: SocketAddr,
+    tcp_addresses: Vec<SocketAddr>,
+    discovery_addresses: Vec<SocketAddr>,
+}
+
+pub(super) fn family_unavailable(error: &io::Error) -> bool {
+    matches!(
+        error.kind(),
+        io::ErrorKind::Unsupported | io::ErrorKind::AddrNotAvailable
+    ) || matches!(error.raw_os_error(), Some(47 | 97 | 10047 | 10049))
+}
+
+pub(super) fn udp_socket(address: SocketAddr) -> io::Result<UdpSocket> {
+    let domain = if address.is_ipv6() {
+        socket2::Domain::IPV6
+    } else {
+        socket2::Domain::IPV4
+    };
+    let socket = socket2::Socket::new(domain, socket2::Type::DGRAM, Some(socket2::Protocol::UDP))?;
+    if address.is_ipv6() {
+        socket.set_only_v6(true)?;
+        socket.set_multicast_hops_v6(1)?;
+    }
+    socket.bind(&address.into())?;
+    Ok(socket.into())
+}
+
+fn tcp_listener(address: SocketAddr) -> io::Result<TcpListener> {
+    let domain = if address.is_ipv6() {
+        socket2::Domain::IPV6
+    } else {
+        socket2::Domain::IPV4
+    };
+    let socket = socket2::Socket::new(domain, socket2::Type::STREAM, Some(socket2::Protocol::TCP))?;
+    if address.is_ipv6() {
+        socket.set_only_v6(true)?;
+    }
+    socket.bind(&address.into())?;
+    socket.listen(64)?;
+    socket.set_nonblocking(true)?;
+    Ok(socket.into())
 }
 
 impl Network {
     pub fn start(
         core: Arc<Core>,
-        address: Ipv4Addr,
+        address: impl Into<IpAddr>,
         tcp_port: u16,
         discovery_port: u16,
     ) -> Result<Self> {
         ensure!(core.has_password(), "pairing_password_required");
         ensure!(!core.is_running(), "LAN cooperation already running");
-        let tcp = TcpListener::bind((address, tcp_port))?;
-        tcp.set_nonblocking(true)?;
-        let udp = UdpSocket::bind((address, discovery_port))?;
-        udp.set_read_timeout(Some(Duration::from_millis(200)))?;
-        let tcp_address = tcp.local_addr()?;
-        let discovery_address = udp.local_addr()?;
+        let address = address.into();
+        let mut addresses = vec![address];
+        if address.is_unspecified() {
+            addresses.push(if address.is_ipv4() {
+                Ipv6Addr::UNSPECIFIED.into()
+            } else {
+                Ipv4Addr::UNSPECIFIED.into()
+            });
+        }
+        let mut listeners = Vec::new();
+        let mut sockets = Vec::new();
+        let mut tcp_addresses = Vec::new();
+        let mut discovery_addresses = Vec::new();
+        let mut ports = (tcp_port, discovery_port);
+        for address in addresses {
+            let binding = (|| -> io::Result<_> {
+                let tcp = tcp_listener(SocketAddr::new(address, ports.0))?;
+                let udp = udp_socket(SocketAddr::new(address, ports.1))?;
+                Ok((tcp, udp))
+            })();
+            let (tcp, udp) = match binding {
+                Ok(bound) => bound,
+                Err(error) if address.is_unspecified() && family_unavailable(&error) => continue,
+                Err(error) => return Err(error.into()),
+            };
+            ports = (tcp.local_addr()?.port(), udp.local_addr()?.port());
+            tcp_addresses.push(tcp.local_addr()?);
+            discovery_addresses.push(udp.local_addr()?);
+            listeners.push(tcp);
+            sockets.push(udp);
+        }
+        ensure!(!listeners.is_empty(), "local_network_unavailable");
+        let tcp_address = tcp_addresses[0];
+        let discovery_address = discovery_addresses[0];
         let stop = Arc::new(AtomicBool::new(false));
         let mut network = Self {
             core: core.clone(),
@@ -84,6 +152,8 @@ impl Network {
             workers: Vec::new(),
             tcp_address,
             discovery_address,
+            tcp_addresses,
+            discovery_addresses,
         };
         core.running.store(true, Ordering::Release);
         let discovery_core = core.clone();
@@ -94,7 +164,7 @@ impl Network {
                 .spawn(move || {
                     crate::discovery::respond(
                         discovery_core,
-                        udp,
+                        sockets,
                         tcp_address.port(),
                         discovery_stop,
                     );
@@ -105,7 +175,8 @@ impl Network {
         network.workers.push(std::thread::Builder::new().name("shelllf-lan-server".into()).spawn(move || {
             let Ok(runtime) = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build() else { server_core.running.store(false, Ordering::Release); return };
             runtime.block_on(async {
-                let Ok(listener) = tokio::net::TcpListener::from_std(tcp) else { return };
+                let listeners: Result<Vec<_>, _> = listeners.into_iter().map(tokio::net::TcpListener::from_std).collect();
+                let Ok(listeners) = listeners else { return };
                 let configuration = Arc::new(server::Config {
                     keys: vec![(*server_core.key).clone()],
                     auth_rejection_time: Duration::from_millis(700),
@@ -117,8 +188,17 @@ impl Network {
                 });
                 let connections = Arc::new(tokio::sync::Semaphore::new(16));
                 while !server_stop.load(Ordering::Acquire) {
-                    let accepted = tokio::select! { result = listener.accept() => result, _ = tokio::time::sleep(Duration::from_millis(100)) => continue };
+                    let accepted = tokio::select! {
+                        result = std::future::poll_fn(|task_context| {
+                            for listener in &listeners {
+                                if let std::task::Poll::Ready(result) = listener.poll_accept(task_context) { return std::task::Poll::Ready(result); }
+                            }
+                            std::task::Poll::Pending
+                        }) => result,
+                        _ = tokio::time::sleep(Duration::from_millis(100)) => continue
+                    };
                     let Ok((stream, address)) = accepted else { continue };
+                    let address = crate::address::normalize_endpoint(address);
                     if !is_lan(address.ip()) { continue; }
                     let Ok(permit) = connections.clone().try_acquire_owned() else { continue };
                     let handler = PeerHandler { core: server_core.clone(), address, key: None, peer: None, channel: None,
@@ -134,6 +214,13 @@ impl Network {
             server_core.running.store(false, Ordering::Release);
         })?);
         Ok(network)
+    }
+
+    pub fn tcp_addresses(&self) -> &[SocketAddr] {
+        &self.tcp_addresses
+    }
+    pub fn discovery_addresses(&self) -> &[SocketAddr] {
+        &self.discovery_addresses
     }
 }
 
@@ -634,8 +721,11 @@ pub(super) async fn connect(
     mode: &str,
     password: Option<&str>,
 ) -> Result<(russh::client::Handle<ClientHandler>, Seen, bool)> {
+    let endpoint = crate::address::normalize_endpoint(endpoint);
     ensure!(
-        core.is_active() && is_lan(endpoint.ip()),
+        core.is_active()
+            && crate::address::valid_stored_endpoint(endpoint)
+            && is_lan(endpoint.ip()),
         "LAN cooperation unavailable"
     );
     let seen = Arc::new(Mutex::new(Seen::default()));

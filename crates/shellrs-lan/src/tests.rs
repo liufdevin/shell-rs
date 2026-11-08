@@ -477,13 +477,13 @@ fn stopping_releases_both_ports_before_restarting_and_cancels_silent_commands() 
 }
 
 #[test]
-fn only_private_ipv4_addresses_and_strict_messages_are_accepted() {
+fn only_local_addresses_and_strict_messages_are_accepted() {
     assert!(parse_endpoint("192.168.1.2").is_ok());
     assert!(parse_endpoint("127.0.0.1:12345").is_ok());
     for value in [
         "8.8.8.8:22",
         "0.0.0.0:22",
-        "[::1]:22",
+        "[::]:22",
         "192.168.1.1:0",
         "example.com:22",
     ] {
@@ -494,5 +494,213 @@ fn only_private_ipv4_addresses_and_strict_messages_are_accepted() {
             r#"{"type":"execute","host":"shared","command":"ls","shell":true}"#
         )
         .is_err()
+    );
+}
+
+#[test]
+fn ipv6_pairing_discovery_commands_blacklist_and_revocation_use_encrypted_connections() {
+    use std::net::Ipv6Addr;
+    let (_controller_directory, controller, _, _) = fixture("A");
+    let (_owner_directory, owner, cancelled, started) = fixture("B");
+    controller.set_password("correct horse battery").unwrap();
+    owner.set_password("correct horse battery").unwrap();
+    let _controller_network =
+        Network::start(controller.clone(), Ipv6Addr::LOCALHOST, 0, 0).unwrap();
+    let owner_network = Network::start(owner.clone(), Ipv6Addr::LOCALHOST, 0, 0).unwrap();
+    owner
+        .set_sharing(["shared".to_owned()].into(), true)
+        .unwrap();
+    assert!(
+        crate::discovery::discover_at(&[owner_network.discovery_address])
+            .unwrap()
+            .is_empty()
+    );
+    owner.set_discoverable(true).unwrap();
+    let discovered = crate::discovery::discover_at(&[owner_network.discovery_address]).unwrap();
+    assert_eq!(discovered.len(), 1);
+    assert!(discovered[0].endpoint.is_ipv6());
+    let target = controller.inspect(owner_network.tcp_address).unwrap();
+    assert!(
+        controller
+            .pair_password(target.clone(), "incorrect password")
+            .is_err()
+    );
+    assert!(owner.pending().is_empty());
+    controller
+        .pair_password(target.clone(), "correct horse battery")
+        .unwrap();
+    let response = controller
+        .request(
+            owner.id(),
+            RemoteRequest::Execute {
+                host: "shared".into(),
+                command: "hello".into(),
+            },
+            &AtomicBool::new(false),
+            &mut |_, _| Ok(()),
+        )
+        .unwrap();
+    assert_eq!(response.exit_code, Some(7));
+    started.store(false, Ordering::Release);
+    let controlling = controller.clone();
+    let peer = owner.id().to_owned();
+    let worker = std::thread::spawn(move || {
+        controlling.request(
+            &peer,
+            RemoteRequest::Execute {
+                host: "shared".into(),
+                command: "wait".into(),
+            },
+            &AtomicBool::new(false),
+            &mut |_, _| Ok(()),
+        )
+    });
+    assert!(eventually(|| started.load(Ordering::Acquire)));
+    owner.revoke(controller.id()).unwrap();
+    assert!(worker.join().unwrap().is_err());
+    assert!(eventually(|| cancelled.load(Ordering::Acquire)));
+    controller.request_pair(&target).unwrap();
+    let pending = owner.pending().remove(0);
+    assert_eq!(pending.address.ip(), IpAddr::V6(Ipv6Addr::LOCALHOST));
+    owner.reject(&pending.id, pending.token, true).unwrap();
+    assert!(
+        controller
+            .request_pair(&target)
+            .unwrap_err()
+            .to_string()
+            .contains("blocked_by_device")
+    );
+    assert!(owner.pending().is_empty());
+    assert!(
+        crate::discovery::discover_at(&[owner_network.discovery_address])
+            .unwrap()
+            .is_empty()
+    );
+    owner.unblock(Ipv6Addr::LOCALHOST.into()).unwrap();
+    controller.request_pair(&target).unwrap();
+    let pending = owner.pending().remove(0);
+    owner
+        .approve(
+            &pending.id,
+            pending.token,
+            ["shared".to_owned()].into(),
+            false,
+        )
+        .unwrap();
+    controller.complete_pair(target).unwrap();
+    owner.set_discoverable(false).unwrap();
+    assert!(
+        crate::discovery::discover_at(&[owner_network.discovery_address])
+            .unwrap()
+            .is_empty()
+    );
+    let response = controller
+        .request(
+            owner.id(),
+            RemoteRequest::Hosts,
+            &AtomicBool::new(false),
+            &mut |_, _| Ok(()),
+        )
+        .unwrap();
+    assert_eq!(response.hosts.len(), 1);
+    assert!(!response.can_execute);
+}
+
+#[test]
+fn wildcard_listeners_share_one_identity_across_both_families_and_release_all_ports() {
+    let (_controller_directory, controller, _, _) = fixture("A");
+    let (_owner_directory, owner, _, _) = fixture("B");
+    let _controller_network = running(&controller);
+    owner.set_password("correct horse battery").unwrap();
+    owner.set_discoverable(true).unwrap();
+    let network = Network::start(owner.clone(), std::net::Ipv4Addr::UNSPECIFIED, 0, 0).unwrap();
+    assert_eq!(network.tcp_addresses().len(), 2);
+    assert_eq!(network.discovery_addresses().len(), 2);
+    let targets: Vec<_> = network
+        .discovery_addresses()
+        .iter()
+        .map(|address| {
+            let mut address = *address;
+            address.set_ip(if address.is_ipv4() {
+                std::net::Ipv4Addr::LOCALHOST.into()
+            } else {
+                std::net::Ipv6Addr::LOCALHOST.into()
+            });
+            address
+        })
+        .collect();
+    let found = crate::discovery::discover_at(&targets).unwrap();
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].id, owner.id());
+    for endpoint in network.tcp_addresses() {
+        let mut endpoint = *endpoint;
+        endpoint.set_ip(if endpoint.is_ipv4() {
+            std::net::Ipv4Addr::LOCALHOST.into()
+        } else {
+            std::net::Ipv6Addr::LOCALHOST.into()
+        });
+        assert_eq!(controller.inspect(endpoint).unwrap().id, owner.id());
+    }
+    let tcp = network.tcp_addresses().to_vec();
+    let udp = network.discovery_addresses().to_vec();
+    drop(network);
+    for endpoint in tcp {
+        assert!(std::net::TcpListener::bind(endpoint).is_ok());
+    }
+    for endpoint in udp {
+        assert!(crate::transport::udp_socket(endpoint).is_ok());
+    }
+}
+
+#[test]
+#[ignore = "sends IPv6 multicast on active local interfaces to an isolated ephemeral test port"]
+fn ipv6_multicast_discovers_an_isolated_node_and_honors_hidden_mode() {
+    let (_directory, owner, _, _) = fixture("multicast test");
+    owner.set_password("correct horse battery").unwrap();
+    let network = Network::start(owner.clone(), std::net::Ipv6Addr::UNSPECIFIED, 0, 0).unwrap();
+    let port = network
+        .discovery_addresses()
+        .iter()
+        .find(|address| address.is_ipv6())
+        .unwrap()
+        .port();
+    let targets: Vec<_> = crate::interface::interfaces().iter().filter(|interface| interface.addresses.iter().any(|(address, _)| matches!(address, IpAddr::V6(address) if !address.is_loopback() && !address.is_unspecified() && !address.is_multicast())))
+        .map(|interface| SocketAddr::V6(std::net::SocketAddrV6::new("ff12::534c:4c46".parse().unwrap(), port, 0, interface.index))).collect();
+    assert!(
+        !targets.is_empty(),
+        "no active local interface has a usable IPv6 address"
+    );
+    assert!(crate::discovery::discover_at(&targets).unwrap().is_empty());
+    owner.set_discoverable(true).unwrap();
+    let found = crate::discovery::discover_at(&targets).unwrap();
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].id, owner.id());
+    assert!(found[0].endpoint.is_ipv6());
+    if let SocketAddr::V6(endpoint) = found[0].endpoint
+        && endpoint.ip().is_unicast_link_local()
+    {
+        assert_ne!(endpoint.scope_id(), 0);
+    }
+    let (_controller_directory, controller, _, _) = fixture("multicast controller");
+    controller.set_password("correct horse battery").unwrap();
+    let _controller_network =
+        Network::start(controller.clone(), std::net::Ipv6Addr::LOCALHOST, 0, 0).unwrap();
+    let target = controller.inspect(found[0].endpoint).unwrap();
+    controller
+        .pair_password(target, "correct horse battery")
+        .unwrap();
+    owner.set_discoverable(false).unwrap();
+    assert!(crate::discovery::discover_at(&targets).unwrap().is_empty());
+    assert_eq!(
+        controller
+            .request(
+                owner.id(),
+                RemoteRequest::Status,
+                &AtomicBool::new(false),
+                &mut |_, _| Ok(())
+            )
+            .unwrap()
+            .status,
+        "accepted"
     );
 }

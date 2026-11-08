@@ -796,9 +796,9 @@ fn start_network(core: Arc<Core>) -> anyhow::Result<Network> {
 fn test_bind_address(
     address: Option<&std::ffi::OsStr>,
     directory: Option<&std::ffi::OsStr>,
-) -> anyhow::Result<Ipv4Addr> {
+) -> anyhow::Result<IpAddr> {
     let Some(address) = address else {
-        return Ok(Ipv4Addr::UNSPECIFIED);
+        return Ok(Ipv4Addr::UNSPECIFIED.into());
     };
     anyhow::ensure!(
         directory.is_some_and(|directory| !directory.is_empty()),
@@ -807,8 +807,8 @@ fn test_bind_address(
     let address = address
         .to_str()
         .ok_or_else(|| anyhow::anyhow!("invalid loopback test address"))?
-        .parse::<Ipv4Addr>()?;
-    anyhow::ensure!(address.is_loopback(), "test address must be IPv4 loopback");
+        .parse::<IpAddr>()?;
+    anyhow::ensure!(address.is_loopback(), "test address must be loopback");
     Ok(address)
 }
 
@@ -816,6 +816,13 @@ pub(super) fn error_text(error: &anyhow::Error) -> String {
     let text = error.to_string();
     if text.contains("blocked_by_device") {
         t!("lan.blocked_by_device").to_string()
+    } else if text.contains("invalid_network_interface") {
+        t!("lan.invalid_interface").to_string()
+    } else if text.contains("invalid_device_address")
+        || text.contains("use a local network address")
+        || text.contains("invalid IP address syntax")
+    {
+        t!("lan.invalid_address").to_string()
     } else if text.contains("device_control_not_authorized")
         || text.contains("device_control_revoked")
     {
@@ -872,13 +879,30 @@ mod tests {
     use std::ffi::OsStr;
 
     #[test]
+    fn description_does_not_advertise_network_protocol_versions() {
+        crate::i18n::isolate_thread();
+        for locale in ["zh-CN", "en"] {
+            crate::i18n::set_locale(locale);
+            let description = t!("lan.description");
+            assert!(!description.contains("IPv4") && !description.contains("IPv6"));
+        }
+    }
+
+    #[test]
     fn test_binding_is_loopback_only_and_requires_a_separate_data_directory() {
         assert_eq!(
             test_bind_address(None, None).unwrap(),
-            Ipv4Addr::UNSPECIFIED
+            IpAddr::V4(Ipv4Addr::UNSPECIFIED)
         );
         assert!(test_bind_address(Some(OsStr::new("127.0.0.2")), None).is_err());
-        for address in ["0.0.0.0", "192.168.1.2", "8.8.8.8", "::1", "invalid"] {
+        for address in [
+            "0.0.0.0",
+            "192.168.1.2",
+            "8.8.8.8",
+            "::",
+            "fe80::1",
+            "invalid",
+        ] {
             assert!(
                 test_bind_address(Some(OsStr::new(address)), Some(OsStr::new("test-data")))
                     .is_err()
@@ -887,7 +911,11 @@ mod tests {
         assert_eq!(
             test_bind_address(Some(OsStr::new("127.0.0.2")), Some(OsStr::new("test-data")))
                 .unwrap(),
-            Ipv4Addr::new(127, 0, 0, 2)
+            IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2))
+        );
+        assert_eq!(
+            test_bind_address(Some(OsStr::new("::1")), Some(OsStr::new("test-data"))).unwrap(),
+            IpAddr::V6(std::net::Ipv6Addr::LOCALHOST)
         );
     }
 }

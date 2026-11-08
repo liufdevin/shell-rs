@@ -120,6 +120,10 @@ struct Fixture {
 }
 
 fn fixture() -> Fixture {
+    fixture_on(std::net::Ipv4Addr::LOCALHOST.into())
+}
+
+fn fixture_on(address: IpAddr) -> Fixture {
     let a_directory = tempfile::tempdir().unwrap();
     let b_directory = tempfile::tempdir().unwrap();
     let a = Core::load(a_directory.path(), "A", Arc::new(NoCommands)).unwrap();
@@ -133,8 +137,8 @@ fn fixture() -> Fixture {
         true,
     )
     .unwrap();
-    let a_network = Network::start(a.clone(), std::net::Ipv4Addr::LOCALHOST, 0, 0).unwrap();
-    let b_network = Network::start(b.clone(), std::net::Ipv4Addr::LOCALHOST, 0, 0).unwrap();
+    let a_network = Network::start(a.clone(), address, 0, 0).unwrap();
+    let b_network = Network::start(b.clone(), address, 0, 0).unwrap();
     let target = a.inspect(b_network.tcp_address).unwrap();
     a.pair_password(target.clone(), "test password for B")
         .unwrap();
@@ -148,6 +152,45 @@ fn fixture() -> Fixture {
         _a_directory: a_directory,
         b_directory,
     }
+}
+
+#[test]
+fn ipv6_serial_and_adb_streams_keep_binary_data_and_independent_revocation() {
+    let fixture = fixture_on(std::net::Ipv6Addr::LOCALHOST.into());
+    let serial = open(&fixture, "serial");
+    started(&serial);
+    let adb = open_service(&fixture, "adb", Some("sync:"));
+    started(&adb);
+    serial
+        .commands
+        .send(DeviceInput::Write(vec![0, 255, 13, 10]))
+        .unwrap();
+    assert_eq!(
+        serial.events.recv_timeout(Duration::from_secs(5)).unwrap(),
+        DeviceEvent::Output(vec![0, 255, 13, 10])
+    );
+    fixture
+        .b
+        .set_device_permission(fixture.a.id(), "serial", false)
+        .unwrap();
+    assert!(serial.worker.join().unwrap().is_err());
+    adb.commands
+        .send(DeviceInput::Write(b"still active".to_vec()))
+        .unwrap();
+    assert_eq!(
+        adb.events.recv_timeout(Duration::from_secs(5)).unwrap(),
+        DeviceEvent::Output(b"still active".to_vec())
+    );
+    fixture.b.set_locked(true);
+    assert!(adb.worker.join().unwrap().is_err());
+    assert!(eventually(|| fixture.b.active_devices().is_empty()));
+    assert!(
+        fixture
+            .b
+            .audit()
+            .iter()
+            .any(|entry| entry.source == Some(std::net::Ipv6Addr::LOCALHOST.into()))
+    );
 }
 
 fn eventually(mut condition: impl FnMut() -> bool) -> bool {

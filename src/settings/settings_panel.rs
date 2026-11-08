@@ -334,18 +334,14 @@ fn lan_groups(panel: &SettingsPanel, _: &App) -> Vec<SettingGroup> {
     let Some(page) = panel.lan_page.clone() else {
         return Vec::new();
     };
-    vec![
-        SettingGroup::new()
-            .title(t!("settings.category.lan"))
-            .items([
-                SettingItem::render(move |_, _, _| page.clone().into_any_element()).keywords([
-                    t!("settings.category.lan"),
-                    t!("lan.password_help"),
-                    t!("lan.blacklist"),
-                    t!("lan.shared_hosts"),
-                ]),
-            ]),
-    ]
+    vec![SettingGroup::new().items([
+        SettingItem::render(move |_, _, _| page.clone().into_any_element()).keywords([
+            t!("settings.category.lan"),
+            t!("lan.password_help"),
+            t!("lan.blacklist"),
+            t!("lan.shared_hosts"),
+        ]),
+    ])]
 }
 
 impl Category {

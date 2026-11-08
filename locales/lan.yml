@@ -4,8 +4,8 @@ settings.category.lan:
   zh-CN: 局域网协作
   en: LAN cooperation
 lan.description:
-  zh-CN: 在局域网内配对两台 ShellLF，像本机终端一样使用对方白名单中的串口和 ADB 设备。设备在对方电脑上打开，数据经过加密传输。默认关闭，仅支持 IPv4 局域网。
-  en: Pair two ShellLF computers on your LAN and use whitelisted serial ports and ADB devices in interactive terminal tabs. Devices open on the sharing computer and traffic is encrypted. Off by default; IPv4 LAN only.
+  zh-CN: 在局域网内配对两台 ShellLF，像本机终端一样使用对方白名单中的串口和 ADB 设备。设备在对方电脑上打开，数据经过加密传输。默认关闭，仅用于局域网内协作。
+  en: Pair two ShellLF computers on your LAN and use whitelisted serial ports and ADB devices in interactive terminal tabs. Devices open on the sharing computer and traffic is encrypted. Off by default; local networks only.
 lan.network_help:
   zh-CN: 两端都需开启协作。使用 TCP 45838 加密连接、UDP 45837 发现设备；请在系统防火墙中允许 ShellLF 的私有网络入站连接。串口参数在被控电脑的主机配置中设置。
   en: Enable cooperation on both computers. Encrypted connections use TCP 45838; discovery uses UDP 45837. Allow ShellLF inbound connections on private networks in the system firewall. Configure serial parameters in the sharing computer’s saved hosts.
@@ -81,6 +81,12 @@ lan.execution_help:
 lan.connect:
   zh-CN: 连接另一台电脑
   en: Connect to another computer
+lan.invalid_address:
+  zh-CN: 请输入允许的局域网 IP 地址。带端口的地址请使用正确的括号格式；链路本地地址还需在 % 后指定本机网卡编号或名称。
+  en: Enter an allowed local network IP address. Use brackets where required when specifying a port; link-local addresses also need the local interface index or name after %.
+lan.invalid_interface:
+  zh-CN: 无法确定要使用的网卡，请在地址的 % 后填写本机有效的网卡编号或名称。
+  en: Could not identify the network interface. Enter a valid local interface index or name after % in the address.
 lan.inspect:
   zh-CN: 连接设备…
   en: Connect to device…
