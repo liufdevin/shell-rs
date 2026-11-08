@@ -26,6 +26,227 @@ impl Executor for NoCommands {
     }
 }
 
+struct FakeFirewall {
+    supported: bool,
+    checks: std::sync::Mutex<
+        std::collections::VecDeque<
+            Result<shellrs::lan::firewall::FirewallReport, shellrs::lan::firewall::FirewallFailure>,
+        >,
+    >,
+    configurations: std::sync::Mutex<
+        std::collections::VecDeque<
+            Result<shellrs::lan::firewall::FirewallReport, shellrs::lan::firewall::FirewallFailure>,
+        >,
+    >,
+    check_count: std::sync::atomic::AtomicUsize,
+    configure_count: std::sync::atomic::AtomicUsize,
+    ready: AtomicBool,
+}
+
+impl shellrs::lan::firewall::FirewallBackend for FakeFirewall {
+    fn is_supported(&self) -> bool {
+        self.supported
+    }
+    fn check(
+        &self,
+    ) -> Result<shellrs::lan::firewall::FirewallReport, shellrs::lan::firewall::FirewallFailure>
+    {
+        self.check_count
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while !self.ready.load(std::sync::atomic::Ordering::Acquire)
+            && std::time::Instant::now() < deadline
+        {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        self.checks
+            .lock()
+            .unwrap()
+            .pop_front()
+            .expect("unexpected firewall check")
+    }
+    fn configure(
+        &self,
+    ) -> Result<shellrs::lan::firewall::FirewallReport, shellrs::lan::firewall::FirewallFailure>
+    {
+        self.configure_count
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        self.configurations
+            .lock()
+            .unwrap()
+            .pop_front()
+            .expect("unexpected firewall configuration")
+    }
+}
+
+#[gpui_kit::test]
+async fn firewall_buttons_check_explicitly_prevent_duplicate_jobs_and_handle_uac_cancellation(
+    cx: &mut TestAppContext,
+) {
+    use shellrs::lan::{
+        LanCommand,
+        firewall::{FirewallFailure, FirewallReport},
+    };
+    let backend = Arc::new(FakeFirewall {
+        supported: true,
+        checks: std::sync::Mutex::new(
+            [
+                Ok(FirewallReport::new(false, false, false)),
+                Err(FirewallFailure::Failed("policy query denied".into())),
+            ]
+            .into(),
+        ),
+        configurations: std::sync::Mutex::new(
+            [
+                Err(FirewallFailure::Cancelled),
+                Ok(FirewallReport::new(true, true, true)),
+            ]
+            .into(),
+        ),
+        check_count: std::sync::atomic::AtomicUsize::new(0),
+        configure_count: std::sync::atomic::AtomicUsize::new(0),
+        ready: AtomicBool::new(false),
+    });
+    let (handle, workspace) = open_workspace(cx);
+    cx.update(|cx| {
+        let lan = workspace.read(cx).lan().clone();
+        lan.update(cx, |lan, cx| lan.set_firewall_backend(backend.clone(), cx));
+    });
+    in_frame(cx, handle, |window, cx| window.click("open-settings", cx));
+    in_frame(cx, handle, |window, cx| {
+        window.within("settings").click("0-8", cx)
+    });
+    in_frame(cx, handle, |window, cx| {
+        assert_eq!(
+            window.find("lan-firewall-status").role(),
+            Some(gpui_kit::Role::Status)
+        );
+        assert_eq!(
+            window.find("lan-firewall-status").label(),
+            Some("防火墙尚未检查")
+        );
+        assert_eq!(
+            backend
+                .check_count
+                .load(std::sync::atomic::Ordering::Acquire),
+            0
+        );
+        assert_eq!(
+            backend
+                .configure_count
+                .load(std::sync::atomic::Ordering::Acquire),
+            0
+        );
+        window.click("lan-firewall-check", cx);
+        window.dispatch_action(
+            Box::new(shellrs::app::LanAction(LanCommand::ConfigureFirewall)),
+            cx,
+        );
+        window.dispatch_action(
+            Box::new(shellrs::app::LanAction(LanCommand::CheckFirewall)),
+            cx,
+        );
+    });
+    assert_eq!(
+        backend
+            .configure_count
+            .load(std::sync::atomic::Ordering::Acquire),
+        0
+    );
+    backend
+        .ready
+        .store(true, std::sync::atomic::Ordering::Release);
+    cx.wait_for(handle.into(), Duration::from_secs(6), |window, _| {
+        enabled(&window.find("lan-firewall-check"))
+            && window
+                .find("lan-firewall-status")
+                .label()
+                .is_some_and(|label| label.contains("缺少专用入站规则"))
+    })
+    .await;
+    in_frame(cx, handle, |window, cx| {
+        assert!(window.try_find("lan-firewall-network-warning").is_some());
+        window.click("lan-firewall-configure", cx);
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(6), |window, _| {
+        window
+            .find("lan-firewall-status")
+            .label()
+            .is_some_and(|label| label.contains("已取消管理员授权"))
+    })
+    .await;
+    in_frame(cx, handle, |window, cx| {
+        window.click("lan-firewall-configure", cx)
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(6), |window, _| {
+        window
+            .find("lan-firewall-status")
+            .label()
+            .is_some_and(|label| label.contains("两条私有网络入站规则已就绪"))
+    })
+    .await;
+    in_frame(cx, handle, |window, cx| {
+        assert!(window.try_find("lan-firewall-network-warning").is_none());
+        window.click("lan-firewall-check", cx);
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(6), |window, _| {
+        window
+            .find("lan-firewall-status")
+            .label()
+            .is_some_and(|label| label.contains("policy query denied"))
+    })
+    .await;
+    assert_eq!(
+        backend
+            .check_count
+            .load(std::sync::atomic::Ordering::Acquire),
+        2
+    );
+    assert_eq!(
+        backend
+            .configure_count
+            .load(std::sync::atomic::Ordering::Acquire),
+        2
+    );
+}
+
+#[gpui_kit::test]
+fn unsupported_firewall_controls_are_hidden_and_never_start_a_job(cx: &mut TestAppContext) {
+    let backend = Arc::new(FakeFirewall {
+        supported: false,
+        checks: std::sync::Mutex::default(),
+        configurations: std::sync::Mutex::default(),
+        check_count: std::sync::atomic::AtomicUsize::new(0),
+        configure_count: std::sync::atomic::AtomicUsize::new(0),
+        ready: AtomicBool::new(true),
+    });
+    let (handle, workspace) = open_workspace(cx);
+    cx.update(|cx| {
+        let lan = workspace.read(cx).lan().clone();
+        lan.update(cx, |lan, cx| lan.set_firewall_backend(backend.clone(), cx));
+    });
+    in_frame(cx, handle, |window, cx| window.click("open-settings", cx));
+    in_frame(cx, handle, |window, cx| {
+        window.within("settings").click("0-8", cx)
+    });
+    in_frame(cx, handle, |window, cx| {
+        assert!(window.try_find("lan-firewall-check").is_none());
+        assert!(window.try_find("lan-firewall-configure").is_none());
+        window.dispatch_action(
+            Box::new(shellrs::app::LanAction(
+                shellrs::lan::LanCommand::ConfigureFirewall,
+            )),
+            cx,
+        );
+    });
+    assert_eq!(
+        backend
+            .configure_count
+            .load(std::sync::atomic::Ordering::Acquire),
+        0
+    );
+}
+
 #[gpui_kit::test]
 async fn ipv6_addresses_connect_from_the_lan_settings_without_protocol_notices(
     cx: &mut TestAppContext,

@@ -8,6 +8,8 @@ One section per version, titled `## [version]`, optionally followed by a date. E
 
 ### Added
 
+- LAN settings add read-only Windows firewall checks and administrator-assisted rule configuration. Rules are bound to the current program path, private networks and the local subnet on required ports. Results are rechecked, with feedback for network categories, policy restrictions, possible block rules and cancelled consent; the firewall stays enabled and the main app is not elevated.
+
 - LAN cooperation adds dual-stack listeners, scoped direct connections and per-interface multicast discovery, deduplicated by device identity. Hidden discovery, pairing, source-IP blocks and revocation apply across listeners. Removed the protocol-support notice and duplicate LAN settings heading.
 
 - LAN cooperation uses an off-by-default switch and requires a pairing password before enabling. A separate, off-by-default discovery switch controls visibility while retaining direct IP pairing. Visibility is persisted and applies without restarting networking.

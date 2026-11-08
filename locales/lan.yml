@@ -7,8 +7,56 @@ lan.description:
   zh-CN: 在局域网内配对两台 ShellLF，像本机终端一样使用对方白名单中的串口和 ADB 设备。设备在对方电脑上打开，数据经过加密传输。默认关闭，仅用于局域网内协作。
   en: Pair two ShellLF computers on your LAN and use whitelisted serial ports and ADB devices in interactive terminal tabs. Devices open on the sharing computer and traffic is encrypted. Off by default; local networks only.
 lan.network_help:
-  zh-CN: 两端都需开启协作。使用 TCP 45838 加密连接、UDP 45837 发现设备；请在系统防火墙中允许 ShellLF 的私有网络入站连接。串口参数在被控电脑的主机配置中设置。
-  en: Enable cooperation on both computers. Encrypted connections use TCP 45838; discovery uses UDP 45837. Allow ShellLF inbound connections on private networks in the system firewall. Configure serial parameters in the sharing computer’s saved hosts.
+  zh-CN: 两端都需开启协作。使用 TCP 45838 加密连接、UDP 45837 发现设备；请允许 ShellLF 的私有网络入站连接。Windows 可使用下方按钮检查或配置防火墙。串口参数在被控电脑的主机配置中设置。
+  en: Enable cooperation on both computers. Encrypted connections use TCP 45838; discovery uses UDP 45837. Allow ShellLF inbound connections on private networks. On Windows, use the buttons below to check or configure the firewall. Configure serial parameters in the sharing computer’s saved hosts.
+lan.firewall.check:
+  zh-CN: 检查防火墙
+  en: Check firewall
+lan.firewall.configure:
+  zh-CN: 一键配置防火墙（管理员）…
+  en: Configure firewall (administrator)…
+lan.firewall.scope:
+  zh-CN: 仅为当前程序路径创建或修复 TCP 45838、UDP 45837 的私有网络入站规则，来源限于本地子网。配置时会请求系统管理员授权，主程序不升权；不会开放公用网络、关闭防火墙、改动网络类型或删除其他阻止规则。检测仅核对 Windows 规则和策略，不保证实际网络可达；移动程序后请重新配置。
+  en: Creates or repairs private-network inbound rules for this program path on TCP 45838 and UDP 45837, limited to the local subnet. Configuration requests administrator consent without elevating the main app. It does not enable public-network access, disable the firewall, change network categories or remove other block rules. Checks inspect Windows rules and policy, not end-to-end reachability. Reconfigure after moving the program.
+lan.firewall.unchecked:
+  zh-CN: 防火墙尚未检查
+  en: Firewall not checked
+lan.firewall.checking:
+  zh-CN: 正在检查防火墙…
+  en: Checking firewall…
+lan.firewall.configuring:
+  zh-CN: 正在请求管理员授权并配置，完成后重新检查…
+  en: Requesting administrator consent and configuring; results will be checked afterward…
+lan.firewall.ready:
+  zh-CN: 当前程序的两条私有网络入站规则已就绪。此结果不代表已验证跨电脑连通性。
+  en: Both private-network inbound rules for this program are ready. This does not verify connectivity between computers.
+lan.firewall.missing:
+  zh-CN: 当前程序缺少专用入站规则，或规则的路径、端口、网络范围等设置不符合要求。可使用管理员配置按钮创建或修复。
+  en: Dedicated inbound rules are missing or their path, ports or scope do not match. Use administrator configuration to create or repair them.
+lan.firewall.disabled:
+  zh-CN: Windows 的私有网络防火墙未启用，不能据此确认受保护的入站配置。请先在系统安全设置中检查防火墙状态。
+  en: The Windows private-network firewall is off. A protected inbound configuration cannot be confirmed. Check its state in Windows Security first.
+lan.firewall.managed:
+  zh-CN: 系统或组织策略禁止入站例外或本地规则合并。一键配置不能覆盖此限制，请联系系统管理员。
+  en: System or organization policy disallows inbound exceptions or local rules. Configuration cannot override this restriction. Contact your administrator.
+lan.firewall.blocked:
+  zh-CN: "发现 %{count} 条可能冲突的入站阻止规则。允许规则不能覆盖阻止规则，请在系统防火墙中核实；本功能不会删除它们。"
+  en: "Found %{count} potentially conflicting inbound block rules. Allow rules do not override them. Review these rules in Windows Firewall; they will not be removed automatically."
+lan.firewall.no_private_network:
+  zh-CN: 当前未检测到已连接的私有网络。这些规则不会对公用或域网络生效；仅在信任当前网络时，手动将其设为私有网络后重新检查。
+  en: No connected private network was detected. These rules do not apply to public or domain networks. Only if you trust the network, change its category to Private manually and check again.
+lan.firewall.cancelled:
+  zh-CN: 已取消管理员授权，未执行防火墙配置。可稍后重试或只检查现有规则。
+  en: Administrator consent was cancelled; firewall configuration did not run. Retry later or check existing rules.
+lan.firewall.timed_out:
+  zh-CN: 防火墙操作等待超时。若管理员任务已启动，它可能仍在运行；请稍后点击「检查防火墙」确认状态。
+  en: The firewall operation timed out. An administrator task that already started may still be running. Check the firewall again shortly.
+lan.firewall.unsupported:
+  zh-CN: 此平台不支持 Windows 防火墙配置，请使用系统防火墙设置。
+  en: Windows firewall configuration is unavailable on this platform. Use your system firewall settings.
+lan.firewall.failed:
+  zh-CN: "防火墙操作未完成：%{reason}。请检查防火墙服务、管理员权限及组织策略后重试。"
+  en: "The firewall operation did not complete: %{reason}. Check the firewall service, administrator rights and organization policy, then retry."
 lan.pairing_expired:
   zh-CN: 配对请求已过期或未能加入等待队列，请重新发起
   en: The pairing request expired or could not be queued. Request pairing again.

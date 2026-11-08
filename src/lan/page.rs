@@ -123,6 +123,7 @@ impl Render for LanPage {
                     .text_color(cx.theme().muted_foreground)
                     .child(t!("lan.network_help")),
             )
+            .children(super::firewall::section(service, cx))
             .child(
                 Switch::new("lan-enable")
                     .label(t!("lan.enable"))

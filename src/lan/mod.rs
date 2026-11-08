@@ -1,6 +1,7 @@
 mod adapter;
 mod device_adapter;
 mod device_page;
+pub mod firewall;
 mod page;
 mod prompt;
 mod terminal;
@@ -35,6 +36,8 @@ pub enum LanCommand {
     Enable,
     Disable,
     SetDiscoverable(bool),
+    CheckFirewall,
+    ConfigureFirewall,
     Discover,
     Inspect(String),
     RequestPair,
@@ -94,6 +97,9 @@ enum Completion {
 }
 
 pub struct LanService {
+    firewall_backend: Arc<dyn firewall::FirewallBackend>,
+    firewall_state: firewall::FirewallState,
+    firewall_task: Option<Task<()>>,
     core: Option<Arc<Core>>,
     network: Option<Network>,
     adapter: Option<Arc<adapter::HostExecutor>>,
@@ -130,6 +136,9 @@ impl EventEmitter<LanEvent> for LanService {}
 impl LanService {
     pub fn new(cx: &mut Context<Self>) -> Self {
         let mut service = Self {
+            firewall_backend: Arc::new(firewall::SystemFirewall),
+            firewall_state: firewall::FirewallState::Unchecked,
+            firewall_task: None,
             core: None,
             network: None,
             adapter: None,
@@ -359,6 +368,13 @@ impl LanService {
     }
 
     pub fn dispatch(&mut self, command: LanCommand, cx: &mut Context<Self>) {
+        if matches!(
+            command,
+            LanCommand::CheckFirewall | LanCommand::ConfigureFirewall
+        ) {
+            self.firewall_operation(command == LanCommand::ConfigureFirewall, cx);
+            return;
+        }
         if let LanCommand::ManageDevicePermissions(peer) = &command {
             if self.grants().iter().any(|grant| grant.id == *peer) {
                 self.permission_peer = Some(peer.clone());
@@ -626,6 +642,8 @@ impl LanService {
             LanCommand::SetExecutionPermission(..)
             | LanCommand::Disable
             | LanCommand::SetDiscoverable(_)
+            | LanCommand::CheckFirewall
+            | LanCommand::ConfigureFirewall
             | LanCommand::SelectHost(_)
             | LanCommand::Execute(_)
             | LanCommand::Cancel => {}
