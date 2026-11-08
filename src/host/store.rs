@@ -126,6 +126,7 @@ impl HostStore {
         for event in self.data.take_events() {
             match event {
                 HostEvent::Failed(failure) => {
+                    tracing::error!(error = %failure.message(), "Cannot persist host data or credentials");
                     cx.emit(HostStoreEvent::PersistFailed(failure.message()));
                 }
                 HostEvent::ForwardSettingsChanged(id) => {

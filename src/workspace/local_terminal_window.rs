@@ -365,7 +365,7 @@ pub fn open_admin_terminal_window(
             cx.new(|cx| Root::new(view, window, cx))
         });
         if let Err(error) = opened {
-            eprintln!("shellrs: cannot open the administrator terminal: {error}");
+            tracing::error!(%error, "Cannot open the administrator terminal");
             cx.update(|cx| cx.quit());
         }
     })

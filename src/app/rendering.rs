@@ -20,6 +20,7 @@ pub const SOFTWARE_FRAME_INTERVAL: Duration = Duration::from_millis(50);
 pub fn note_renderer(window: &Window, cx: &mut App) {
     let software = window.gpu_specs().is_some_and(|specs| is_software(&specs));
     SOFTWARE.store(software, Ordering::Relaxed);
+    tracing::info!(software_rendering = software, "Window renderer initialized");
     if software {
         cx.set_reduce_motion(true);
     }

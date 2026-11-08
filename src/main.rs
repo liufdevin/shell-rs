@@ -9,18 +9,27 @@ use shellrs::host::{HostDatabase, HostStore};
 use shellrs::settings::{SettingsProblem, SettingsStore};
 
 fn main() {
+    let logging = shellrs::app::logging::init();
     let args = shellrs::cli::command_line_arguments().unwrap_or_default();
     let admin_terminal = match shellrs::workspace::AdminTerminalRequest::parse_startup(&args) {
         Ok(request) => request,
         Err(error) => {
+            tracing::error!(%error, "Invalid administrator terminal startup request");
             eprintln!("{error}");
+            if let Some(logging) = &logging {
+                logging.flush();
+            }
             std::process::exit(2);
         }
     };
     if let Some(request) = &admin_terminal
         && let Err(error) = request.validate_elevation()
     {
+        tracing::error!(%error, "Administrator terminal elevation validation failed");
         eprintln!("{error}");
+        if let Some(logging) = &logging {
+            logging.flush();
+        }
         std::process::exit(1);
     }
     // `ShellRS ssh://user@host:port` or `ShellRS -url … -newtab 名称`: a
@@ -32,7 +41,11 @@ fn main() {
     // is `shelllf-cli.exe`, which 设置 → 外部 CLI puts on the PATH.
     #[cfg(any(not(windows), debug_assertions))]
     if admin_terminal.is_none() && link.is_none() && !args.is_empty() {
-        std::process::exit(shellrs::cli::main(args));
+        let code = shellrs::cli::main(args);
+        if let Some(logging) = &logging {
+            logging.flush();
+        }
+        std::process::exit(code);
     }
     // One ShellRS per data directory. Each keeps the hosts in memory and
     // writes its changes through, so a second one would write over the
@@ -41,6 +54,7 @@ fn main() {
     if admin_terminal.is_none()
         && shellrs::cli::activate_running_app(&shellrs::app::cli_socket_path(), link.clone())
     {
+        tracing::info!("Activated the existing instance; secondary instance exiting");
         return;
     }
     let app = gpui_kit::application().with_assets(shellrs::app::AppAssets);
@@ -103,6 +117,7 @@ fn main() {
                         match shellrs::cli::CliServer::reserve(shellrs::app::cli_socket_path()) {
                             Ok(server) => server,
                             Err(error) => {
+                                tracing::error!(%error, "Cannot reserve the local CLI endpoint");
                                 let failure =
                                     cx.new(|_| shellrs::workspace::StartupFailure::new(&error));
                                 return cx.new(|cx| Root::new(failure, window, cx));
@@ -147,12 +162,14 @@ fn main() {
                 })
                 .expect("failed to open window");
             cx.update(|cx| cx.set_global(shellrs::app::MainWindow(window.into())));
+            tracing::info!("Main window opened");
         })
         .detach();
     });
     // On Windows the event loop ends and `run` returns: an update that is
     // to be installed now starts its setup, which waits for this process.
     shellrs::update::start_handed_over();
+    tracing::info!("ShellLF exiting normally");
 }
 
 /// Load the hosts saved on disk. If the database cannot be opened the
@@ -170,6 +187,7 @@ fn open_store() -> (HostStore, Option<SharedString>) {
         // Keys are kept only with a database to remember them: a store
         // that forgets everything would leave them behind unused.
         Ok(store) => {
+            tracing::info!("Host database loaded");
             let mut store = store
                 .with_secrets(secrets)
                 .with_key_dir(shellrs::app::keys_dir())
@@ -178,6 +196,7 @@ fn open_store() -> (HostStore, Option<SharedString>) {
             (store, problem)
         }
         Err(error) => {
+            tracing::error!(error = %format!("{error:#}"), "Cannot open the host database; using an in-memory store");
             eprintln!("shellrs: cannot open the local database: {error}");
             (
                 HostStore::empty().with_secrets(secrets),
@@ -192,10 +211,13 @@ fn open_store() -> (HostStore, Option<SharedString>) {
 fn open_settings() -> (SettingsStore, Option<SettingsProblem>) {
     match shellrs::app::settings_path() {
         Ok(path) => SettingsStore::load(path),
-        Err(error) => (
-            SettingsStore::in_memory(),
-            Some(SettingsProblem::Unsaved(error.to_string())),
-        ),
+        Err(error) => {
+            tracing::error!(%error, "Cannot create the settings directory; settings will not persist");
+            (
+                SettingsStore::in_memory(),
+                Some(SettingsProblem::Unsaved(error.to_string())),
+            )
+        }
     }
 }
 

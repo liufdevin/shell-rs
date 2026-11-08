@@ -729,6 +729,7 @@ impl LanService {
         let mut changed = self.drain();
         if let Some(core) = &self.core {
             if let Some(error) = core.take_device_audit_error() {
+                tracing::error!(%error, "Cannot persist LAN device audit log");
                 self.status = t!("lan.devices.audit_failed", reason = error).to_string();
                 changed = true;
             }
@@ -836,6 +837,7 @@ fn test_bind_address(
 }
 
 pub(super) fn error_text(error: &anyhow::Error) -> String {
+    tracing::warn!(error = %format!("{error:#}"), "LAN operation failed");
     let text = error.to_string();
     if text.contains("blocked_by_device") {
         t!("lan.blocked_by_device").to_string()

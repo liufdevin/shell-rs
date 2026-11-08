@@ -123,7 +123,7 @@ impl Workspace {
 /// Saving the window's place is a convenience: a failure is only logged.
 fn write(state: &WindowState, path: &Path) {
     if let Err(error) = state.save(path) {
-        eprintln!("shellrs: cannot save the window's place: {error}");
+        tracing::warn!(%error, "Cannot save the window placement");
     }
 }
 

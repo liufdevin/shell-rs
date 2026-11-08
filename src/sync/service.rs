@@ -22,7 +22,7 @@ use super::{
     Attention, Blocking, JobError, RoundEnd, RoundHost, SyncLocation, SyncServices, run_round,
     worker,
 };
-use crate::host::{HostData, HostStore};
+use crate::host::{ErrorMessage, HostData, HostStore};
 use crate::secrets::{SecretStore, SharedSecretStore};
 
 /// After an edit, how long the user may go on editing before a round runs.
@@ -300,7 +300,10 @@ impl SyncService {
                     cx.emit(SyncEvent::NeedsAttention(attention));
                 }
             }
-            RoundEnd::Failed(error) => self.phase = SyncPhase::Failed(error),
+            RoundEnd::Failed(error) => {
+                tracing::warn!(error = %error.message(), "Host synchronization failed");
+                self.phase = SyncPhase::Failed(error);
+            }
         }
         cx.notify();
         if mem::take(&mut self.again) {

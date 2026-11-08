@@ -8,6 +8,8 @@ One section per version, titled `## [version]`, optionally followed by a date. E
 
 ### Added
 
+- Application diagnostics are saved in `log` beside the executable, separated by local date and process. Retention covers today and the preceding six days, with cleanup at startup and across day changes. Background writes use a bounded queue; files rotate at 10 MiB with up to five parts per process per day. Logs capture startup, key failures and Rust panic backtraces without collecting terminal input/output or credentials.
+
 - LAN settings add removal of the current program’s dedicated firewall rules, with ownership checks and post-removal verification. The configuration button is now labeled “Configure firewall”; both configuration and removal still request system consent.
 
 - LAN settings add read-only Windows firewall checks and administrator-assisted rule configuration. Rules are bound to the current program path, private networks and the local subnet on required ports. Results are rechecked, with feedback for network categories, policy restrictions, possible block rules and cancelled consent; the firewall stays enabled and the main app is not elevated.

@@ -122,7 +122,7 @@ impl FirewallBackend for SystemFirewall {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum FirewallOperation {
     Check,
     Configure,
@@ -189,6 +189,7 @@ impl LanService {
             FirewallOperation::Remove => FirewallState::Removing,
         };
         let backend = self.firewall_backend.clone();
+        tracing::info!(?operation, "Windows firewall operation started");
         self.firewall_task = Some(cx.spawn(async move |this, cx| {
             let result = cx
                 .background_spawn(async move {
@@ -201,6 +202,14 @@ impl LanService {
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.firewall_task = None;
+                match &result {
+                    Ok(report) => {
+                        tracing::info!(?operation, ?report, "Windows firewall operation completed")
+                    }
+                    Err(error) => {
+                        tracing::warn!(?operation, ?error, "Windows firewall operation failed")
+                    }
+                }
                 this.firewall_state = match result {
                     Ok(report)
                         if operation == FirewallOperation::Remove

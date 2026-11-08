@@ -1528,6 +1528,7 @@ impl TerminalRuntime {
                             break;
                         }
                         TerminalTransportEvent::Failed(error) => {
+                            tracing::warn!(%error, "Terminal connection failed");
                             let fed = parser.zmodem.disconnected();
                             parser.transfer(fed);
                             parser.finish_output();

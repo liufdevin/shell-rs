@@ -4,6 +4,7 @@ mod actions;
 mod app_icon;
 mod assets;
 mod computer;
+pub mod logging;
 mod paths;
 mod quit;
 mod rendering;

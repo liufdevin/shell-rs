@@ -67,10 +67,13 @@ impl SettingsStore {
         };
         let (settings, problem) = match loaded {
             Ok(settings) => (AppSettings::normalized(settings), None),
-            Err(error) => (
-                AppSettings::default(),
-                Some(SettingsProblem::Unreadable(error)),
-            ),
+            Err(error) => {
+                tracing::warn!(%error, "Cannot read application settings; using defaults");
+                (
+                    AppSettings::default(),
+                    Some(SettingsProblem::Unreadable(error)),
+                )
+            }
         };
         (
             Self {
@@ -92,6 +95,7 @@ impl SettingsStore {
         };
         cx.notify();
         if let Err(error) = written {
+            tracing::error!(%error, "Cannot persist application settings");
             cx.emit(SettingsStoreEvent::PersistFailed(t!(
                 "settings.store.save_failed",
                 error = error

@@ -630,6 +630,7 @@ impl Updater {
                     Err(UpdateError::Cancelled) => self.phase = Phase::Available,
                     Err(error) => {
                         self.download_failures += 1;
+                        tracing::warn!(?error, "Cannot download or verify application update");
                         self.phase = Phase::Failed {
                             stage: Stage::Download,
                             error,
@@ -655,6 +656,7 @@ impl Updater {
             },
             Ok(Opened::NewerFormat { .. }) => Offer::UpToDate,
             Err(error) => {
+                tracing::warn!(?error, "Cannot check for application updates");
                 self.phase = Phase::Failed {
                     stage: Stage::Check,
                     error,
@@ -809,7 +811,7 @@ pub fn start_handed_over() {
     if let Some(launch) = launch
         && let Err(error) = launch.spawn()
     {
-        eprintln!("shellrs: could not start the update installer: {error}");
+        tracing::error!(%error, "Cannot start the update installer");
     }
 }
 

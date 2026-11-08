@@ -14,6 +14,20 @@ On macOS, the close button at the top left of the window only hides ShellRS: ope
 
 Windows quits when the window is closed by default. Turn on “Minimize to tray on close” under “Settings → General → Window” to hide the window instead, keeping connections, transfers and port forwards running. Click the tray icon or choose “Show window” from its context menu to restore the window. Choose “Quit” to exit; unsaved editor changes still ask for confirmation. Starting ShellRS again or using the system-wide show shortcut also restores the window. This option is off by default and appears only on Windows. If the tray icon cannot be created, ShellRS reports the error and keeps the window open.
 
+## Application diagnostics
+
+ShellLF creates `log` beside its executable at startup: for example, `dist/ShellLF.exe` writes to `dist/log/`. This is independent of `SHELLRS_DATA_DIR` and separate from terminal recordings, remote device logs and LAN operation auditing.
+
+- Files are named `shelllf-2026-11-08-1234.log`, using the computer's local date and the process ID. Separate instances write separate files.
+- Retention covers today and the preceding six days. Cleanup runs at startup and across day changes, including an idle check about once a minute. Only expired files matching ShellLF's naming pattern are removed; unrelated files are preserved.
+- Each file rotates at approximately 10 MiB. Up to five files are retained per process per day, with older parts named `.1.log` through `.4.log` and replaced when full.
+- The default application level is INFO. Events include version, startup and normal exit, renderer mode, database/settings failures, terminal connection failures, LAN errors and update failures. Rust panics include their location and available backtrace; release optimization and stripped symbols may limit detail. Forced termination, power loss and native crashes may prevent the final events from being written.
+- A background thread writes records through a bounded queue. Oversized records are truncated, and congestion drops ordinary records with a count reported in the log so that logging does not stall the interface. Normal exit drains queued records.
+
+For additional diagnostics in PowerShell, run `$env:SHELLLF_LOG = 'debug'`, then launch `ShellLF.exe` from that terminal. The default is `info`; `warn`, `error`, `trace` and `off` are also accepted. This setting affects ShellLF modules only; third-party libraries stay at WARN to avoid enabling protocol dumps. Run `Remove-Item Env:SHELLLF_LOG` to restore the default.
+
+Application diagnostics do not deliberately collect passwords, pairing passwords, private keys, tokens or terminal traffic. Error and panic text can still include addresses, paths or other context; review logs before sharing them. Include the incident's time and reproduction steps with that day's files. An unwritable program directory or full disk does not prevent startup: logging falls back to reporting errors on stderr, which is usually invisible when launching the Windows GUI by double-clicking. Ensure that the executable's directory is writable.
+
 ## Hosts
 
 Each item saved in the left sidebar is a host: an address, a port and a way to authenticate. To log in to the same machine as different users, save it as two hosts.

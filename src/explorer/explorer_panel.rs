@@ -565,6 +565,7 @@ impl ExplorerPanel {
                 cx.emit(ExplorerPanelEvent::StateChanged(self.id, self.host_id));
             }
             SftpEvent::Disconnected(message) => {
+                tracing::warn!(host_id = ?self.host_id, error = %message, "SFTP connection disconnected");
                 self.state = ConnectionState::Disconnected;
                 self.latency = None;
                 self.abandon_remote_operations(cx);
