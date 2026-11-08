@@ -38,6 +38,7 @@ pub enum LanCommand {
     SetDiscoverable(bool),
     CheckFirewall,
     ConfigureFirewall,
+    RemoveFirewall,
     Discover,
     Inspect(String),
     RequestPair,
@@ -368,11 +369,14 @@ impl LanService {
     }
 
     pub fn dispatch(&mut self, command: LanCommand, cx: &mut Context<Self>) {
-        if matches!(
-            command,
-            LanCommand::CheckFirewall | LanCommand::ConfigureFirewall
-        ) {
-            self.firewall_operation(command == LanCommand::ConfigureFirewall, cx);
+        let firewall_operation = match command {
+            LanCommand::CheckFirewall => Some(firewall::FirewallOperation::Check),
+            LanCommand::ConfigureFirewall => Some(firewall::FirewallOperation::Configure),
+            LanCommand::RemoveFirewall => Some(firewall::FirewallOperation::Remove),
+            _ => None,
+        };
+        if let Some(operation) = firewall_operation {
+            self.firewall_operation(operation, cx);
             return;
         }
         if let LanCommand::ManageDevicePermissions(peer) = &command {
@@ -644,6 +648,7 @@ impl LanService {
             | LanCommand::SetDiscoverable(_)
             | LanCommand::CheckFirewall
             | LanCommand::ConfigureFirewall
+            | LanCommand::RemoveFirewall
             | LanCommand::SelectHost(_)
             | LanCommand::Execute(_)
             | LanCommand::Cancel => {}

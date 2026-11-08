@@ -8,6 +8,8 @@ One section per version, titled `## [version]`, optionally followed by a date. E
 
 ### Added
 
+- LAN settings add removal of the current program’s dedicated firewall rules, with ownership checks and post-removal verification. The configuration button is now labeled “Configure firewall”; both configuration and removal still request system consent.
+
 - LAN settings add read-only Windows firewall checks and administrator-assisted rule configuration. Rules are bound to the current program path, private networks and the local subnet on required ports. Results are rechecked, with feedback for network categories, policy restrictions, possible block rules and cancelled consent; the firewall stays enabled and the main app is not elevated.
 
 - LAN cooperation adds dual-stack listeners, scoped direct connections and per-interface multicast discovery, deduplicated by device identity. Hidden discovery, pairing, source-IP blocks and revocation apply across listeners. Removed the protocol-support notice and duplicate LAN settings heading.

@@ -13,6 +13,7 @@ use super::{FirewallFailure, FirewallReport};
 const GROUP: &str = "ShellLF LAN cooperation";
 const CHECK_SCRIPT: &str = include_str!("check.ps1");
 const CONFIGURE_SCRIPT: &str = include_str!("configure.ps1");
+const REMOVE_SCRIPT: &str = include_str!("remove.ps1");
 
 fn failure(error: impl std::fmt::Display) -> FirewallFailure {
     FirewallFailure::Failed(
@@ -49,7 +50,7 @@ fn quoted(value: &str) -> String {
     format!("'{}'", value.replace('\'', "''"))
 }
 
-fn script(program: &Path, configure: bool) -> Result<String, FirewallFailure> {
+fn script(program: &Path, body: &str) -> Result<String, FirewallFailure> {
     let value = program
         .to_str()
         .filter(|value| !value.chars().any(char::is_control))
@@ -64,7 +65,7 @@ fn script(program: &Path, configure: bool) -> Result<String, FirewallFailure> {
         .collect();
     Ok(format!(
         "$ErrorActionPreference = 'Stop'\n$ProgressPreference = 'SilentlyContinue'\n[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)\n$env:PSModulePath = Join-Path $PSHOME 'Modules'\n{}\n$program = {}\n$group = {}\n$rulePrefix = 'ShellLF-LAN-{key}'\n$tcpPort = {}\n$udpPort = {}\n{}",
-        if configure {
+        if body != CHECK_SCRIPT {
             "Import-Module (Join-Path $PSHOME 'Modules/NetSecurity/NetSecurity.psd1') -ErrorAction Stop"
         } else {
             ""
@@ -73,11 +74,7 @@ fn script(program: &Path, configure: bool) -> Result<String, FirewallFailure> {
         quoted(GROUP),
         shellrs_lan::TCP_PORT,
         shellrs_lan::DISCOVERY_PORT,
-        if configure {
-            CONFIGURE_SCRIPT
-        } else {
-            CHECK_SCRIPT
-        }
+        body
     ))
 }
 
@@ -87,7 +84,7 @@ fn encoded(script: &str) -> String {
 }
 
 pub(super) fn check() -> Result<FirewallReport, FirewallFailure> {
-    let script = script(&program()?, false)?;
+    let script = script(&program()?, CHECK_SCRIPT)?;
     serde_json::from_slice(&run_query(&script)?).map_err(failure)
 }
 
@@ -149,6 +146,14 @@ fn run_query(script: &str) -> Result<Vec<u8>, FirewallFailure> {
 }
 
 pub(super) fn configure() -> Result<(), FirewallFailure> {
+    elevate(&script(&program()?, CONFIGURE_SCRIPT)?)
+}
+
+pub(super) fn remove() -> Result<(), FirewallFailure> {
+    elevate(&script(&program()?, REMOVE_SCRIPT)?)
+}
+
+fn elevate(script: &str) -> Result<(), FirewallFailure> {
     use std::os::windows::ffi::OsStrExt as _;
     use windows_sys::Win32::{
         Foundation::{CloseHandle, ERROR_CANCELLED, WAIT_OBJECT_0, WAIT_TIMEOUT},
@@ -185,7 +190,6 @@ pub(super) fn configure() -> Result<(), FirewallFailure> {
     }
     let _com = Com;
     let executable = powershell()?;
-    let script = script(&program()?, true)?;
     let wide = |value: &std::ffi::OsStr| {
         value
             .encode_wide()
@@ -196,7 +200,7 @@ pub(super) fn configure() -> Result<(), FirewallFailure> {
     let file = wide(executable.as_os_str());
     let parameters = wide(std::ffi::OsStr::new(&format!(
         "-NoLogo -NoProfile -NonInteractive -EncodedCommand {}",
-        encoded(&script)
+        encoded(script)
     )));
     let directory = wide(executable.parent().unwrap().as_os_str());
     let mut information = SHELLEXECUTEINFOW {
@@ -240,7 +244,7 @@ pub(super) fn configure() -> Result<(), FirewallFailure> {
     }
     if code != 0 {
         return Err(failure(
-            "Windows did not complete the firewall configuration; check administrator rights and system policy",
+            "Windows did not complete the firewall operation; check administrator rights and system policy",
         ));
     }
     Ok(())
@@ -261,7 +265,7 @@ mod tests {
     #[test]
     fn scripts_quote_paths_and_bind_rules_to_one_program_and_private_ports() {
         let program = Path::new("C:\\tools\\Shell LF 'demo' $name;测试\\ShellLF.exe");
-        let configure = script(program, true).unwrap();
+        let configure = script(program, CONFIGURE_SCRIPT).unwrap();
         assert!(
             configure.contains("$program = 'C:\\tools\\Shell LF ''demo'' $name;测试\\ShellLF.exe'")
         );
@@ -279,7 +283,7 @@ mod tests {
                 && !configure.contains("Set-NetConnectionProfile")
         );
         assert!(!configure.contains("Remove-NetFirewallRule") && !configure.contains("Public"));
-        let check = script(program, false).unwrap();
+        let check = script(program, CHECK_SCRIPT).unwrap();
         for verb in [
             "New-NetFirewallRule",
             "Set-NetFirewallRule",
@@ -299,8 +303,8 @@ mod tests {
             .map(|bytes| u16::from_le_bytes(*bytes))
             .collect();
         assert_eq!(String::from_utf16(&characters).unwrap(), configure);
-        assert!(script(Path::new("relative.exe"), true).is_err());
-        assert!(script(Path::new("C:\\bad\npath.exe"), true).is_err());
+        assert!(script(Path::new("relative.exe"), CONFIGURE_SCRIPT).is_err());
+        assert!(script(Path::new("C:\\bad\npath.exe"), CONFIGURE_SCRIPT).is_err());
     }
 
     #[test]
@@ -387,6 +391,7 @@ function New-Object {
             assert_eq!(report.firewall_enabled, case != "disabled");
             assert_eq!(report.local_rules_allowed, case != "managed");
             assert_eq!(report.possible_blocks, u32::from(case == "blocked"));
+            assert_eq!(report.managed_rules, if case == "missing" { 1 } else { 2 });
         }
         assert!(
             run_query(&format!(
@@ -399,7 +404,7 @@ function New-Object {
     const MOCK_CONFIGURE: &str = r#"
 function Get-NetFirewallRule {
     [CmdletBinding()] param($PolicyStore, $Name)
-    if ($case -ne 'new') { [pscustomobject]@{ Name = $Name; Group = $(if ($case -eq 'collision') { 'Other application' } else { $group }) } }
+    if ($case -ne 'new') { [pscustomobject]@{ Name = $Name; Group = $(if ($case -eq 'collision' -or ($case -eq 'second-collision' -and $Name -like '*-UDP')) { 'Other application' } else { $group }) } }
 }
 function Get-NetFirewallApplicationFilter {
     [CmdletBinding()] param([Parameter(ValueFromPipeline)]$rule)
@@ -444,6 +449,54 @@ function Set-NetFirewallRule {
                 "{MOCK_HEADER}\n$case = 'collision-program'\n{MOCK_CONFIGURE}\n{CONFIGURE_SCRIPT}"
             ))
             .is_err()
+        );
+    }
+
+    #[test]
+    fn removal_uses_only_validated_rule_objects_and_is_safe_when_already_absent() {
+        let removal = r#"
+function Remove-NetFirewallRule {
+    [CmdletBinding(SupportsShouldProcess)] param([Parameter(ValueFromPipeline)]$InputObject)
+    process {
+        if ($case -eq 'second-collision') { throw 'unsafe deletion before all ownership checks' }
+        if ($InputObject.Name -notin @("$rulePrefix-TCP", "$rulePrefix-UDP") -or $InputObject.Group -ne $group) { throw 'unsafe rule removal' }
+        [Console]::Out.Write('removed;')
+    }
+}
+"#;
+        for (case, expected) in [("existing", "removed;removed;"), ("new", "")] {
+            let output = run_query(&format!(
+                "{MOCK_HEADER}\n$case = {}\n{MOCK_CONFIGURE}\n{removal}\n{REMOVE_SCRIPT}",
+                quoted(case)
+            ))
+            .unwrap();
+            assert_eq!(String::from_utf8(output).unwrap(), expected);
+        }
+        for case in ["collision", "collision-program"] {
+            assert!(
+                run_query(&format!(
+                    "{MOCK_HEADER}\n$case = {}\n{MOCK_CONFIGURE}\n{removal}\n{REMOVE_SCRIPT}",
+                    quoted(case)
+                ))
+                .is_err()
+            );
+        }
+        let result = run_query(&format!(
+            "{MOCK_HEADER}\n$case = 'second-collision'\n{MOCK_CONFIGURE}\n{removal}\n{REMOVE_SCRIPT}"
+        ));
+        match result {
+            Err(FirewallFailure::Failed(reason)) => {
+                assert!(reason.contains("A different firewall rule uses the reserved name"))
+            }
+            other => panic!("unexpected preflight result: {other:?}"),
+        }
+        let remove = script(Path::new("C:\\ShellLF\\ShellLF.exe"), REMOVE_SCRIPT).unwrap();
+        assert!(
+            remove.contains("PolicyStore PersistentStore")
+                && remove.contains("$application.Program -ine $program")
+        );
+        assert!(
+            !remove.contains("Set-NetFirewallProfile") && !remove.contains("New-NetFirewallRule")
         );
     }
 

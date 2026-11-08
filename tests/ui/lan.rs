@@ -38,8 +38,14 @@ struct FakeFirewall {
             Result<shellrs::lan::firewall::FirewallReport, shellrs::lan::firewall::FirewallFailure>,
         >,
     >,
+    removals: std::sync::Mutex<
+        std::collections::VecDeque<
+            Result<shellrs::lan::firewall::FirewallReport, shellrs::lan::firewall::FirewallFailure>,
+        >,
+    >,
     check_count: std::sync::atomic::AtomicUsize,
     configure_count: std::sync::atomic::AtomicUsize,
+    remove_count: std::sync::atomic::AtomicUsize,
     ready: AtomicBool,
 }
 
@@ -77,6 +83,18 @@ impl shellrs::lan::firewall::FirewallBackend for FakeFirewall {
             .pop_front()
             .expect("unexpected firewall configuration")
     }
+    fn remove(
+        &self,
+    ) -> Result<shellrs::lan::firewall::FirewallReport, shellrs::lan::firewall::FirewallFailure>
+    {
+        self.remove_count
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        self.removals
+            .lock()
+            .unwrap()
+            .pop_front()
+            .expect("unexpected firewall removal")
+    }
 }
 
 #[gpui_kit::test]
@@ -105,6 +123,8 @@ async fn firewall_buttons_check_explicitly_prevent_duplicate_jobs_and_handle_uac
         ),
         check_count: std::sync::atomic::AtomicUsize::new(0),
         configure_count: std::sync::atomic::AtomicUsize::new(0),
+        removals: std::sync::Mutex::default(),
+        remove_count: std::sync::atomic::AtomicUsize::new(0),
         ready: AtomicBool::new(false),
     });
     let (handle, workspace) = open_workspace(cx);
@@ -138,12 +158,24 @@ async fn firewall_buttons_check_explicitly_prevent_duplicate_jobs_and_handle_uac
             0
         );
         window.click("lan-firewall-check", cx);
+        assert_eq!(
+            window.find("lan-firewall-configure").label(),
+            Some("配置防火墙…")
+        );
+        assert_eq!(
+            window.find("lan-firewall-remove").label(),
+            Some("删除防火墙配置…")
+        );
         window.dispatch_action(
             Box::new(shellrs::app::LanAction(LanCommand::ConfigureFirewall)),
             cx,
         );
         window.dispatch_action(
             Box::new(shellrs::app::LanAction(LanCommand::CheckFirewall)),
+            cx,
+        );
+        window.dispatch_action(
+            Box::new(shellrs::app::LanAction(LanCommand::RemoveFirewall)),
             cx,
         );
     });
@@ -208,6 +240,107 @@ async fn firewall_buttons_check_explicitly_prevent_duplicate_jobs_and_handle_uac
             .load(std::sync::atomic::Ordering::Acquire),
         2
     );
+    assert_eq!(
+        backend
+            .remove_count
+            .load(std::sync::atomic::Ordering::Acquire),
+        0
+    );
+}
+
+#[gpui_kit::test]
+async fn firewall_removal_requires_verified_absence_and_can_be_configured_again(
+    cx: &mut TestAppContext,
+) {
+    use shellrs::lan::firewall::{FirewallFailure, FirewallReport};
+    let mut remaining = FirewallReport::new(true, false, false);
+    remaining.managed_rules = 1;
+    let backend = Arc::new(FakeFirewall {
+        supported: true,
+        checks: std::sync::Mutex::default(),
+        configurations: std::sync::Mutex::new([Ok(FirewallReport::new(true, true, true))].into()),
+        removals: std::sync::Mutex::new(
+            [
+                Err(FirewallFailure::Cancelled),
+                Err(FirewallFailure::Failed("deletion denied".into())),
+                Ok(remaining),
+                Ok(FirewallReport::new(true, false, false)),
+                Ok(FirewallReport::new(true, false, false)),
+            ]
+            .into(),
+        ),
+        check_count: std::sync::atomic::AtomicUsize::new(0),
+        configure_count: std::sync::atomic::AtomicUsize::new(0),
+        remove_count: std::sync::atomic::AtomicUsize::new(0),
+        ready: AtomicBool::new(true),
+    });
+    let (handle, workspace) = open_workspace(cx);
+    cx.update(|cx| {
+        let service = workspace.read(cx).lan().clone();
+        service.update(cx, |service, cx| {
+            service.set_firewall_backend(backend.clone(), cx)
+        });
+    });
+    in_frame(cx, handle, |window, cx| window.click("open-settings", cx));
+    in_frame(cx, handle, |window, cx| {
+        window.within("settings").click("0-8", cx)
+    });
+    for expected in [
+        "已取消管理员授权",
+        "deletion denied",
+        "未能确认删除完成",
+        "专用防火墙规则已删除",
+    ] {
+        in_frame(cx, handle, |window, cx| {
+            window.click("lan-firewall-remove", cx)
+        });
+        cx.wait_for(handle.into(), Duration::from_secs(6), |window, _| {
+            enabled(&window.find("lan-firewall-remove"))
+                && window
+                    .find("lan-firewall-status")
+                    .label()
+                    .is_some_and(|label| label.contains(expected))
+        })
+        .await;
+    }
+    in_frame(cx, handle, |window, cx| {
+        window.click("lan-firewall-configure", cx)
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(6), |window, _| {
+        window
+            .find("lan-firewall-status")
+            .label()
+            .is_some_and(|label| label.contains("两条私有网络入站规则已就绪"))
+    })
+    .await;
+    in_frame(cx, handle, |window, cx| {
+        window.click("lan-firewall-remove", cx)
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(6), |window, _| {
+        window
+            .find("lan-firewall-status")
+            .label()
+            .is_some_and(|label| label.contains("专用防火墙规则已删除"))
+    })
+    .await;
+    assert_eq!(
+        backend
+            .remove_count
+            .load(std::sync::atomic::Ordering::Acquire),
+        5
+    );
+    assert_eq!(
+        backend
+            .configure_count
+            .load(std::sync::atomic::Ordering::Acquire),
+        1
+    );
+    assert_eq!(
+        backend
+            .check_count
+            .load(std::sync::atomic::Ordering::Acquire),
+        0
+    );
 }
 
 #[gpui_kit::test]
@@ -216,8 +349,10 @@ fn unsupported_firewall_controls_are_hidden_and_never_start_a_job(cx: &mut TestA
         supported: false,
         checks: std::sync::Mutex::default(),
         configurations: std::sync::Mutex::default(),
+        removals: std::sync::Mutex::default(),
         check_count: std::sync::atomic::AtomicUsize::new(0),
         configure_count: std::sync::atomic::AtomicUsize::new(0),
+        remove_count: std::sync::atomic::AtomicUsize::new(0),
         ready: AtomicBool::new(true),
     });
     let (handle, workspace) = open_workspace(cx);
@@ -232,6 +367,7 @@ fn unsupported_firewall_controls_are_hidden_and_never_start_a_job(cx: &mut TestA
     in_frame(cx, handle, |window, cx| {
         assert!(window.try_find("lan-firewall-check").is_none());
         assert!(window.try_find("lan-firewall-configure").is_none());
+        assert!(window.try_find("lan-firewall-remove").is_none());
         window.dispatch_action(
             Box::new(shellrs::app::LanAction(
                 shellrs::lan::LanCommand::ConfigureFirewall,

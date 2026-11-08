@@ -41,6 +41,7 @@ try {
         tcp_rule = [bool](Test-Rule 'TCP' 6 $tcpPort)
         udp_rule = [bool](Test-Rule 'UDP' 17 $udpPort)
         possible_blocks = [int]$blocks
+        managed_rules = [int](@($rules | Where-Object { $_.Name -in @("$rulePrefix-TCP", "$rulePrefix-UDP") }).Count)
     }
     [Console]::Out.Write(($report | ConvertTo-Json -Compress))
     exit 0

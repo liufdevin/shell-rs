@@ -22,6 +22,7 @@ pub struct FirewallReport {
     pub tcp_rule: bool,
     pub udp_rule: bool,
     pub possible_blocks: u32,
+    pub managed_rules: u32,
 }
 
 impl FirewallReport {
@@ -34,6 +35,7 @@ impl FirewallReport {
             tcp_rule,
             udp_rule,
             possible_blocks: 0,
+            managed_rules: u32::from(tcp_rule) + u32::from(udp_rule),
         }
     }
 
@@ -57,6 +59,7 @@ pub enum FirewallFailure {
     Cancelled,
     TimedOut,
     Unsupported,
+    RulesRemain,
     Failed(String),
 }
 
@@ -66,6 +69,7 @@ impl FirewallFailure {
             Self::Cancelled => t!("lan.firewall.cancelled"),
             Self::TimedOut => t!("lan.firewall.timed_out"),
             Self::Unsupported => t!("lan.firewall.unsupported"),
+            Self::RulesRemain => t!("lan.firewall.rules_remain"),
             Self::Failed(reason) => t!("lan.firewall.failed", reason = reason),
         }
     }
@@ -75,6 +79,7 @@ pub trait FirewallBackend: Send + Sync + 'static {
     fn is_supported(&self) -> bool;
     fn check(&self) -> Result<FirewallReport, FirewallFailure>;
     fn configure(&self) -> Result<FirewallReport, FirewallFailure>;
+    fn remove(&self) -> Result<FirewallReport, FirewallFailure>;
 }
 
 pub(super) struct SystemFirewall;
@@ -104,26 +109,48 @@ impl FirewallBackend for SystemFirewall {
             Err(FirewallFailure::Unsupported)
         }
     }
+    fn remove(&self) -> Result<FirewallReport, FirewallFailure> {
+        #[cfg(windows)]
+        {
+            windows::remove()?;
+            windows::check()
+        }
+        #[cfg(not(windows))]
+        {
+            Err(FirewallFailure::Unsupported)
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum FirewallOperation {
+    Check,
+    Configure,
+    Remove,
 }
 
 pub(super) enum FirewallState {
     Unchecked,
     Checking,
     Configuring,
+    Removing,
     Checked(FirewallReport),
+    Removed(FirewallReport),
     Failed(FirewallFailure),
 }
 
 impl FirewallState {
     pub fn is_busy(&self) -> bool {
-        matches!(self, Self::Checking | Self::Configuring)
+        matches!(self, Self::Checking | Self::Configuring | Self::Removing)
     }
     fn text(&self) -> SharedString {
         match self {
             Self::Unchecked => t!("lan.firewall.unchecked"),
             Self::Checking => t!("lan.firewall.checking"),
             Self::Configuring => t!("lan.firewall.configuring"),
+            Self::Removing => t!("lan.firewall.removing"),
             Self::Checked(report) => report.summary(),
+            Self::Removed(_) => t!("lan.firewall.removed"),
             Self::Failed(error) => error.describe(),
         }
     }
@@ -143,7 +170,11 @@ impl LanService {
         cx.notify();
     }
 
-    pub(super) fn firewall_operation(&mut self, configure: bool, cx: &mut Context<Self>) {
+    pub(super) fn firewall_operation(
+        &mut self,
+        operation: FirewallOperation,
+        cx: &mut Context<Self>,
+    ) {
         if self.firewall_state.is_busy() {
             return;
         }
@@ -152,25 +183,36 @@ impl LanService {
             cx.notify();
             return;
         }
-        self.firewall_state = if configure {
-            FirewallState::Configuring
-        } else {
-            FirewallState::Checking
+        self.firewall_state = match operation {
+            FirewallOperation::Check => FirewallState::Checking,
+            FirewallOperation::Configure => FirewallState::Configuring,
+            FirewallOperation::Remove => FirewallState::Removing,
         };
         let backend = self.firewall_backend.clone();
         self.firewall_task = Some(cx.spawn(async move |this, cx| {
             let result = cx
                 .background_spawn(async move {
-                    if configure {
-                        backend.configure()
-                    } else {
-                        backend.check()
+                    match operation {
+                        FirewallOperation::Check => backend.check(),
+                        FirewallOperation::Configure => backend.configure(),
+                        FirewallOperation::Remove => backend.remove(),
                     }
                 })
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.firewall_task = None;
                 this.firewall_state = match result {
+                    Ok(report)
+                        if operation == FirewallOperation::Remove
+                            && (report.managed_rules != 0
+                                || report.tcp_rule
+                                || report.udp_rule) =>
+                    {
+                        FirewallState::Failed(FirewallFailure::RulesRemain)
+                    }
+                    Ok(report) if operation == FirewallOperation::Remove => {
+                        FirewallState::Removed(report)
+                    }
                     Ok(report) => FirewallState::Checked(report),
                     Err(error) => FirewallState::Failed(error),
                 };
@@ -204,6 +246,12 @@ pub(super) fn section(service: &LanService, cx: &App) -> Option<gpui_kit::AnyEle
                     t!("lan.firewall.configure"),
                     LanCommand::ConfigureFirewall,
                     busy,
+                ))
+                .child(button(
+                    "lan-firewall-remove",
+                    t!("lan.firewall.remove"),
+                    LanCommand::RemoveFirewall,
+                    busy,
                 )),
         )
         .child(
@@ -221,7 +269,7 @@ pub(super) fn section(service: &LanService, cx: &App) -> Option<gpui_kit::AnyEle
                 .text_color(cx.theme().muted_foreground)
                 .child(t!("lan.firewall.scope")),
         );
-    if let FirewallState::Checked(report) = &service.firewall_state
+    if let FirewallState::Checked(report) | FirewallState::Removed(report) = &service.firewall_state
         && !report.private_network
     {
         view = view.child(
@@ -268,6 +316,7 @@ mod tests {
         assert_ne!(FirewallFailure::Cancelled.describe(), ready);
         assert!(FirewallState::Checking.is_busy());
         assert!(FirewallState::Configuring.is_busy());
+        assert!(FirewallState::Removing.is_busy());
         assert!(!FirewallState::Checked(report).is_busy());
     }
 }

@@ -13,11 +13,23 @@ lan.firewall.check:
   zh-CN: 检查防火墙
   en: Check firewall
 lan.firewall.configure:
-  zh-CN: 一键配置防火墙（管理员）…
-  en: Configure firewall (administrator)…
+  zh-CN: 配置防火墙…
+  en: Configure firewall…
+lan.firewall.remove:
+  zh-CN: 删除防火墙配置…
+  en: Remove firewall rules…
+lan.firewall.removing:
+  zh-CN: 正在请求授权并删除本程序的专用规则，完成后重新检查…
+  en: Requesting consent and removing this program’s dedicated rules; results will be checked afterward…
+lan.firewall.removed:
+  zh-CN: 当前程序的专用防火墙规则已删除或原本不存在。Windows 防火墙及其他规则保持不变；其他允许规则仍可能放行连接。
+  en: This program’s dedicated firewall rules were removed or did not exist. Windows Firewall and other rules are unchanged; other allow rules may still permit connections.
+lan.firewall.rules_remain:
+  zh-CN: 复查时仍发现对应规则，未能确认删除完成。规则可能受系统策略管理，请在 Windows 防火墙中核实后重试。
+  en: Matching rules remain after rechecking, so removal could not be confirmed. They may be managed by system policy. Review Windows Firewall before retrying.
 lan.firewall.scope:
-  zh-CN: 仅为当前程序路径创建或修复 TCP 45838、UDP 45837 的私有网络入站规则，来源限于本地子网。配置时会请求系统管理员授权，主程序不升权；不会开放公用网络、关闭防火墙、改动网络类型或删除其他阻止规则。检测仅核对 Windows 规则和策略，不保证实际网络可达；移动程序后请重新配置。
-  en: Creates or repairs private-network inbound rules for this program path on TCP 45838 and UDP 45837, limited to the local subnet. Configuration requests administrator consent without elevating the main app. It does not enable public-network access, disable the firewall, change network categories or remove other block rules. Checks inspect Windows rules and policy, not end-to-end reachability. Reconfigure after moving the program.
+  zh-CN: 配置仅为当前程序路径创建或修复 TCP 45838、UDP 45837 的私有网络入站规则，来源限于本地子网；删除仅移除这些专用规则。配置和删除均需系统授权，主程序不升权；不会关闭 Windows 防火墙、开放公用网络、改动网络类型或删除其他规则。检测不保证实际网络可达；移动程序后请重新配置。
+  en: Configuration creates or repairs private-network inbound rules for this program path on TCP 45838 and UDP 45837, limited to the local subnet. Removal deletes only these dedicated rules. Both operations request system consent without elevating the main app. Windows Firewall stays enabled; public-network access, network categories and other rules are unchanged. Checks do not guarantee connectivity. Reconfigure after moving the program.
 lan.firewall.unchecked:
   zh-CN: 防火墙尚未检查
   en: Firewall not checked
@@ -31,8 +43,8 @@ lan.firewall.ready:
   zh-CN: 当前程序的两条私有网络入站规则已就绪。此结果不代表已验证跨电脑连通性。
   en: Both private-network inbound rules for this program are ready. This does not verify connectivity between computers.
 lan.firewall.missing:
-  zh-CN: 当前程序缺少专用入站规则，或规则的路径、端口、网络范围等设置不符合要求。可使用管理员配置按钮创建或修复。
-  en: Dedicated inbound rules are missing or their path, ports or scope do not match. Use administrator configuration to create or repair them.
+  zh-CN: 当前程序缺少专用入站规则，或规则的路径、端口、网络范围等设置不符合要求。可点击「配置防火墙」创建或修复。
+  en: Dedicated inbound rules are missing or their path, ports or scope do not match. Select Configure firewall to create or repair them.
 lan.firewall.disabled:
   zh-CN: Windows 的私有网络防火墙未启用，不能据此确认受保护的入站配置。请先在系统安全设置中检查防火墙状态。
   en: The Windows private-network firewall is off. A protected inbound configuration cannot be confirmed. Check its state in Windows Security first.
@@ -46,8 +58,8 @@ lan.firewall.no_private_network:
   zh-CN: 当前未检测到已连接的私有网络。这些规则不会对公用或域网络生效；仅在信任当前网络时，手动将其设为私有网络后重新检查。
   en: No connected private network was detected. These rules do not apply to public or domain networks. Only if you trust the network, change its category to Private manually and check again.
 lan.firewall.cancelled:
-  zh-CN: 已取消管理员授权，未执行防火墙配置。可稍后重试或只检查现有规则。
-  en: Administrator consent was cancelled; firewall configuration did not run. Retry later or check existing rules.
+  zh-CN: 已取消管理员授权，未执行本次防火墙操作。可稍后重试或只检查现有规则。
+  en: Administrator consent was cancelled; this firewall operation did not run. Retry later or check existing rules.
 lan.firewall.timed_out:
   zh-CN: 防火墙操作等待超时。若管理员任务已启动，它可能仍在运行；请稍后点击「检查防火墙」确认状态。
   en: The firewall operation timed out. An administrator task that already started may still be running. Check the firewall again shortly.
