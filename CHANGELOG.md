@@ -8,6 +8,8 @@ One section per version, titled `## [version]`, optionally followed by a date. E
 
 ### Added
 
+- LAN cooperation uses an off-by-default switch and requires a pairing password before enabling. A separate, off-by-default discovery switch controls visibility while retaining direct IP pairing. Visibility is persisted and applies without restarting networking.
+
 - LAN ADB sharing adds controller-side scrcpy mirroring, streamed APK installation and a dedicated dual-pane file browser. These use existing device whitelists, per-computer grants and immediate revocation. Encrypted channels stay pinned to one device without exposing the owner's ADB server, other devices or local disks; bounded audit logs record channel categories and byte counts.
 
 - LAN cooperation now opens interactive serial and ADB terminals: live bidirectional serial data, hex input/output and Break, plus ADB shells with terminal resizing. Devices open on the owning computer, with whitelists, per-computer device grants, immediate revocation/disconnect and bounded metadata-only audit logs. Password pairing grants the current whitelist without depending on SSH hosts or SSH execution permissions.

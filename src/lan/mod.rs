@@ -34,6 +34,7 @@ pub enum LanCommand {
     SavePassword(Secret),
     Enable,
     Disable,
+    SetDiscoverable(bool),
     Discover,
     Inspect(String),
     RequestPair,
@@ -382,6 +383,14 @@ impl LanService {
             return;
         };
         match &command {
+            LanCommand::SetDiscoverable(discoverable) => {
+                let discoverable = *discoverable;
+                self.job(cx, move || {
+                    core.set_discoverable(discoverable)?;
+                    Ok(Completion::Done)
+                });
+                return;
+            }
             LanCommand::ApproveDevices(peer, token) => {
                 let (peer, token) = (peer.clone(), *token);
                 self.access_job(cx, move || {
@@ -499,6 +508,11 @@ impl LanService {
                 if self.busy {
                     return;
                 }
+                if !core.has_password() {
+                    self.status = t!("lan.password_required").to_string();
+                    cx.notify();
+                    return;
+                }
                 self.busy = true;
                 self.task = Some(cx.spawn(async move |this, cx| {
                     let result = cx
@@ -611,6 +625,7 @@ impl LanService {
             }),
             LanCommand::SetExecutionPermission(..)
             | LanCommand::Disable
+            | LanCommand::SetDiscoverable(_)
             | LanCommand::SelectHost(_)
             | LanCommand::Execute(_)
             | LanCommand::Cancel => {}

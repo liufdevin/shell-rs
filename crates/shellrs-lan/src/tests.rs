@@ -91,6 +91,9 @@ fn eventually(mut condition: impl FnMut() -> bool) -> bool {
 #[test]
 fn enabling_requires_a_password_and_verifiers_do_not_store_plaintext() {
     let (directory, core, _, _) = fixture("B");
+    assert!(!core.enabled_on_start());
+    assert!(core.remember_enabled(true).is_err());
+    assert!(!core.enabled_on_start());
     assert!(Network::start(core.clone(), std::net::Ipv4Addr::LOCALHOST, 0, 0).is_err());
     assert!(core.set_password("short").is_err());
     core.set_password("correct horse battery").unwrap();
@@ -111,6 +114,7 @@ fn password_pairing_discovery_permissions_limits_and_revocation_use_real_encrypt
     let b_network = running(&b);
     b.set_sharing(BTreeSet::from(["shared".into()]), true)
         .unwrap();
+    b.set_discoverable(true).unwrap();
     let discovered = crate::discovery::discover_at(&[b_network.discovery_address]).unwrap();
     assert_eq!(discovered.len(), 1);
     assert_eq!(discovered[0].id, b.id());
@@ -237,6 +241,72 @@ fn password_pairing_discovery_permissions_limits_and_revocation_use_real_encrypt
     );
     drop(a_network);
     drop(b_network);
+}
+
+#[test]
+fn hidden_devices_still_pair_by_ip_and_discovery_changes_apply_without_restarting() {
+    let (_controller_directory, controller, _, _) = fixture("A");
+    let (owner_directory, owner, _, _) = fixture("B");
+    let _controller_network = running(&controller);
+    let owner_network = running(&owner);
+    assert!(!owner.is_discoverable());
+    assert!(
+        crate::discovery::discover_at(&[owner_network.discovery_address])
+            .unwrap()
+            .is_empty()
+    );
+    let target = controller.inspect(owner_network.tcp_address).unwrap();
+    controller
+        .pair_password(target, "correct horse battery")
+        .unwrap();
+    assert_eq!(controller.peers()[0].id, owner.id());
+    assert_eq!(owner.grants()[0].id, controller.id());
+
+    owner.set_discoverable(true).unwrap();
+    let discovered = crate::discovery::discover_at(&[owner_network.discovery_address]).unwrap();
+    assert_eq!(discovered.len(), 1);
+    assert_eq!(discovered[0].id, owner.id());
+    let reloaded = Core::load(owner_directory.path(), "B", owner.executor.clone()).unwrap();
+    assert!(reloaded.is_discoverable());
+
+    owner.set_discoverable(false).unwrap();
+    assert!(
+        crate::discovery::discover_at(&[owner_network.discovery_address])
+            .unwrap()
+            .is_empty()
+    );
+    assert!(owner.is_running());
+    let response = controller
+        .request(
+            owner.id(),
+            RemoteRequest::Status,
+            &AtomicBool::new(false),
+            &mut |_, _| Ok(()),
+        )
+        .unwrap();
+    assert_eq!(response.status, "accepted");
+    let reloaded = Core::load(owner_directory.path(), "B", owner.executor.clone()).unwrap();
+    assert!(!reloaded.is_discoverable());
+}
+
+#[test]
+fn configurations_without_a_discovery_setting_remain_hidden() {
+    let (directory, core, _, _) = fixture("B");
+    core.set_password("correct horse battery").unwrap();
+    core.remember_enabled(true).unwrap();
+    core.set_discoverable(true).unwrap();
+    let path = directory.path().join("access.json");
+    let mut configuration: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    configuration
+        .as_object_mut()
+        .unwrap()
+        .remove("discoverable");
+    std::fs::write(path, serde_json::to_vec(&configuration).unwrap()).unwrap();
+    let reloaded = Core::load(directory.path(), "B", core.executor.clone()).unwrap();
+    assert!(!reloaded.is_discoverable());
+    assert!(reloaded.has_password());
+    assert!(reloaded.enabled_on_start());
 }
 
 #[test]

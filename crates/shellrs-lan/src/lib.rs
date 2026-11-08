@@ -128,6 +128,7 @@ pub struct Pending {
 #[serde(default, deny_unknown_fields)]
 struct Configuration {
     enabled: bool,
+    discoverable: bool,
     password: Option<password::Verifier>,
     shared_hosts: BTreeSet<String>,
     allow_execute: bool,
@@ -267,6 +268,17 @@ impl Core {
     pub fn has_password(&self) -> bool {
         self.state.lock().unwrap().configuration.password.is_some()
     }
+    pub fn is_discoverable(&self) -> bool {
+        self.state.lock().unwrap().configuration.discoverable
+    }
+    pub fn set_discoverable(&self, discoverable: bool) -> Result<()> {
+        let mut state = self.state.lock().unwrap();
+        let mut configuration = state.configuration.clone();
+        configuration.discoverable = discoverable;
+        self.persist(&configuration)?;
+        state.configuration = configuration;
+        Ok(())
+    }
     pub fn shared_hosts(&self) -> BTreeSet<String> {
         self.state
             .lock()
@@ -388,6 +400,10 @@ impl Core {
 
     pub fn remember_enabled(&self, enabled: bool) -> Result<()> {
         let mut state = self.state.lock().unwrap();
+        ensure!(
+            !enabled || state.configuration.password.is_some(),
+            "pairing_password_required"
+        );
         let mut configuration = state.configuration.clone();
         configuration.enabled = enabled;
         self.persist(&configuration)?;

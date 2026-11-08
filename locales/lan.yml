@@ -34,11 +34,14 @@ lan.host_connect_failed:
   zh-CN: 共享主机连接失败，请在被控电脑检查主机地址、路由与凭据
   en: Could not connect to the shared host. Check its address, route and credentials on the sharing computer.
 lan.enable:
-  zh-CN: 开启协作
-  en: Enable cooperation
-lan.disable:
-  zh-CN: 关闭协作
-  en: Disable cooperation
+  zh-CN: 启用局域网协作
+  en: Enable LAN cooperation
+lan.discoverable:
+  zh-CN: 允许在局域网内被发现
+  en: Allow LAN discovery
+lan.discoverable_help:
+  zh-CN: 默认关闭。开启后，其他电脑的 ShellLF 才能通过「发现设备」找到本机；关闭时只能通过本机 IP 地址连接，仍需配对授权。关闭发现不会断开已配对的连接，也不会从对方保存的设备中移除本机。
+  en: Off by default. Enable to appear in other computers’ discovery results. When off, connect by IP address with pairing authorization. Turning discovery off does not disconnect paired computers or remove this computer from their saved devices.
 lan.discover:
   zh-CN: 发现设备
   en: Discover devices

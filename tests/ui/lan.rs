@@ -72,12 +72,27 @@ async fn lan_settings_require_a_matching_password_before_enabling(cx: &mut TestA
         window.within("settings").click("0-8", cx)
     });
     in_frame(cx, handle, |window, cx| {
-        assert_eq!(window.find("lan-enable").label(), Some("开启协作"));
+        assert_eq!(window.find("lan-enable").label(), Some("启用局域网协作"));
+        assert_eq!(
+            window.find("lan-enable").role(),
+            Some(gpui_kit::Role::Switch)
+        );
+        assert_eq!(window.find("lan-enable").checked(), Some(false));
         assert_eq!(
             window.find("lan-save-password").label(),
             Some("设置配对密码")
         );
-        assert!(!enabled(&window.find("lan-enable")));
+        assert!(enabled(&window.find("lan-enable")));
+        window.click("lan-enable", cx);
+    });
+    in_frame(cx, handle, |window, cx| {
+        assert!(!core.is_running());
+        assert!(!core.enabled_on_start());
+        assert_eq!(window.find("lan-enable").checked(), Some(false));
+        assert_eq!(
+            window.find("lan-status").label(),
+            Some("请先设置配对密码，再开启局域网协作")
+        );
         window.click("lan-password", cx);
         window.input("strong pairing password", cx);
         window.click("lan-password-repeat", cx);
@@ -106,6 +121,58 @@ async fn lan_settings_require_a_matching_password_before_enabling(cx: &mut TestA
     assert!(!core.is_running());
     let file = std::fs::read_to_string(directory.path().join("access.json")).unwrap();
     assert!(!file.contains("strong pairing password"));
+}
+
+#[gpui_kit::test]
+async fn discoverability_is_an_independent_persisted_switch_and_starts_off(
+    cx: &mut TestAppContext,
+) {
+    let directory = tempfile::tempdir().unwrap();
+    let core = Core::load(directory.path(), "B", Arc::new(NoCommands)).unwrap();
+    let (handle, workspace) = open_workspace(cx);
+    cx.update(|cx| {
+        let lan = workspace.read(cx).lan().clone();
+        lan.update(cx, |lan, cx| lan.attach_core(core.clone(), cx));
+    });
+    in_frame(cx, handle, |window, cx| window.click("open-settings", cx));
+    in_frame(cx, handle, |window, cx| {
+        window.within("settings").click("0-8", cx)
+    });
+    in_frame(cx, handle, |window, cx| {
+        assert_eq!(window.find("lan-enable").checked(), Some(false));
+        assert_eq!(window.find("lan-discoverable").checked(), Some(false));
+        assert_eq!(
+            window.find("lan-discoverable").role(),
+            Some(gpui_kit::Role::Switch)
+        );
+        window.click("lan-discoverable", cx);
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(5), |window, _| {
+        core.is_discoverable()
+            && window.find("lan-discoverable").checked() == Some(true)
+            && enabled(&window.find("lan-discoverable"))
+    })
+    .await;
+    assert!(!core.is_running());
+    assert!(!core.enabled_on_start());
+    let reloaded = Core::load(directory.path(), "B", Arc::new(NoCommands)).unwrap();
+    assert!(reloaded.is_discoverable());
+    in_frame(cx, handle, |window, cx| {
+        assert_eq!(window.find("lan-discoverable").focused(), Some(true));
+        window.press("space", cx);
+        window.dispatch_event(
+            gpui_kit::PlatformInput::KeyUp(gpui_kit::KeyUpEvent {
+                keystroke: gpui_kit::Keystroke::parse("space").unwrap(),
+            }),
+            cx,
+        );
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(5), |window, _| {
+        !core.is_discoverable() && window.find("lan-discoverable").checked() == Some(false)
+    })
+    .await;
+    let reloaded = Core::load(directory.path(), "B", Arc::new(NoCommands)).unwrap();
+    assert!(!reloaded.is_discoverable());
 }
 
 #[gpui_kit::test]

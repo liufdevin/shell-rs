@@ -92,6 +92,7 @@ pub(super) fn respond(core: Arc<Core>, socket: UdpSocket, port: u16, stop: Arc<A
         };
         if !is_lan(source.ip())
             || !core.is_active()
+            || !core.is_discoverable()
             || core.is_blocked(source.ip())
             || last.elapsed() < Duration::from_millis(100)
         {

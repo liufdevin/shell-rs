@@ -5,6 +5,7 @@ use gpui_kit::component::{
     h_flex,
     input::{Input, InputContentType, InputEvent, InputState},
     scroll::ScrollableElement as _,
+    switch::Switch,
     v_flex,
 };
 use gpui_kit::*;
@@ -123,30 +124,43 @@ impl Render for LanPage {
                     .child(t!("lan.network_help")),
             )
             .child(
-                h_flex()
-                    .gap_2()
-                    .flex_wrap()
-                    .child(button(
-                        "lan-enable",
-                        if wanted {
-                            t!("lan.disable")
-                        } else {
-                            t!("lan.enable")
-                        },
-                        if wanted {
-                            LanCommand::Disable
-                        } else {
+                Switch::new("lan-enable")
+                    .label(t!("lan.enable"))
+                    .checked(wanted)
+                    .disabled(busy || !available)
+                    .on_change(|enabled, window, cx| {
+                        let command = if *enabled {
                             LanCommand::Enable
-                        },
-                        busy || !available || (!wanted && !service.has_password()),
-                    ))
-                    .child(button(
-                        "lan-discover",
-                        t!("lan.discover"),
-                        LanCommand::Discover,
-                        !enabled || busy,
-                    )),
+                        } else {
+                            LanCommand::Disable
+                        };
+                        window.dispatch_action(Box::new(LanAction(command)), cx);
+                    }),
             )
+            .child(
+                Switch::new("lan-discoverable")
+                    .label(t!("lan.discoverable"))
+                    .checked(service.core().is_some_and(|core| core.is_discoverable()))
+                    .disabled(busy || !available)
+                    .on_change(|discoverable, window, cx| {
+                        window.dispatch_action(
+                            Box::new(LanAction(LanCommand::SetDiscoverable(*discoverable))),
+                            cx,
+                        );
+                    }),
+            )
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(t!("lan.discoverable_help")),
+            )
+            .child(button(
+                "lan-discover",
+                t!("lan.discover"),
+                LanCommand::Discover,
+                !enabled || busy,
+            ))
             .child(
                 div()
                     .id("lan-status")
