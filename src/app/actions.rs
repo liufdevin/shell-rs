@@ -692,7 +692,7 @@ impl ToolKind {
             ToolKind::Logs => CatalogIcon::FileText,
             ToolKind::Gpu => CatalogIcon::Gpu,
             ToolKind::Projects => CatalogIcon::FolderCode,
-            ToolKind::Serial => CatalogIcon::Settings,
+            ToolKind::Serial => return Icon::default().path(super::SERIAL_ICON),
         })
     }
 }

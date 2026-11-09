@@ -105,6 +105,20 @@ pub(super) fn local(service: &LanService, cx: &App) -> AnyElement {
             ));
         }
     }
+    section.into_any_element()
+}
+
+pub(super) fn permissions(service: &LanService, cx: &App) -> AnyElement {
+    let core = service.core();
+    let devices = core
+        .as_ref()
+        .map(|core| core.local_devices())
+        .unwrap_or_default();
+    let shared = core
+        .as_ref()
+        .map(|core| core.shared_devices())
+        .unwrap_or_default();
+    let mut section = v_flex().gap_3();
     let grants = service.grants();
     let selected = service
         .permission_peer
@@ -195,45 +209,56 @@ pub(super) fn remote(service: &LanService, cx: &App) -> AnyElement {
         }
         for device in &service.remote_devices {
             section = section.child(
-                h_flex()
+                v_flex()
                     .gap_2()
-                    .flex_wrap()
-                    .child(format!(
-                        "{} · {} · {} · {}",
+                    .py_3()
+                    .border_b_1()
+                    .border_color(cx.theme().border)
+                    .child(div().text_sm().font_medium().child(format!(
+                        "{} · {}",
                         kind_label(device.kind),
-                        device.name,
-                        device.address,
-                        device.detail
-                    ))
-                    .child(button(
-                        SharedString::from(format!("lan-open-device-{}", device.id)),
-                        t!("lan.devices.open"),
-                        LanCommand::OpenDevice {
-                            peer: peer.clone(),
-                            device: device.id.clone(),
-                        },
-                        !service.enabled() || service.busy,
-                    ))
-                    .when(device.kind == DeviceKind::Adb, |row| {
-                        row.child(button(
-                            SharedString::from(format!("lan-adb-tools-{}", device.id)),
-                            t!("lan.devices.adb_tools"),
-                            LanCommand::ManageAdb {
-                                peer: peer.clone(),
-                                device: device.id.clone(),
-                            },
-                            !service.enabled() || service.busy,
-                        ))
-                        .child(button(
-                            SharedString::from(format!("lan-adb-files-{}", device.id)),
-                            t!("lan.devices.adb_files"),
-                            LanCommand::AdbFiles {
-                                peer: peer.clone(),
-                                device: device.id.clone(),
-                            },
-                            !service.enabled() || service.busy,
-                        ))
-                    }),
+                        device.name
+                    )))
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(format!("{} · {}", device.address, device.detail)),
+                    )
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .flex_wrap()
+                            .child(button(
+                                SharedString::from(format!("lan-open-device-{}", device.id)),
+                                t!("lan.devices.open"),
+                                LanCommand::OpenDevice {
+                                    peer: peer.clone(),
+                                    device: device.id.clone(),
+                                },
+                                !service.enabled() || service.busy,
+                            ))
+                            .when(device.kind == DeviceKind::Adb, |row| {
+                                row.child(button(
+                                    SharedString::from(format!("lan-adb-tools-{}", device.id)),
+                                    t!("lan.devices.adb_tools"),
+                                    LanCommand::ManageAdb {
+                                        peer: peer.clone(),
+                                        device: device.id.clone(),
+                                    },
+                                    !service.enabled() || service.busy,
+                                ))
+                                .child(button(
+                                    SharedString::from(format!("lan-adb-files-{}", device.id)),
+                                    t!("lan.devices.adb_files"),
+                                    LanCommand::AdbFiles {
+                                        peer: peer.clone(),
+                                        device: device.id.clone(),
+                                    },
+                                    !service.enabled() || service.busy,
+                                ))
+                            }),
+                    ),
             );
         }
     } else {
@@ -255,7 +280,16 @@ pub(super) fn activity(service: &LanService, cx: &App) -> AnyElement {
             .child(t!("lan.devices.active")),
     );
     if let Some(core) = service.core() {
-        for active in core.active_devices() {
+        let active_devices = core.active_devices();
+        if active_devices.is_empty() {
+            section = section.child(
+                div()
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(t!("lan.empty.active")),
+            );
+        }
+        for active in active_devices {
             section = section.child(
                 h_flex()
                     .gap_2()
@@ -282,7 +316,16 @@ pub(super) fn activity(service: &LanService, cx: &App) -> AnyElement {
             );
         let mut entries = v_flex().id("lan-device-audit").role(Role::List).gap_2();
         let grants = service.grants();
-        for entry in core.audit().into_iter().rev().take(50) {
+        let audit = core.audit();
+        if audit.is_empty() {
+            entries = entries.child(
+                div()
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(t!("lan.empty.audit")),
+            );
+        }
+        for entry in audit.into_iter().rev().take(50) {
             let action = match entry.action {
                 AuditAction::SharingChanged => t!("lan.devices.audit_sharing"),
                 AuditAction::PermissionChanged => t!("lan.devices.audit_permission"),

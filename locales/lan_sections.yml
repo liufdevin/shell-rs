@@ -1,0 +1,68 @@
+_version: 2
+
+lan.section.connection:
+  zh-CN: 连接设置
+  en: Connection
+lan.section.password:
+  zh-CN: 配对密码
+  en: Pairing password
+lan.section.firewall:
+  zh-CN: 防火墙
+  en: Firewall
+lan.section.pairing:
+  zh-CN: 发现与配对
+  en: Discovery and pairing
+lan.section.sharing:
+  zh-CN: 本机共享
+  en: Local sharing
+lan.section.permissions:
+  zh-CN: 访问授权
+  en: Access permissions
+lan.section.activity:
+  zh-CN: 活动与日志
+  en: Activity and logs
+lan.section.pairing_help:
+  zh-CN: 先发现或输入对方 IP 查看设备身份，再使用密码配对或请求对方确认。双方都需开启局域网协作。
+  en: Discover a computer or enter its IP to inspect its identity, then pair by password or request approval. Both computers need LAN collaboration enabled.
+lan.section.paired_help:
+  zh-CN: 这些电脑已授权本机访问。选择查看设备或主机后，即可打开对应终端或 ADB 工具；对方能访问本机的权限在「访问授权」中管理。
+  en: These computers have authorized this computer. View their devices or hosts to open a terminal or ADB tools. Manage their access to this computer under Access permissions.
+lan.section.permissions_help:
+  zh-CN: 管理其他电脑对本机的访问，和「已配对的设备」中的访问方向不同。撤销权限会停止相关设备连接。
+  en: Manage other computers’ access to this computer, the opposite direction to Paired devices. Revoking permissions ends affected device connections.
+lan.section.blacklist_help:
+  zh-CN: 被拉黑的 IP 无法发起配对，也不会再弹出申请。解除后允许重新申请，但不会自动恢复已撤销的权限。
+  en: Blocked IPs cannot request pairing and will not trigger prompts. Unblocking allows new requests but does not restore revoked permissions.
+lan.section.remote_command:
+  zh-CN: SSH 单次命令
+  en: One-off SSH command
+lan.empty.shared_hosts:
+  zh-CN: 暂无可共享的 SSH 主机，请先在左侧保存主机。
+  en: No SSH hosts to share. Save a host in the sidebar first.
+lan.empty.discovered:
+  zh-CN: 暂未发现设备。对方需开启「允许在局域网内被发现」，也可以直接输入 IP 连接。
+  en: No devices discovered yet. Enable discovery on the other computer, or connect directly by IP.
+lan.empty.paired:
+  zh-CN: 尚未配对其他电脑，请前往「发现与配对」添加。
+  en: No paired computers. Add one under Discovery and pairing.
+lan.empty.authorizations:
+  zh-CN: 暂未授权其他电脑访问本机。
+  en: No other computers have been authorized to access this computer.
+lan.empty.blacklist:
+  zh-CN: 黑名单为空
+  en: No blocked IPs
+lan.empty.active:
+  zh-CN: 暂无正在使用的共享设备
+  en: No shared devices are in use
+lan.empty.audit:
+  zh-CN: 暂无操作记录
+  en: No operations recorded yet
+lan.pair_success.incoming:
+  zh-CN: "已授权「%{name}」访问本机。可在「访问授权」中调整或随时撤销权限。"
+  en: "“%{name}” is authorized to access this computer. Adjust or revoke access under Access permissions."
+lan.pair_success.title:
+  zh-CN: 配对成功
+  en: Pairing successful
+lan.pair_success.outgoing:
+  zh-CN: "已与「%{name}」配对。可在「已配对的设备」中查看和使用对方共享的资源。"
+  en: "Paired with “%{name}”. View and use its shared resources under Paired devices."

@@ -184,6 +184,7 @@ impl ErrorMessage for KeyFileError {
 fn not_saved(change: Change, error: &str) -> SharedString {
     match change {
         Change::TimestampPreference => t!("utilities.persist_failed", error = error),
+        Change::SerialAssistant => t!("serial.assistant.persist_failed", error = error),
         Change::NewHost => t!("host.store.not_saved.new_host", error = error),
         Change::SaveHost => t!("host.store.not_saved.save_host", error = error),
         Change::DeleteHost => t!("host.store.not_saved.delete_host", error = error),

@@ -270,6 +270,15 @@ fn serve_shell(
                 Ok(TerminalTransportCommand::WriteData(bytes)) => {
                     port.write_all(&bytes)?;
                 }
+                Ok(TerminalTransportCommand::SerialWriteChecked { bytes, reply }) => {
+                    let result = if shell.busy() {
+                        Err(io::Error::other(t!("serial.tool.unavailable").to_string()))
+                    } else {
+                        shell.input(&bytes);
+                        port.write_all(&bytes)
+                    };
+                    let _ = reply.send(result.map_err(|error| error.to_string()));
+                }
                 Ok(TerminalTransportCommand::Write(bytes)) => {
                     if bytes.contains(&3) {
                         pending_input.clear();

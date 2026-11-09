@@ -474,7 +474,7 @@ impl ToolSidebar {
     fn sync_tools(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let serial_target = self
             .remote()
-            .filter(|terminal| terminal.serial)
+            .filter(|terminal| terminal.serial && self.shown && self.tool == ToolKind::Serial)
             .map(|terminal| terminal.view.clone());
         if let Some(tools) = &self.serial_tools {
             tools.update(cx, |tools, cx| tools.set_target(serial_target, window, cx));
@@ -866,6 +866,9 @@ impl ToolSidebar {
             .size_full()
             .min_h_0()
             .gap_3()
+            .when_some(self.serial_tools.clone(), |view, tools| {
+                view.child(div().flex_1().min_h_0().child(tools))
+            })
             .when_some(target, |view, (id, modes)| {
                 view.child(
                     h_flex()
@@ -911,9 +914,6 @@ impl ToolSidebar {
                                 }),
                         ),
                 )
-            })
-            .when_some(self.serial_tools.clone(), |view, tools| {
-                view.child(div().flex_1().min_h_0().child(tools))
             })
     }
 }

@@ -17,6 +17,10 @@ use gpui_kit::*;
 use super::SerialLineEnding;
 use crate::{app::SerialToolAction, i18n::t, terminal::TerminalView};
 
+#[path = "assistant.rs"]
+mod assistant;
+pub use assistant::SerialAssistantCommand;
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum SerialToolPage {
     #[default]
@@ -38,6 +42,7 @@ impl SerialToolPage {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SerialToolCommand {
+    Assistant(SerialAssistantCommand),
     Capture(bool),
     Clear,
     Copy,
@@ -54,9 +59,12 @@ pub enum SerialToolCommand {
 }
 
 pub struct SerialToolsPanel {
+    assistant: Option<assistant::AssistantEditor>,
+    group_task: Option<Task<()>>,
     drafts: HashMap<EntityId, SerialToolDraft>,
     target: Option<WeakEntity<TerminalView>>,
     observer: Option<Subscription>,
+    assistant_observer: Option<Subscription>,
     dispatch: FocusHandle,
     baud: Entity<InputState>,
     message: Entity<TextareaState>,
@@ -89,9 +97,12 @@ struct SerialToolDraft {
 impl SerialToolsPanel {
     pub fn new(dispatch: FocusHandle, window: &mut Window, cx: &mut Context<Self>) -> Self {
         Self {
+            assistant: None,
+            group_task: None,
             drafts: HashMap::new(),
             target: None,
             observer: None,
+            assistant_observer: None,
             dispatch,
             baud: cx.new(|cx| InputState::new(window, cx)),
             message: cx.new(|cx| TextareaState::new(window, cx).rows(4)),
@@ -126,6 +137,8 @@ impl SerialToolsPanel {
         }
         self.baud_task = None;
         self.repeat_task = None;
+        self.group_task = None;
+        self.assistant = None;
         self.status = SharedString::default();
         self.drafts
             .retain(|_, draft| draft.target.upgrade().is_some());
@@ -190,14 +203,19 @@ impl SerialToolsPanel {
                     owner.generation = Some(generation);
                     owner.baud_task = None;
                     owner.repeat_task = None;
+                    owner.group_task = None;
                     owner.status = SharedString::default();
                 }
                 if !matches!(
                     view.read(cx).lifecycle(cx),
                     crate::terminal::TerminalLifecycle::Running
-                ) && owner.repeat_task.take().is_some()
-                {
-                    owner.status = t!("serial.tool.repeat_stopped");
+                ) {
+                    if owner.group_task.take().is_some() {
+                        owner.status = t!("serial.assistant.stopped");
+                    }
+                    if owner.repeat_task.take().is_some() {
+                        owner.status = t!("serial.tool.repeat_stopped");
+                    }
                 }
                 cx.notify();
             })
@@ -207,6 +225,29 @@ impl SerialToolsPanel {
             .and_then(WeakEntity::upgrade)
             .map(|view| view.read(cx).generation(cx));
         self.target = target;
+        if self.assistant_enabled(cx) {
+            self.assistant = Some(assistant::AssistantEditor::new(window, cx));
+        }
+        self.assistant_observer = self
+            .target
+            .as_ref()
+            .and_then(WeakEntity::upgrade)
+            .and_then(|view| view.read(cx).serial_assistant_target())
+            .map(|(store, key, _)| {
+                cx.observe_in(&store, window, move |owner, store, window, cx| {
+                    let enabled = store
+                        .read(cx)
+                        .serial_assistant(&key)
+                        .is_some_and(|value| value.enabled);
+                    if enabled && owner.assistant.is_none() {
+                        owner.assistant = Some(assistant::AssistantEditor::new(window, cx));
+                    }
+                    if !enabled {
+                        owner.group_task = None;
+                    }
+                    cx.notify();
+                })
+            });
         cx.notify();
     }
 
@@ -222,6 +263,9 @@ impl SerialToolsPanel {
         self.status = SharedString::default();
         let result: Result<(), SharedString> = (|| {
             match command {
+                SerialToolCommand::Assistant(command) => {
+                    self.assistant_command(command, window, cx)?
+                }
                 SerialToolCommand::Capture(enabled) => {
                     view.update(cx, |view, cx| view.serial_tool_capture(*enabled, cx))
                 }
@@ -247,6 +291,9 @@ impl SerialToolsPanel {
                     }
                 }
                 SerialToolCommand::Send => {
+                    if self.group_task.is_some() {
+                        return Err(t!("serial.tool.unavailable"));
+                    }
                     let message = self.message.read(cx).value();
                     let hex = view.read(cx).serial_modes(cx).send_hex;
                     let bytes = view.read(cx).serial_tool_message(
@@ -265,6 +312,9 @@ impl SerialToolsPanel {
                     }
                 }
                 SerialToolCommand::Automatic(enabled) => {
+                    if self.group_task.is_some() && *enabled {
+                        return Err(t!("serial.tool.unavailable"));
+                    }
                     let pattern = self.pattern.read(cx).value();
                     let reply = self.reply.read(cx).value();
                     let rule = enabled.then_some((pattern.as_str(), reply.as_str(), self.hex));
@@ -275,6 +325,7 @@ impl SerialToolsPanel {
                         return Ok(());
                     }
                     if self.repeat_task.is_some()
+                        || self.group_task.is_some()
                         || view.read(cx).serial_tool_snapshot(cx).automatic
                     {
                         return Err(t!("serial.tool.unavailable"));
@@ -356,6 +407,9 @@ impl SerialToolsPanel {
                     self.status = t!("serial.tool.repeat_stopped");
                 }
                 SerialToolCommand::Repeat(true) => {
+                    if self.group_task.is_some() {
+                        return Err(t!("serial.tool.unavailable"));
+                    }
                     if self.repeat_task.is_some() {
                         return Ok(());
                     }
@@ -469,7 +523,8 @@ impl Render for SerialToolsPanel {
                 crate::terminal::TerminalLifecycle::Running
             )
         });
-        let repeating = self.repeat_task.is_some();
+        let repeating = self.repeat_task.is_some() || self.group_task.is_some();
+        let assistant = self.assistant_enabled(cx);
         let preview = {
             let text = self.display_bytes(
                 &snapshot.bytes[snapshot.bytes.len().saturating_sub(256)..],
@@ -510,6 +565,7 @@ impl Render for SerialToolsPanel {
                 })
         };
         let body = match self.page {
+            SerialToolPage::Transfer if assistant => self.render_assistant(running, cx),
             SerialToolPage::Transfer => v_flex()
                 .gap_4()
                 .child(
@@ -797,6 +853,7 @@ impl Render for SerialToolsPanel {
             .track_focus(&self.focus_handle)
             .size_full()
             .min_h_0()
+            .child(self.render_assistant_switch(cx))
             .child(
                 TabBar::new("serial-tool-tabs")
                     .small()
@@ -840,13 +897,16 @@ impl Render for SerialToolsPanel {
                                     .text_sm()
                                     .child(status),
                             )
-                            .when(repeating && self.page != SerialToolPage::Transfer, |body| {
-                                body.child(action(
-                                    "serial-tool-stop-repeat",
-                                    t!("serial.tool.stop_repeat"),
-                                    SerialToolCommand::Repeat(false),
-                                ))
-                            }),
+                            .when(
+                                self.repeat_task.is_some() && self.page != SerialToolPage::Transfer,
+                                |body| {
+                                    body.child(action(
+                                        "serial-tool-stop-repeat",
+                                        t!("serial.tool.stop_repeat"),
+                                        SerialToolCommand::Repeat(false),
+                                    ))
+                                },
+                            ),
                     ),
             )
     }

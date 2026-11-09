@@ -143,8 +143,10 @@ os_icons! {
 /// Docker's whale on the right sidebar's Docker tool. From Simple Icons (CC0),
 /// single-path and monochrome like the operating-system marks.
 pub const ADB_ICON: &str = "icons/brand/adb.svg";
+pub const SERIAL_ICON: &str = "icons/serial.svg";
 
 const BRAND_ICONS: &[(&str, &[u8])] = &[
+    (SERIAL_ICON, include_bytes!("../../assets/icons/serial.svg")),
     (ADB_ICON, include_bytes!("../../assets/icons/brand/adb.svg")),
     (
         DOCKER_ICON,
@@ -228,6 +230,15 @@ mod tests {
             .unwrap()
             .expect("in the bundle");
         assert!(String::from_utf8_lossy(&bytes).contains("<title>ADB</title>"));
+    }
+
+    #[test]
+    fn the_serial_tool_has_a_distinct_port_icon() {
+        let bytes = AppAssets
+            .load(super::SERIAL_ICON)
+            .unwrap()
+            .expect("in the bundle");
+        assert!(String::from_utf8_lossy(&bytes).contains("<title>Serial port</title>"));
     }
 
     #[test]

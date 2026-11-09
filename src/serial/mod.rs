@@ -10,7 +10,7 @@ mod transport;
 
 pub use message::SerialLineEnding;
 pub(crate) use message::prepare_message;
-pub use tools::{SerialToolCommand, SerialToolPage, SerialToolsPanel};
+pub use tools::{SerialAssistantCommand, SerialToolCommand, SerialToolPage, SerialToolsPanel};
 
 pub use file_picker::open_serial_download_dialog;
 pub use ports::available_ports;

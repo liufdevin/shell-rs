@@ -87,6 +87,10 @@ impl TerminalTransport for SerialToolTransport {
                     self.bauds.lock().unwrap().push(baud);
                     let _ = reply.send(Ok(()));
                 }
+                TerminalTransportCommand::SerialWriteChecked { bytes, reply } => {
+                    self.writes.lock().unwrap().push(bytes);
+                    let _ = reply.send(Ok(()));
+                }
                 TerminalTransportCommand::Shutdown => break,
                 _ => {}
             }
@@ -382,4 +386,125 @@ async fn serial_tools_newline_crc_repeat_and_disconnect_share_the_host_transport
             .iter()
             .all(|bytes| bytes == b"123456789\x37\x4b\r\n")
     );
+}
+
+#[gpui_kit::test]
+async fn serial_assistant_defaults_off_saves_groups_runs_in_order_and_stops_when_hidden(
+    cx: &mut TestAppContext,
+) {
+    let mut store = HostStore::empty();
+    let host = store.insert_unnotified(HostDraft::serial(
+        "console",
+        "TEST-NOT-A-PORT",
+        SerialSettings::default(),
+        None,
+    ));
+    let key = format!("host:{}", store.host(host).unwrap().public_id);
+    let factory = Arc::new(SerialToolFactory::default());
+    let (handle, workspace) = open_workspace_with_terminals(
+        cx,
+        store,
+        Arc::new(FakeTerminalFactory::default()),
+        Arc::new(FixedSerialTerminalTransportProvider::new(factory.clone())),
+    );
+    cx.simulate_window_resize(handle.into(), size(px(1600.), px(2400.)));
+    connect(cx, handle, host, "console").await;
+    in_frame(cx, handle, |window, cx| window.click("tool-serial", cx));
+    in_frame(cx, handle, |window, cx| {
+        assert_eq!(
+            window.find("serial-assistant-enable").checked(),
+            Some(false)
+        );
+        assert!(window.try_find("serial-assistant").is_none());
+        window.click("serial-assistant-enable", cx);
+    });
+    in_frame(cx, handle, |window, cx| {
+        assert!(window.find("serial-assistant").visible());
+        assert!(window.try_find("serial-tool-preview").is_none());
+        window.click("serial-assistant-group-name", cx);
+        window.input("开发板", cx);
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.click("serial-assistant-create-group", cx)
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.click("serial-assistant-command-name", cx);
+        window.input("启动", cx);
+        window.click("serial-tool-message", cx);
+        window.input("hello", cx);
+        window.click("serial-assistant-ending-crlf", cx);
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.click("serial-assistant-save-command", cx)
+    });
+    let saved = cx.read(|cx| {
+        workspace
+            .read(cx)
+            .store()
+            .read(cx)
+            .serial_assistant(&key)
+            .unwrap()
+            .clone()
+    });
+    assert!(saved.enabled);
+    assert_eq!(saved.groups[0].commands[0].content, "hello");
+    let mut configured = saved.clone();
+    let mut hex = configured.groups[0].commands[0].clone();
+    hex.id = configured.allocate_id();
+    hex.name = "binary".into();
+    hex.content = "00 FF".into();
+    hex.hex = true;
+    hex.ending = shellrs::host::SerialCommandEnding::None;
+    hex.delay_ms = 0;
+    configured.groups[0].commands.push(hex);
+    let mut skipped = configured.groups[0].commands[0].clone();
+    skipped.id = configured.allocate_id();
+    skipped.enabled = false;
+    configured.groups[0].commands.push(skipped);
+    cx.update(|cx| {
+        workspace.read(cx).store().clone().update(cx, |store, cx| {
+            store.set_serial_assistant(key.clone(), Some(host), configured, cx)
+        });
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.click("serial-assistant-run", cx)
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(5), |window, _| {
+        let status = window.find("serial-tool-status");
+        assert!(status.label().is_none_or(|status| status.contains("正在顺序发送") || status.contains("发送完成")), "Unexpected group status: {:?}", status.label());
+        factory.writes.lock().unwrap().len() == 2
+    })
+    .await;
+    assert_eq!(
+        factory.writes.lock().unwrap().as_slice(),
+        [b"hello\r\n".to_vec(), vec![0, 255]]
+    );
+    cx.wait_for(handle.into(), Duration::from_secs(5), |window, _| {
+        window.find("serial-tool-status").label() == Some("命令组发送完成。")
+    })
+    .await;
+    in_frame(cx, handle, |window, cx| {
+        window.click("serial-assistant-run", cx)
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(5), |_, _| {
+        factory.writes.lock().unwrap().len() == 3
+    })
+    .await;
+    in_frame(cx, handle, |window, cx| window.click("tool-serial", cx));
+    cx.executor().advance_clock(Duration::from_secs(1));
+    cx.run_until_parked();
+    assert_eq!(factory.writes.lock().unwrap().len(), 3);
+    in_frame(cx, handle, |window, cx| window.click("tool-serial", cx));
+    in_frame(cx, handle, |window, cx| {
+        assert_eq!(window.find("serial-assistant-enable").checked(), Some(true));
+        window.click("serial-assistant-enable", cx);
+    });
+    in_frame(cx, handle, |window, _| {
+        assert!(window.try_find("serial-assistant").is_none());
+        assert!(window.find("serial-tool-preview").visible());
+        let receive = window.find(("serial-hex-receive", 1u64)).bounds();
+        let send = window.find(("serial-hex-transmit", 1u64)).bounds();
+        assert_eq!(receive.top(), send.top());
+    });
+    assert_eq!(factory.starts.load(Ordering::SeqCst), 1);
 }

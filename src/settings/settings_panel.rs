@@ -69,6 +69,7 @@ pub struct SettingsPanel {
     /// Where sync stands, for 同步.
     sync: Entity<SyncService>,
     lan_page: Option<Entity<crate::lan::LanPage>>,
+    lan_subscription: Option<Subscription>,
     /// The rule table of 关键字高亮, whose fields keep their state across
     /// the page's renders.
     highlight_rules: Entity<HighlightRulesEditor>,
@@ -132,6 +133,7 @@ impl SettingsPanel {
             updater,
             sync,
             lan_page: None,
+            lan_subscription: None,
             highlight_rules,
             shortcuts,
             local_shell,
@@ -154,7 +156,9 @@ impl SettingsPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.lan_page = Some(cx.new(|cx| crate::lan::LanPage::new(service, window, cx)));
+        let page = cx.new(|cx| crate::lan::LanPage::new(service, window, cx));
+        self.lan_subscription = Some(cx.observe(&page, |_, _, cx| cx.notify()));
+        self.lan_page = Some(page);
         cx.notify();
     }
 
@@ -330,18 +334,25 @@ const CATEGORIES: [Category; 10] = [
     },
 ];
 
-fn lan_groups(panel: &SettingsPanel, _: &App) -> Vec<SettingGroup> {
+fn lan_groups(panel: &SettingsPanel, cx: &App) -> Vec<SettingGroup> {
     let Some(page) = panel.lan_page.clone() else {
         return Vec::new();
     };
-    vec![SettingGroup::new().items([
-        SettingItem::render(move |_, _, _| page.clone().into_any_element()).keywords([
-            t!("settings.category.lan"),
-            t!("lan.password_help"),
-            t!("lan.blacklist"),
-            t!("lan.shared_hosts"),
-        ]),
-    ])]
+    crate::lan::LanSection::ALL
+        .into_iter()
+        .filter(|section| {
+            *section != crate::lan::LanSection::Firewall || page.read(cx).has_firewall(cx)
+        })
+        .map(|section| {
+            let page = page.clone();
+            SettingGroup::new()
+                .title(section.title())
+                .items([SettingItem::render(move |_, _, cx| {
+                    page.read(cx).render_section(section, cx)
+                })
+                .keywords([section.title(), t!("settings.category.lan")])])
+        })
+        .collect()
 }
 
 impl Category {

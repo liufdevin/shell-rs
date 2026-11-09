@@ -5,6 +5,43 @@ use std::net::{IpAddr, Ipv4Addr};
 use std::sync::atomic::AtomicBool;
 
 struct NoCommands;
+async fn reveal_lan_control(
+    cx: &mut TestAppContext,
+    handle: WindowHandle<Root>,
+    control: &'static str,
+) {
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, cx| {
+        if window
+            .try_find(control)
+            .is_some_and(|element| element.visible())
+        {
+            return true;
+        }
+        let anchor = [
+            "lan-enable",
+            "lan-password",
+            "lan-firewall-check",
+            "lan-address",
+            "lan-device-access",
+            "lan-refresh-local-devices",
+        ]
+        .into_iter()
+        .find(|id| {
+            window
+                .try_find(*id)
+                .is_some_and(|element| element.visible())
+        });
+        if let Some(anchor) = anchor {
+            window.scroll(
+                anchor,
+                gpui_kit::ScrollDelta::Pixels(point(px(0.), px(-300.))),
+                cx,
+            );
+        }
+        false
+    })
+    .await;
+}
 impl Executor for NoCommands {
     fn open_terminal(
         &self,
@@ -84,6 +121,10 @@ async fn shared_ssh_opens_interactive_tabs_and_reconnects_only_through_the_paire
     in_frame(cx, handle, |window, cx| {
         window.within("settings").click("0-8", cx)
     });
+    in_frame(cx, handle, |window, cx| {
+        window.within("settings").click("0-8-4", cx)
+    });
+    reveal_lan_control(cx, handle, "lan-open-host-shared").await;
     cx.wait_for(handle.into(), Duration::from_secs(5), |window, _| {
         window.try_find("lan-open-host-shared").is_some()
     })
@@ -614,11 +655,7 @@ async fn ipv6_addresses_connect_from_the_lan_settings_without_protocol_notices(
         window.within("settings").click("0-8", cx)
     });
     in_frame(cx, handle, |window, cx| {
-        window.scroll(
-            "lan-enable",
-            gpui_kit::ScrollDelta::Pixels(point(px(0.), px(-2000.))),
-            cx,
-        );
+        window.within("settings").click("0-8-3", cx)
     });
     in_frame(cx, handle, |window, cx| {
         window.click("lan-address", cx);
@@ -630,6 +667,13 @@ async fn ipv6_addresses_connect_from_the_lan_settings_without_protocol_notices(
     })
     .await;
     in_frame(cx, handle, |window, cx| {
+        window.scroll(
+            "lan-address",
+            gpui_kit::ScrollDelta::Pixels(point(px(0.), px(-400.))),
+            cx,
+        );
+    });
+    in_frame(cx, handle, |window, cx| {
         window.click("lan-remote-password", cx);
         window.input("test pairing password", cx);
         window.click("lan-password-pair", cx);
@@ -638,6 +682,159 @@ async fn ipv6_addresses_connect_from_the_lan_settings_without_protocol_notices(
         !owner.grants().is_empty()
     })
     .await;
+    cx.wait_for(handle.into(), Duration::from_secs(4), |window, cx| {
+        window.notifications(cx).len() == 1
+            && window
+                .find("lan-pair-status")
+                .label()
+                .is_some_and(|label| label.contains("已配对"))
+    })
+    .await;
+    cx.executor().advance_clock(Duration::from_millis(600));
+    cx.run_until_parked();
+    in_frame(cx, handle, |window, cx| {
+        assert_eq!(window.notifications(cx).len(), 1)
+    });
+}
+
+#[gpui_kit::test]
+async fn password_pairing_notifies_the_owner_once_without_a_request_prompt(
+    cx: &mut TestAppContext,
+) {
+    let a_directory = tempfile::tempdir().unwrap();
+    let b_directory = tempfile::tempdir().unwrap();
+    let a = Core::load(a_directory.path(), "A", Arc::new(NoCommands)).unwrap();
+    let b = Core::load(b_directory.path(), "B", Arc::new(NoCommands)).unwrap();
+    b.set_password("test pairing password").unwrap();
+    a.set_password("test pairing password").unwrap();
+    let _a_network = Network::start(a.clone(), Ipv4Addr::LOCALHOST, 0, 0).unwrap();
+    let network = Network::start(b.clone(), Ipv4Addr::LOCALHOST, 0, 0).unwrap();
+    let (handle, workspace) = open_workspace(cx);
+    cx.update(|cx| {
+        let lan = workspace.read(cx).lan().clone();
+        lan.update(cx, |lan, cx| lan.attach_core(b.clone(), cx));
+    });
+    in_frame(cx, handle, |window, cx| {
+        assert!(window.notifications(cx).is_empty())
+    });
+    a.pair_password(
+        a.inspect(network.tcp_address).unwrap(),
+        "test pairing password",
+    )
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(4), |window, cx| {
+        window.notifications(cx).len() == 1
+    })
+    .await;
+    in_frame(cx, handle, |window, _| {
+        assert!(window.try_find("lan-accept-read").is_none())
+    });
+    cx.executor().advance_clock(Duration::from_millis(600));
+    cx.run_until_parked();
+    in_frame(cx, handle, |window, cx| {
+        assert_eq!(window.notifications(cx).len(), 1)
+    });
+    cx.update(|cx| {
+        let lan = workspace.read(cx).lan().clone();
+        lan.update(cx, |lan, cx| lan.attach_core(b.clone(), cx));
+    });
+    cx.executor().advance_clock(Duration::from_millis(300));
+    cx.run_until_parked();
+    in_frame(cx, handle, |window, cx| {
+        assert_eq!(window.notifications(cx).len(), 1)
+    });
+}
+
+#[gpui_kit::test]
+async fn request_pairing_notifies_the_controller_once_when_approved(cx: &mut TestAppContext) {
+    use shellrs::app::LanAction;
+    use shellrs::lan::LanCommand;
+    let a_directory = tempfile::tempdir().unwrap();
+    let b_directory = tempfile::tempdir().unwrap();
+    let a = Core::load(a_directory.path(), "A", Arc::new(NoCommands)).unwrap();
+    let b = Core::load(b_directory.path(), "B", Arc::new(NoCommands)).unwrap();
+    a.set_password("test pairing password").unwrap();
+    b.set_password("test pairing password").unwrap();
+    let _a_network = Network::start(a.clone(), Ipv4Addr::LOCALHOST, 0, 0).unwrap();
+    let b_network = Network::start(b.clone(), Ipv4Addr::LOCALHOST, 0, 0).unwrap();
+    let (handle, workspace) = open_workspace(cx);
+    cx.update(|cx| {
+        let lan = workspace.read(cx).lan().clone();
+        lan.update(cx, |lan, cx| lan.attach_core(a.clone(), cx));
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.dispatch_action(
+            Box::new(LanAction(LanCommand::Inspect(
+                b_network.tcp_address.to_string(),
+            ))),
+            cx,
+        )
+    });
+    in_frame(cx, handle, |window, cx| window.click("open-settings", cx));
+    in_frame(cx, handle, |window, cx| {
+        window.within("settings").click("0-8", cx)
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.within("settings").click("0-8-3", cx)
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(5), |window, _| {
+        window.try_find("lan-request-pair").is_some()
+    })
+    .await;
+    in_frame(cx, handle, |window, cx| {
+        window.click("lan-request-pair", cx)
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(5), |_, _| {
+        !b.pending().is_empty()
+    })
+    .await;
+    let pending = b.pending().remove(0);
+    b.approve(&pending.id, pending.token, BTreeSet::new(), false)
+        .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(6), |window, cx| {
+        window.notifications(cx).len() == 1
+    })
+    .await;
+    assert_eq!(a.peers().len(), 1);
+    cx.executor().advance_clock(Duration::from_millis(600));
+    cx.run_until_parked();
+    in_frame(cx, handle, |window, cx| {
+        assert_eq!(window.notifications(cx).len(), 1)
+    });
+}
+
+#[gpui_kit::test]
+fn lan_settings_separate_connection_pairing_sharing_and_access_into_named_groups(
+    cx: &mut TestAppContext,
+) {
+    let (handle, _) = open_workspace(cx);
+    cx.simulate_window_resize(handle.into(), size(px(1100.), px(800.)));
+    in_frame(cx, handle, |window, cx| window.click("open-settings", cx));
+    in_frame(cx, handle, |window, cx| {
+        window.within("settings").click("0-8", cx)
+    });
+    for (index, id) in [
+        (0, "lan-connection-section"),
+        (1, "lan-password-section"),
+        (3, "lan-pairing-section"),
+        (4, "lan-paired-section"),
+        (5, "lan-sharing-section"),
+        (6, "lan-permissions-section"),
+        (7, "lan-blacklist-section"),
+        (8, "lan-activity-section"),
+    ] {
+        in_frame(cx, handle, |window, cx| {
+            window.within("settings").click(format!("0-8-{index}"), cx)
+        });
+        in_frame(cx, handle, |window, _| {
+            let section = window.find(id);
+            assert!(
+                section.visible(),
+                "{id} should be reachable using group navigation"
+            );
+            assert!(section.bounds().size.width > px(200.));
+        });
+    }
 }
 
 #[gpui_kit::test]
@@ -848,17 +1045,17 @@ async fn incoming_pair_can_be_rejected_blacklisted_unblocked_and_then_accepted(
             .contains("blocked_by_device")
     );
     assert!(b.pending().is_empty());
+    in_frame(cx, handle, |window, cx| {
+        assert!(window.notifications(cx).is_empty())
+    });
     in_frame(cx, handle, |window, cx| window.click("open-settings", cx));
     in_frame(cx, handle, |window, cx| {
         window.within("settings").click("0-8", cx)
     });
     in_frame(cx, handle, |window, cx| {
-        window.scroll(
-            "lan-enable",
-            gpui_kit::ScrollDelta::Pixels(point(px(0.), px(-10000.))),
-            cx,
-        );
+        window.within("settings").click("0-8-7", cx)
     });
+    reveal_lan_control(cx, handle, "lan-unblock-127.0.0.1").await;
     in_frame(cx, handle, |window, cx| {
         window.click("lan-unblock-127.0.0.1", cx)
     });
@@ -878,6 +1075,10 @@ async fn incoming_pair_can_be_rejected_blacklisted_unblocked_and_then_accepted(
     .await;
     assert!(!b.grants()[0].execute);
     a.complete_pair(device).unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(4), |window, cx| {
+        window.notifications(cx).len() == 1
+    })
+    .await;
 }
 
 #[derive(Default)]
@@ -1000,6 +1201,10 @@ async fn shared_serial_and_adb_open_real_terminal_views_and_revoke_without_local
     in_frame(cx, handle, |window, cx| {
         window.within("settings").click("0-8", cx)
     });
+    in_frame(cx, handle, |window, cx| {
+        window.within("settings").click("0-8-4", cx)
+    });
+    reveal_lan_control(cx, handle, "lan-open-device-uart").await;
     cx.wait_for(handle.into(), Duration::from_secs(8), |window, _| {
         window.try_find("lan-open-device-uart").is_some()
     })

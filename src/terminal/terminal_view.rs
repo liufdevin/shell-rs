@@ -793,6 +793,24 @@ impl TerminalView {
         self.engine.read(cx).serial_tool_send(bytes)
     }
 
+    pub(crate) fn serial_assistant_target(
+        &self,
+    ) -> Option<(
+        Entity<crate::host::HostStore>,
+        String,
+        Option<crate::host::HostId>,
+    )> {
+        self.timestamp_target.clone()
+    }
+
+    pub(crate) fn serial_tool_send_checked(
+        &self,
+        bytes: Vec<u8>,
+        cx: &App,
+    ) -> Result<std::sync::mpsc::Receiver<Result<(), String>>, SharedString> {
+        self.engine.read(cx).serial_tool_send_checked(bytes)
+    }
+
     pub(crate) fn serial_tool_rule(
         &mut self,
         rule: Option<(&str, &str, bool)>,
@@ -820,7 +838,7 @@ impl TerminalView {
         self.engine.read(cx).serial_tool_baud(baud)
     }
 
-    pub(super) fn set_serial_modes(&self, modes: super::SerialDataModes, cx: &mut Context<Self>) {
+    pub(crate) fn set_serial_modes(&self, modes: super::SerialDataModes, cx: &mut Context<Self>) {
         self.engine.read(cx).set_serial_modes(modes);
         cx.notify();
     }

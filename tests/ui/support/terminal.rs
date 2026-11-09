@@ -263,6 +263,10 @@ impl TerminalTransport for FakeTerminalTransport {
                         .unwrap_or_else(|error| error.into_inner())
                         .push(bytes);
                 }
+                TerminalTransportCommand::SerialWriteChecked { bytes, reply } => {
+                    self.writes.lock().unwrap().push(bytes);
+                    let _ = reply.send(Ok(()));
+                }
                 TerminalTransportCommand::Resize(size) => {
                     self.resizes
                         .lock()

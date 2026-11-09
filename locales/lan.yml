@@ -205,8 +205,8 @@ lan.finished:
   zh-CN: "命令已结束，退出码：%{code}"
   en: "Command finished with exit code %{code}"
 lan.paired_devices:
-  zh-CN: 已配对的远程设备
-  en: Paired remote devices
+  zh-CN: 已配对的设备
+  en: Paired devices
 lan.view_hosts:
   zh-CN: 查看共享主机
   en: View shared hosts

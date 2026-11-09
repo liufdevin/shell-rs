@@ -1009,6 +1009,7 @@ impl From<Change> for ChangeKind {
             | Change::HostOs
             | Change::SidebarTool
             | Change::TimestampPreference
+            | Change::SerialAssistant
             | Change::NewSnippet
             | Change::SaveSnippet
             | Change::DeleteSnippet

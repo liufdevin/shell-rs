@@ -8,6 +8,9 @@ One section per version, titled `## [version]`, optionally followed by a date. E
 
 ### Added
 
+- Added an opt-in, per-host Serial assistant layout with persistent command groups, per-command HEX/line ending/CRC/delay, sequential sending, stop and undo deletion, reusing the existing serial connection. HEX receive/send moved to the footer, and Serial tools now has its own port icon.
+- Split LAN settings into connection, password, discovery/pairing, paired devices, local sharing, access permissions, blacklist and activity groups, with a separate Windows firewall group. Password pairing and request approval now show a named success notification instead of only returning to Ready.
+
 - Removed New local terminal from keyboard shortcut settings while retaining its toolbar button. Added customizable Duplicate current terminal, defaulting to Ctrl+Shift+D (Command+Shift+D on macOS), using the existing tab duplication behavior for the current remote terminal.
 
 - Added `shelllf-cli connect <host-id>` to open, reuse or reconnect a desktop terminal. Serial hosts with Linux shell mode now support `exec --terminal`, with HEX-mode guards. The desktop retains ownership of the port; the CLI does not bypass device login or port-busy restrictions.

@@ -1,0 +1,113 @@
+_version: 2
+
+serial.assistant.enable:
+  zh-CN: 增加串口助手
+  en: Enable serial assistant
+serial.assistant.previous:
+  zh-CN: 上一页
+  en: Previous
+serial.assistant.next:
+  zh-CN: 下一页
+  en: Next
+serial.assistant.page:
+  zh-CN: "%{page} / %{total}"
+  en: "%{page} / %{total}"
+serial.assistant.scope:
+  zh-CN: 默认关闭。按主机保存布局和命令组，继续使用已建立的串口连接，不重新占用端口。关闭助手会停止命令组发送。
+  en: Off by default. Remembers the layout and command groups per host, reusing the existing serial connection. Turning off stops group execution.
+serial.assistant.persist_failed:
+  zh-CN: "无法保存串口助手设置：%{error}"
+  en: "Couldn’t save serial assistant settings: %{error}"
+serial.assistant.limits:
+  zh-CN: 每台主机最多 32 个命令组，每组 128 条命令；名称最多 128 字节、内容最多 4 KiB，命令内容合计最多 256 KiB。
+  en: Each host supports 32 groups with 128 commands each. Names are limited to 128 bytes, content to 4 KiB per command and 256 KiB total.
+serial.assistant.name_required:
+  zh-CN: 请输入名称。
+  en: Enter a name.
+serial.assistant.invalid_delay:
+  zh-CN: 发送后等待时间应为 0–60000 ms。
+  en: Delay after sending must be 0–60000 ms.
+serial.assistant.create_first:
+  zh-CN: 请先新建并选择命令组。
+  en: Create and select a command group first.
+serial.assistant.no_commands:
+  zh-CN: 该命令组没有勾选要运行的命令。
+  en: No commands in this group are enabled.
+serial.assistant.running:
+  zh-CN: "正在顺序发送 %{count} 条命令…"
+  en: "Sending %{count} commands in order…"
+serial.assistant.stopped:
+  zh-CN: 已停止命令组。已发出的数据不会撤回。
+  en: Group stopped. Data already sent cannot be recalled.
+serial.assistant.complete:
+  zh-CN: 命令组发送完成。
+  en: Group sending complete.
+serial.assistant.send_failed:
+  zh-CN: "发送失败，命令组已停止：%{error}"
+  en: "Sending failed; group stopped: %{error}"
+serial.assistant.unsupported:
+  zh-CN: 当前连接不支持确认发送，命令组已停止。
+  en: This connection does not support acknowledged sends. Group stopped.
+serial.assistant.timeout:
+  zh-CN: 等待发送确认超时，命令组已停止。
+  en: Send acknowledgement timed out. Group stopped.
+serial.assistant.receive_left:
+  zh-CN: 接收内容显示在左侧终端。自动应答和波特率在对应标签中设置。
+  en: Received data appears in the terminal on the left. Configure auto-reply and baud rate in their tabs.
+serial.assistant.groups:
+  zh-CN: 命令组
+  en: Command groups
+serial.assistant.group_name:
+  zh-CN: 命令组名称
+  en: Group name
+serial.assistant.create_group:
+  zh-CN: 新建组
+  en: New group
+serial.assistant.rename_group:
+  zh-CN: 重命名组
+  en: Rename group
+serial.assistant.delete_group:
+  zh-CN: 删除组
+  en: Delete group
+serial.assistant.undo:
+  zh-CN: 撤销删除
+  en: Undo delete
+serial.assistant.empty:
+  zh-CN: 输入组名新建命令组，再将下方发送内容保存为命令。
+  en: Enter a group name to create a group, then save the message below as a command.
+serial.assistant.include:
+  zh-CN: 运行
+  en: Include
+serial.assistant.command_info:
+  zh-CN: "%{format} · %{ending} · 等待 %{delay} ms"
+  en: "%{format} · %{ending} · delay %{delay} ms"
+serial.assistant.move_up:
+  zh-CN: 上移
+  en: Move up
+serial.assistant.delete:
+  zh-CN: 删除
+  en: Delete
+serial.assistant.run:
+  zh-CN: 运行整组
+  en: Run group
+serial.assistant.stop:
+  zh-CN: 停止
+  en: Stop
+serial.assistant.new_command:
+  zh-CN: 新命令
+  en: New command
+serial.assistant.command_name:
+  zh-CN: 命令名称
+  en: Command name
+serial.assistant.delay:
+  zh-CN: 发送后等待
+  en: Delay after send
+serial.assistant.save_command:
+  zh-CN: 保存命令
+  en: Save command
+serial.assistant.add_command:
+  zh-CN: 添加到命令组
+  en: Add to group
+serial.assistant.saved_hint:
+  zh-CN: 每条命令独立保存 HEX、换行、CRC 和等待时间。运行整组仅发送一次；断开、重连、切换标签或关闭工具时自动停止。命令内容会明文保存，请勿保存密码。
+  en: Each command saves its HEX, line ending, CRC and delay. A group runs once and stops on disconnect, reconnect, tab change or closing the tool. Content is stored as plain text; do not save passwords.

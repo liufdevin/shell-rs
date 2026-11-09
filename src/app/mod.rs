@@ -17,7 +17,7 @@ mod window_hiding;
 
 pub use actions::*;
 pub use app_icon::show_logo_when_unbundled;
-pub use assets::{ADB_ICON, AppAssets, CatalogIcon, DOCKER_ICON};
+pub use assets::{ADB_ICON, AppAssets, CatalogIcon, DOCKER_ICON, SERIAL_ICON};
 pub use computer::computer_name;
 pub use paths::{
     PORTABLE_BIN, PORTABLE_DATA, SETUP_UNINSTALLER, analytics_path, cli_endpoint, cli_socket_path,

@@ -328,6 +328,19 @@ impl TerminalEngine {
         Ok(answer)
     }
 
+    pub(crate) fn serial_tool_send_checked(
+        &self,
+        bytes: Vec<u8>,
+    ) -> Result<mpsc::Receiver<Result<(), String>>, SharedString> {
+        self.serial_tool_ready()?;
+        let (reply, answer) = mpsc::channel();
+        self.runtime
+            .commands
+            .send(TerminalTransportCommand::SerialWriteChecked { bytes, reply })
+            .map_err(|_| t!("serial.tool.unavailable"))?;
+        Ok(answer)
+    }
+
     pub fn set_timestamps_enabled(&mut self, enabled: bool, cx: &mut gpui_kit::Context<Self>) {
         self.io.timestamps_enabled.store(enabled, Ordering::Release);
         self.runtime.timestamps.lock().unwrap().enabled = enabled;

@@ -41,7 +41,7 @@ fn from_sql(id: i64) -> u64 {
 /// command snippets, 15 the serial hosts, 16 the Telnet hosts, 17 each
 /// host's right sidebar, 18 the saved local terminals, 19 their titles, 20
 /// what sync needs, 21 each host's local connection log.
-const SCHEMA_VERSION: i64 = 27;
+const SCHEMA_VERSION: i64 = 28;
 
 /// The whole schema, as a new database gets it.
 ///
@@ -112,6 +112,11 @@ const SCHEMA_VERSION: i64 = 27;
 /// the same place (`a_column_added_later_matches_the_schema`). A CHECK
 /// cannot be changed that way: the table is made again (see `add_telnet`).
 const SCHEMA: &str = "\
+CREATE TABLE serial_assistants (
+    target TEXT PRIMARY KEY NOT NULL,
+    host_id INTEGER REFERENCES hosts(id) ON DELETE CASCADE,
+    value TEXT NOT NULL
+) STRICT;
 CREATE TABLE terminal_timestamp_preferences (
     target TEXT PRIMARY KEY NOT NULL,
     host_id INTEGER REFERENCES hosts(id) ON DELETE CASCADE
@@ -302,7 +307,7 @@ enum Step {
 ///
 /// A step is history: it says what that version's change was, and stays as
 /// written when `SCHEMA` changes again.
-const STEPS: [(i64, Step); 14] = [
+const STEPS: [(i64, Step); 15] = [
     (
     13,
     // The command snippets.
@@ -419,6 +424,7 @@ COMMIT;",
     (24, Step::Sql("BEGIN; ALTER TABLE hosts ADD COLUMN monitor_settings TEXT NOT NULL DEFAULT '{}'; PRAGMA user_version = 25; COMMIT;")),
     (25, Step::Sql("BEGIN; ALTER TABLE hosts ADD COLUMN device_log_settings TEXT NOT NULL DEFAULT '{}'; PRAGMA user_version = 26; COMMIT;")),
     (26, Step::Sql("BEGIN; CREATE TABLE IF NOT EXISTS terminal_timestamp_preferences (target TEXT PRIMARY KEY NOT NULL, host_id INTEGER REFERENCES hosts(id) ON DELETE CASCADE) STRICT; PRAGMA user_version = 27; COMMIT;")),
+    (27, Step::Sql("BEGIN; CREATE TABLE IF NOT EXISTS serial_assistants (target TEXT PRIMARY KEY NOT NULL, host_id INTEGER REFERENCES hosts(id) ON DELETE CASCADE, value TEXT NOT NULL) STRICT; PRAGMA user_version = 28; COMMIT;")),
 ];
 
 fn add_daily_logs(connection: &Connection) -> rusqlite::Result<()> {
@@ -733,6 +739,39 @@ impl std::error::Error for OpenError {
 }
 
 impl HostDatabase {
+    pub fn serial_assistants(&self) -> rusqlite::Result<HashMap<String, crate::SerialAssistant>> {
+        self.connection
+            .prepare("SELECT target, value FROM serial_assistants")?
+            .query_map([], |row| {
+                let text: String = row.get(1)?;
+                let value: crate::SerialAssistant =
+                    serde_json::from_str(&text).map_err(|error| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            1,
+                            rusqlite::types::Type::Text,
+                            Box::new(error),
+                        )
+                    })?;
+                if !value.is_valid() {
+                    return Err(rusqlite::Error::InvalidQuery);
+                }
+                Ok((row.get(0)?, value))
+            })?
+            .collect()
+    }
+
+    pub fn set_serial_assistant(
+        &self,
+        target: &str,
+        host: Option<HostId>,
+        value: &crate::SerialAssistant,
+    ) -> rusqlite::Result<()> {
+        let json = serde_json::to_string(value)
+            .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?;
+        self.connection.execute("INSERT INTO serial_assistants(target, host_id, value) VALUES (?1, ?2, ?3) ON CONFLICT(target) DO UPDATE SET host_id = excluded.host_id, value = excluded.value", params![target, host.map(|host| to_sql(host.0)), json])?;
+        Ok(())
+    }
+
     pub fn timestamp_targets(&self) -> rusqlite::Result<HashSet<String>> {
         self.connection
             .prepare("SELECT target FROM terminal_timestamp_preferences")?

@@ -498,8 +498,21 @@ impl Workspace {
             cx.subscribe_in(
                 &lan,
                 window,
-                |this, service, _: &crate::lan::LanEvent, window, cx| {
-                    crate::lan::show_pair_request(service, &this.focus_handle, window, cx);
+                |this, service, event: &crate::lan::LanEvent, window, cx| match event {
+                    crate::lan::LanEvent::Tick => {
+                        crate::lan::show_pair_request(service, &this.focus_handle, window, cx)
+                    }
+                    crate::lan::LanEvent::PairSucceeded { name, incoming } => {
+                        let message = if *incoming {
+                            t!("lan.pair_success.incoming", name = name.clone())
+                        } else {
+                            t!("lan.pair_success.outgoing", name = name.clone())
+                        };
+                        window.push_notification(
+                            Notification::success(message).title(t!("lan.pair_success.title")),
+                            cx,
+                        );
+                    }
                 },
             ),
             // What the saved terminals show, for the next launch to draw: the

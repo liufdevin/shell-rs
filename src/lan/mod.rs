@@ -28,6 +28,7 @@ use crate::i18n::t;
 
 pub(crate) use error_text as describe_error;
 pub use page::LanPage;
+pub(crate) use page::LanSection;
 pub(crate) use prompt::show_pair_request;
 pub(crate) use terminal::DeviceTerminalFactory;
 
@@ -89,6 +90,7 @@ pub enum LanCommand {
 
 pub enum LanEvent {
     Tick,
+    PairSucceeded { name: String, incoming: bool },
 }
 
 enum Completion {
@@ -97,7 +99,7 @@ enum Completion {
     Discovered(Vec<Device>),
     Inspected(Device),
     Waiting(Device),
-    Paired,
+    Paired(Device),
     Hosts(String, Response),
     DeviceList(String, Vec<SharedDevice>),
 }
@@ -135,6 +137,7 @@ pub struct LanService {
     poll: Option<Task<()>>,
     revision: u64,
     ticks: u64,
+    known_grants: BTreeSet<String>,
 }
 
 impl EventEmitter<LanEvent> for LanService {}
@@ -174,6 +177,7 @@ impl LanService {
             poll: None,
             revision: 0,
             ticks: 0,
+            known_grants: BTreeSet::new(),
         };
         service.poll = Some(cx.spawn(async move |this, cx| {
             loop {
@@ -192,6 +196,7 @@ impl LanService {
         self.core.clone()
     }
     pub fn attach_core(&mut self, core: Arc<Core>, cx: &mut Context<Self>) {
+        self.known_grants = core.grants().into_iter().map(|grant| grant.id).collect();
         self.core = Some(core);
         self.status = t!("lan.ready").to_string();
         cx.notify();
@@ -320,6 +325,8 @@ impl LanService {
                 this.busy = false;
                 match result {
                     Ok(Completion::Loaded(core, network, error)) => {
+                        this.known_grants =
+                            core.grants().into_iter().map(|grant| grant.id).collect();
                         this.core = Some(core);
                         this.network = network;
                         if let Some(error) = error {
@@ -341,7 +348,17 @@ impl LanService {
                         this.device_peer = Some(peer);
                         this.remote_devices = devices;
                     }
-                    Ok(Completion::Done | Completion::Paired) => {}
+                    Ok(Completion::Paired(device)) => {
+                        this.waiting = None;
+                        this.status = t!("lan.paired").to_string();
+                        cx.emit(LanEvent::PairSucceeded {
+                            name: device.name,
+                            incoming: false,
+                        });
+                        cx.notify();
+                        return;
+                    }
+                    Ok(Completion::Done) => {}
                     Err(error) => {
                         this.status = error_text(&error);
                         cx.notify();
@@ -599,8 +616,8 @@ impl LanService {
                     return;
                 };
                 self.job(cx, move || {
-                    core.pair_password(device, password.expose())?;
-                    Ok(Completion::Paired)
+                    core.pair_password(device.clone(), password.expose())?;
+                    Ok(Completion::Paired(device))
                 });
             }
             LanCommand::ShareHost(host, shared) => {
@@ -743,8 +760,23 @@ impl LanService {
                 self.status = t!("lan.devices.audit_failed", reason = error).to_string();
                 changed = true;
             }
-            if self.revision != core.revision() {
-                self.revision = core.revision();
+            let revision = core.revision();
+            if self.revision != revision {
+                let grants = core.grants();
+                let current = grants.iter().map(|grant| grant.id.clone()).collect();
+                for grant in grants
+                    .iter()
+                    .filter(|grant| !self.known_grants.contains(&grant.id))
+                {
+                    cx.emit(LanEvent::PairSucceeded {
+                        name: grant.name.clone(),
+                        incoming: true,
+                    });
+                    self.status =
+                        t!("lan.pair_success.incoming", name = grant.name.clone()).to_string();
+                }
+                self.known_grants = current;
+                self.revision = revision;
                 changed = true;
             }
             let pending: BTreeSet<_> = core
@@ -759,15 +791,28 @@ impl LanService {
             && let (Some(device), Some(core)) = (self.waiting.clone(), self.core.clone())
         {
             self.pair_task = Some(cx.spawn(async move |this, cx| {
+                let name = device.name.clone();
+                let expected = (device.id.clone(), device.endpoint);
                 let result = cx
                     .background_spawn(async move { core.complete_pair(device) })
                     .await;
                 let _ = this.update(cx, |this, cx| {
                     this.pair_task = None;
+                    if this
+                        .waiting
+                        .as_ref()
+                        .is_none_or(|device| (device.id.clone(), device.endpoint) != expected)
+                    {
+                        return;
+                    }
                     match result {
                         Ok(()) => {
                             this.waiting = None;
                             this.status = t!("lan.paired").to_string();
+                            cx.emit(LanEvent::PairSucceeded {
+                                name,
+                                incoming: false,
+                            });
                         }
                         Err(error) if error.to_string().contains("pairing_pending") => {}
                         Err(error) => {

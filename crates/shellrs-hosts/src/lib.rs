@@ -24,6 +24,7 @@ mod private_key;
 mod protocol;
 mod saved_terminal;
 pub mod secrets;
+mod serial_assistant;
 mod serial_settings;
 mod snippet;
 pub mod sync;
@@ -52,6 +53,7 @@ pub use private_key::{
 };
 pub use protocol::{Protocol, ProtocolKind, TelnetSettings};
 pub use saved_terminal::*;
+pub use serial_assistant::*;
 pub use serial_settings::*;
 pub use snippet::*;
 pub use terminal_encoding::TerminalEncoding;

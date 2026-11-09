@@ -184,6 +184,7 @@ impl SshTerminalTransport {
                     }
                     Some(TerminalTransportCommand::PromptReply { .. })
                     | Some(TerminalTransportCommand::SetSerialBaud { .. })
+                    | Some(TerminalTransportCommand::SerialWriteChecked { .. })
                     | Some(TerminalTransportCommand::SerialTransfer(_))
                     | Some(TerminalTransportCommand::SendBreak) => {}
                 },

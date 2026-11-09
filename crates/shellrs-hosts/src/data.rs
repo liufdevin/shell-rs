@@ -65,6 +65,7 @@ pub use sync::{
 /// `sftp://` link (外部连接, the app's `SshLink`) and whose terminals get one
 /// channel alone.
 pub struct HostData {
+    serial_assistants: HashMap<String, crate::SerialAssistant>,
     timestamp_targets: HashSet<String>,
     groups: Vec<HostGroup>,
     hosts: Vec<Host>,
@@ -183,6 +184,7 @@ pub enum Change {
     HostOs,
     SidebarTool,
     TimestampPreference,
+    SerialAssistant,
     NewSnippet,
     SaveSnippet,
     DeleteSnippet,
@@ -339,6 +341,7 @@ impl HostData {
     /// An empty memory-only store.
     pub fn empty() -> Self {
         Self {
+            serial_assistants: HashMap::new(),
             timestamp_targets: HashSet::new(),
             groups: Vec::new(),
             hosts: Vec::new(),
@@ -451,6 +454,7 @@ impl HostData {
         } = database.load()?;
         let sync_state = database.sync_state()?;
         let timestamp_targets = database.timestamp_targets()?;
+        let serial_assistants = database.serial_assistants()?;
         recent.truncate(MAX_RECENT);
         let mut bookmarks: HashMap<_, Vec<String>> = HashMap::new();
         let mut bookmark_meta = HashMap::new();
@@ -471,6 +475,7 @@ impl HostData {
             host.credential = draft.credential;
         }
         Ok(Self {
+            serial_assistants,
             timestamp_targets,
             next_group_id: groups.iter().map(|group| group.id.0).max().unwrap_or(0) + 1,
             next_host_id: hosts.iter().map(|s| s.id.0).max().unwrap_or(0) + 1,
@@ -724,6 +729,8 @@ impl HostData {
             return false;
         };
         self.timestamp_targets
+            .remove(&format!("host:{}", self.temporary[index].public_id));
+        self.serial_assistants
             .remove(&format!("host:{}", self.temporary[index].public_id));
         self.temporary.remove(index);
         self.external.remove(&id);
@@ -984,6 +991,9 @@ impl HostData {
     }
 
     pub fn remove_unnotified(&mut self, id: HostId) -> bool {
+        if let Some(key) = self.host(id).map(|host| format!("host:{}", host.public_id)) {
+            self.serial_assistants.remove(&key);
+        }
         if let Some(host) = self.host(id) {
             self.timestamp_targets
                 .remove(&format!("host:{}", host.public_id));
@@ -1951,6 +1961,32 @@ impl HostData {
 
     pub fn timestamps_enabled(&self, target: &str) -> bool {
         self.timestamp_targets.contains(target)
+    }
+
+    pub fn serial_assistant(&self, target: &str) -> Option<&crate::SerialAssistant> {
+        self.serial_assistants.get(target)
+    }
+
+    pub fn set_serial_assistant(
+        &mut self,
+        target: String,
+        host: Option<HostId>,
+        value: crate::SerialAssistant,
+    ) -> bool {
+        if !value.is_valid() || host.is_some_and(|host| self.host(host).is_none()) {
+            return false;
+        }
+        if self.serial_assistants.get(&target) == Some(&value) {
+            return true;
+        }
+        self.serial_assistants.insert(target.clone(), value.clone());
+        if !host.is_some_and(|host| self.is_temporary(host)) {
+            self.persist(Change::SerialAssistant, |database| {
+                database.set_serial_assistant(&target, host, &value)
+            });
+        }
+        self.changed();
+        true
     }
 
     pub fn set_timestamps_enabled(&mut self, target: String, host: Option<HostId>, enabled: bool) {
