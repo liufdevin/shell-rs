@@ -6,6 +6,24 @@ use std::sync::atomic::AtomicBool;
 
 struct NoCommands;
 impl Executor for NoCommands {
+    fn open_terminal(
+        &self,
+        _: &str,
+        size: shellrs_lan::DeviceSize,
+        commands: tokio::sync::mpsc::Receiver<shellrs_lan::DeviceInput>,
+        events: tokio::sync::mpsc::Sender<shellrs_lan::DeviceEvent>,
+        cancelled: &AtomicBool,
+    ) -> anyhow::Result<()> {
+        shellrs_lan::DeviceProvider::run(
+            &EchoDevices::default(),
+            "ssh",
+            size,
+            commands,
+            events,
+            cancelled,
+        )
+    }
+
     fn hosts(&self) -> Vec<SharedHost> {
         vec![SharedHost::new(
             "shared".into(),
@@ -24,6 +42,196 @@ impl Executor for NoCommands {
     ) -> anyhow::Result<i32> {
         anyhow::bail!("not used")
     }
+}
+
+#[gpui_kit::test]
+async fn shared_ssh_opens_interactive_tabs_and_reconnects_only_through_the_paired_computer(
+    cx: &mut TestAppContext,
+) {
+    use shellrs::app::{CloseLocalTerminal, LanAction, RestartLocalTerminal};
+    use shellrs::lan::LanCommand;
+    let a_directory = tempfile::tempdir().unwrap();
+    let b_directory = tempfile::tempdir().unwrap();
+    let a = Core::load(a_directory.path(), "A", Arc::new(NoCommands)).unwrap();
+    let b = Core::load(b_directory.path(), "B", Arc::new(NoCommands)).unwrap();
+    a.set_password("strong pairing password").unwrap();
+    b.set_password("strong pairing password").unwrap();
+    b.set_sharing(BTreeSet::from(["shared".into()]), false)
+        .unwrap();
+    let _a_network = Network::start(a.clone(), Ipv4Addr::LOCALHOST, 0, 0).unwrap();
+    let b_network = Network::start(b.clone(), Ipv4Addr::LOCALHOST, 0, 0).unwrap();
+    a.pair_password(
+        a.inspect(b_network.tcp_address).unwrap(),
+        "strong pairing password",
+    )
+    .unwrap();
+    let (handle, workspace) = open_workspace_with_store(cx, HostStore::empty());
+    cx.update(|cx| {
+        workspace
+            .read(cx)
+            .lan()
+            .clone()
+            .update(cx, |lan, cx| lan.attach_core(a.clone(), cx));
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.click("host-search", cx);
+        window.dispatch_action(
+            Box::new(LanAction(LanCommand::RefreshHosts(b.id().to_owned()))),
+            cx,
+        );
+    });
+    in_frame(cx, handle, |window, cx| window.click("open-settings", cx));
+    in_frame(cx, handle, |window, cx| {
+        window.within("settings").click("0-8", cx)
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(5), |window, _| {
+        window.try_find("lan-open-host-shared").is_some()
+    })
+    .await;
+    in_frame(cx, handle, |window, cx| {
+        window.click("host-search", cx);
+        window.dispatch_action(
+            Box::new(LanAction(LanCommand::OpenHost {
+                peer: b.id().to_owned(),
+                host: "shared".into(),
+            })),
+            cx,
+        );
+    });
+    cx.update(|cx| {
+        assert!(
+            workspace
+                .read(cx)
+                .local_terminal(LocalTerminalId(1))
+                .is_none()
+        )
+    });
+    b.set_sharing(BTreeSet::from(["shared".into()]), true)
+        .unwrap();
+    b.set_execution_permission(a.id(), true).unwrap();
+    in_frame(cx, handle, |window, cx| {
+        window.click("host-search", cx);
+        window.dispatch_action(
+            Box::new(LanAction(LanCommand::RefreshHosts(b.id().to_owned()))),
+            cx,
+        );
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(5), |_, cx| {
+        workspace
+            .read(cx)
+            .lan()
+            .read(cx)
+            .is_remote_execution_allowed()
+    })
+    .await;
+    in_frame(cx, handle, |window, cx| {
+        window.click("host-search", cx);
+        window.dispatch_action(
+            Box::new(LanAction(LanCommand::OpenHost {
+                peer: b.id().to_owned(),
+                host: "shared".into(),
+            })),
+            cx,
+        );
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(8), |_, cx| {
+        workspace
+            .read(cx)
+            .local_terminal(LocalTerminalId(1))
+            .is_some_and(|panel| {
+                matches!(
+                    panel.read(cx).terminal().read(cx).lifecycle(cx),
+                    TerminalLifecycle::Running
+                ) && panel
+                    .read(cx)
+                    .terminal()
+                    .read(cx)
+                    .screen_text(cx)
+                    .contains("ssh-ready")
+            })
+    })
+    .await;
+    in_frame(cx, handle, |window, cx| {
+        window.click(("local-terminal", 1u64), cx);
+        window.input("ssh-interactive-input", cx);
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(5), |_, cx| {
+        workspace
+            .read(cx)
+            .local_terminal(LocalTerminalId(1))
+            .unwrap()
+            .read(cx)
+            .terminal()
+            .read(cx)
+            .screen_text(cx)
+            .contains("ssh-interactive-input")
+    })
+    .await;
+    b.set_execution_permission(a.id(), false).unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(5), |_, cx| {
+        matches!(
+            workspace
+                .read(cx)
+                .local_terminal(LocalTerminalId(1))
+                .unwrap()
+                .read(cx)
+                .terminal()
+                .read(cx)
+                .lifecycle(cx),
+            TerminalLifecycle::Failed(_)
+        )
+    })
+    .await;
+    in_frame(cx, handle, |window, cx| {
+        window.click(("local-terminal", 1u64), cx);
+        window.dispatch_action(Box::new(RestartLocalTerminal(LocalTerminalId(1))), cx);
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(5), |_, cx| {
+        matches!(
+            workspace
+                .read(cx)
+                .local_terminal(LocalTerminalId(1))
+                .unwrap()
+                .read(cx)
+                .terminal()
+                .read(cx)
+                .lifecycle(cx),
+            TerminalLifecycle::Failed(_)
+        )
+    })
+    .await;
+    b.set_execution_permission(a.id(), true).unwrap();
+    in_frame(cx, handle, |window, cx| {
+        window.click(("local-terminal", 1u64), cx);
+        window.dispatch_action(Box::new(RestartLocalTerminal(LocalTerminalId(1))), cx);
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(5), |_, cx| {
+        matches!(
+            workspace
+                .read(cx)
+                .local_terminal(LocalTerminalId(1))
+                .unwrap()
+                .read(cx)
+                .terminal()
+                .read(cx)
+                .lifecycle(cx),
+            TerminalLifecycle::Running
+        )
+    })
+    .await;
+    cx.update(|cx| {
+        let store = workspace.read(cx).store().read(cx);
+        assert!(store.hosts().is_empty());
+        assert!(store.temporary_hosts().is_empty());
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.click(("local-terminal", 1u64), cx);
+        window.dispatch_action(Box::new(CloseLocalTerminal(LocalTerminalId(1))), cx)
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(5), |_, _| {
+        b.active_devices().is_empty()
+    })
+    .await;
 }
 
 struct FakeFirewall {
@@ -500,12 +708,30 @@ async fn lan_settings_require_a_matching_password_before_enabling(cx: &mut TestA
             Some("请先设置配对密码，再开启局域网协作")
         );
         window.click("lan-password", cx);
-        window.input("strong pairing password", cx);
+        window.input("abcde", cx);
         window.click("lan-password-repeat", cx);
-        window.input("wrong", cx);
-        assert!(!enabled(&window.find("lan-save-password")));
+        window.input("abcde", cx);
     });
     in_frame(cx, handle, |window, cx| {
+        assert!(!enabled(&window.find("lan-save-password")));
+        for (field, text) in [
+            ("lan-password", "lan6ok"),
+            ("lan-password-repeat", "wrong6"),
+        ] {
+            window.click(field, cx);
+            window.press(
+                if cfg!(target_os = "macos") {
+                    "cmd-a"
+                } else {
+                    "ctrl-a"
+                },
+                cx,
+            );
+            window.input(text, cx);
+        }
+    });
+    in_frame(cx, handle, |window, cx| {
+        assert!(!enabled(&window.find("lan-save-password")));
         window.click("lan-password-repeat", cx);
         window.press(
             if cfg!(target_os = "macos") {
@@ -515,7 +741,7 @@ async fn lan_settings_require_a_matching_password_before_enabling(cx: &mut TestA
             },
             cx,
         );
-        window.input("strong pairing password", cx);
+        window.input("lan6ok", cx);
     });
     in_frame(cx, handle, |window, cx| {
         window.click("lan-save-password", cx)
@@ -526,7 +752,7 @@ async fn lan_settings_require_a_matching_password_before_enabling(cx: &mut TestA
     .await;
     assert!(!core.is_running());
     let file = std::fs::read_to_string(directory.path().join("access.json")).unwrap();
-    assert!(!file.contains("strong pairing password"));
+    assert!(!file.contains("lan6ok"));
 }
 
 #[gpui_kit::test]

@@ -76,8 +76,9 @@ impl Render for LanPage {
         let available = service.available();
         let password = self.password.read(cx).value().to_string();
         let repeat = self.repeat.read(cx).value().to_string();
-        let valid_password =
-            password.chars().count() >= 12 && password.len() <= 1024 && password == repeat;
+        let valid_password = password.chars().count() >= shellrs_lan::MIN_PAIRING_PASSWORD_CHARS
+            && password.len() <= 1024
+            && password == repeat;
         let secret = Secret::new(password);
         let clear_password = self.password.clone();
         let clear_repeat = self.repeat.clone();
@@ -352,18 +353,42 @@ impl Render for LanPage {
         for host in &service.remote {
             let id = host.id.clone();
             view = view.child(
-                Checkbox::new(SharedString::from(format!("lan-remote-host-{id}")))
-                    .label(format!(
-                        "{} · {}@{}:{}",
-                        host.name, host.user, host.address, host.port
-                    ))
-                    .checked(service.host.as_deref() == Some(id.as_str()))
-                    .on_click(move |_, window, cx| {
-                        window.dispatch_action(
-                            Box::new(LanAction(LanCommand::SelectHost(id.clone()))),
-                            cx,
+                h_flex()
+                    .gap_2()
+                    .flex_wrap()
+                    .child(
+                        Checkbox::new(SharedString::from(format!("lan-remote-host-{id}")))
+                            .label(format!(
+                                "{} · {}@{}:{}",
+                                host.name, host.user, host.address, host.port
+                            ))
+                            .checked(service.host.as_deref() == Some(id.as_str()))
+                            .on_click(move |_, window, cx| {
+                                window.dispatch_action(
+                                    Box::new(LanAction(LanCommand::SelectHost(id.clone()))),
+                                    cx,
+                                )
+                            }),
+                    )
+                    .children(service.peer.as_ref().map(|peer| {
+                        button(
+                            SharedString::from(format!("lan-open-host-{}", host.id)),
+                            t!("lan.open_ssh_terminal"),
+                            LanCommand::OpenHost {
+                                peer: peer.clone(),
+                                host: host.id.clone(),
+                            },
+                            !enabled || !service.is_remote_execution_allowed(),
                         )
-                    }),
+                    })),
+            );
+        }
+        if !service.remote.is_empty() {
+            view = view.child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(t!("lan.ssh_terminal_help")),
             );
         }
         view = view
@@ -376,7 +401,7 @@ impl Render for LanPage {
                         t!("lan.execute"),
                         LanCommand::Execute(self.command.read(cx).value().to_string()),
                         !enabled
-                            || !service.can_execute
+                            || !service.is_remote_execution_allowed()
                             || service.running
                             || service.host.is_none(),
                     ))

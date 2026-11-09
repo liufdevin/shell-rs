@@ -53,6 +53,40 @@ impl HostExecutor {
 }
 
 impl Executor for HostExecutor {
+    fn has_host(&self, host: &str) -> bool {
+        self.hosts
+            .read()
+            .unwrap()
+            .iter()
+            .any(|(item, _)| item.id == host)
+    }
+
+    fn open_terminal(
+        &self,
+        host: &str,
+        size: shellrs_lan::DeviceSize,
+        commands: tokio::sync::mpsc::Receiver<shellrs_lan::DeviceInput>,
+        events: tokio::sync::mpsc::Sender<shellrs_lan::DeviceEvent>,
+        cancelled: &AtomicBool,
+    ) -> anyhow::Result<()> {
+        let login = self
+            .hosts
+            .read()
+            .unwrap()
+            .iter()
+            .find(|(item, _)| item.id == host)
+            .map(|(_, login)| login.clone())
+            .ok_or_else(|| anyhow::anyhow!("host_no_longer_available"))?;
+        super::ssh_terminal::run(
+            &self.connector,
+            &SshConnectionConfig::from(&login),
+            size,
+            commands,
+            events,
+            cancelled,
+        )
+    }
+
     fn hosts(&self) -> Vec<SharedHost> {
         self.hosts
             .read()

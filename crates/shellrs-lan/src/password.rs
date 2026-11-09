@@ -15,8 +15,9 @@ pub(super) struct Verifier {
 impl Verifier {
     pub fn new(password: &str) -> Result<Self> {
         ensure!(
-            password.chars().count() >= 12 && password.len() <= 1024,
-            "pairing password must contain at least 12 characters"
+            password.chars().count() >= crate::MIN_PAIRING_PASSWORD_CHARS && password.len() <= 1024,
+            "pairing password must contain at least {} characters",
+            crate::MIN_PAIRING_PASSWORD_CHARS
         );
         let salt: [u8; 16] = rand::rng().random();
         Ok(Self {
@@ -39,4 +40,22 @@ fn derive(password: &str, salt: &[u8; 16]) -> Result<Zeroizing<[u8; 32]>> {
         .hash_password_into(password.as_bytes(), salt, hash.as_mut())
         .map_err(|error| anyhow::anyhow!(error))?;
     Ok(hash)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Verifier;
+
+    #[test]
+    fn minimum_pairing_password_is_six_characters_not_six_bytes() {
+        for password in ["", "abcde", "中文配对码"] {
+            assert!(Verifier::new(password).is_err());
+        }
+        for password in ["lan6ok", "中文配对密码", "a longer pairing password"] {
+            let verifier = Verifier::new(password).unwrap();
+            assert!(verifier.verify(password).unwrap());
+            assert!(!verifier.verify("wrong6").unwrap());
+        }
+        assert!(Verifier::new(&"x".repeat(1025)).is_err());
+    }
 }

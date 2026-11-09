@@ -8,6 +8,10 @@ One section per version, titled `## [version]`, optionally followed by a date. E
 
 ### Added
 
+- LAN pairing passwords now require at least six characters, with a shared UI/core minimum and updated Chinese/English guidance. Matching confirmation, password hashing, failed-attempt limits and existing longer passwords remain unchanged.
+
+- LAN-shared SSH hosts now open continuous interactive terminals with multiple tabs, keyboard input, Ctrl+C, resizing, exit codes and reconnecting. Credentials, jump/proxy routes and host-key checks stay on the sharing computer. Independent SSH grants support live revocation, including silent streams, with bounded metadata auditing. Shared SSH SFTP, monitoring sidebars, port forwarding, virtual COM ports and external ADB forwarding are not included.
+
 - Application diagnostics are saved in `log` beside the executable, separated by local date and process. Retention covers today and the preceding six days, with cleanup at startup and across day changes. Background writes use a bounded queue; files rotate at 10 MiB with up to five parts per process per day. Logs capture startup, key failures and Rust panic backtraces without collecting terminal input/output or credentials.
 
 - LAN settings add removal of the current program’s dedicated firewall rules, with ownership checks and post-removal verification. The configuration button is now labeled “Configure firewall”; both configuration and removal still request system consent.

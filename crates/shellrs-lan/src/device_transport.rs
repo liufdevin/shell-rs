@@ -20,6 +20,7 @@ pub(super) struct OpenRequest {
     pub source: IpAddr,
     pub size: DeviceSize,
     pub service: Option<String>,
+    pub host: bool,
 }
 
 struct LeaseGuard {
@@ -100,11 +101,12 @@ async fn serve(
             "adb_service_unavailable"
         );
     }
-    let id = match core.acquire_device(
+    let id = match core.acquire_stream(
         &request.peer,
         &request.device,
         request.source,
         cancelled.clone(),
+        request.host,
     ) {
         Ok(id) => id,
         Err(error) => {
@@ -124,6 +126,7 @@ async fn serve(
     let source = request.source;
     let size = request.size;
     let service = request.service.clone();
+    let host = request.host;
     let input = Arc::new(AtomicU64::new(0));
     let output = Arc::new(AtomicU64::new(0));
     let guard = LeaseGuard {
@@ -132,12 +135,19 @@ async fn serve(
         request,
         input: input.clone(),
         output: output.clone(),
-        name: core
-            .local_devices()
-            .into_iter()
-            .find(|item| item.id == device)
-            .map(|item| item.name)
-            .unwrap_or_default(),
+        name: if host {
+            core.hosts()
+                .into_iter()
+                .find(|item| item.id == device)
+                .map(|item| item.name)
+                .unwrap_or_default()
+        } else {
+            core.local_devices()
+                .into_iter()
+                .find(|item| item.id == device)
+                .map(|item| item.name)
+                .unwrap_or_default()
+        },
     };
     if let Some(service) = &service {
         let operation = if service == "sync:" {
@@ -156,6 +166,7 @@ async fn serve(
         core.record_device_audit(entry)?;
     }
     let provider = core.device_provider.read().unwrap().clone();
+    let executor = core.executor.clone();
     let (provider_commands, receiver) = tokio::sync::mpsc::channel(32);
     let (events, mut received) = tokio::sync::mpsc::channel(32);
     let (finished, completion) = tokio::sync::oneshot::channel();
@@ -165,7 +176,9 @@ async fn serve(
         .name("shelllf-lan-device".into())
         .spawn(move || {
             let _guard = guard;
-            let result = if let Some(service) = service {
+            let result = if host {
+                executor.open_terminal(&target, size, receiver, events, &worker_cancel)
+            } else if let Some(service) = service {
                 provider.run_adb(&target, &service, receiver, events, &worker_cancel)
             } else {
                 provider.run(&target, size, receiver, events, &worker_cancel)
@@ -173,10 +186,12 @@ async fn serve(
             let _ = finished.send(result);
         })?;
     let mut started = false;
-    let mut opening = Some(tokio::time::Instant::now() + Duration::from_secs(15));
+    let mut opening =
+        Some(tokio::time::Instant::now() + Duration::from_secs(if host { 40 } else { 15 }));
     loop {
         ensure!(
-            core.device_authorized(&peer, &device, source) && !cancelled.load(Ordering::Acquire),
+            core.stream_authorized(&peer, &device, source, host)
+                && !cancelled.load(Ordering::Acquire),
             "device_control_revoked"
         );
         ensure!(
@@ -197,11 +212,17 @@ async fn serve(
                     tokio::time::timeout(Duration::from_secs(2), handle.data(channel, bytes)).await?.map_err(|_| anyhow::anyhow!("disconnected"))?;
                 }
                 Some(DeviceEvent::Closed) => break,
+                Some(DeviceEvent::Exited { code, signal }) => {
+                    ensure!(host && started && signal.as_ref().is_none_or(|signal| signal.len() <= 128), "invalid_device_event");
+                    let bytes = serde_json::to_vec(&(code, signal))?;
+                    tokio::time::timeout(Duration::from_secs(2), handle.extended_data(channel, 4, bytes)).await?.map_err(|_| anyhow::anyhow!("disconnected"))?;
+                    break;
+                }
                 None => { completion.await.map_err(|_| anyhow::anyhow!("device_worker_stopped"))??; break; }
             },
             command = commands.recv(), if started => match command {
                 Some(command) => {
-                    ensure!(core.device_authorized(&peer, &device, source) && !cancelled.load(Ordering::Acquire), "device_control_revoked");
+                    ensure!(core.stream_authorized(&peer, &device, source, host) && !cancelled.load(Ordering::Acquire), "device_control_revoked");
                     match &command {
                         DeviceInput::Write(bytes) => { input.fetch_add(bytes.len() as u64, Ordering::Relaxed); }
                         DeviceInput::Break => {
@@ -219,10 +240,33 @@ async fn serve(
         }
     }
     ensure!(
-        core.device_authorized(&peer, &device, source) && !cancelled.load(Ordering::Acquire),
+        core.stream_authorized(&peer, &device, source, host) && !cancelled.load(Ordering::Acquire),
         "device_control_revoked"
     );
     Ok(())
+}
+
+pub(super) fn stream_host(
+    core: &Core,
+    device: &Device,
+    host: &str,
+    size: DeviceSize,
+    commands: mpsc::Receiver<DeviceInput>,
+    cancelled: &AtomicBool,
+    events: &mut dyn FnMut(DeviceEvent) -> io::Result<()>,
+) -> Result<()> {
+    stream_request(
+        core,
+        device,
+        RemoteRequest::OpenHost {
+            host: host.to_owned(),
+            columns: size.columns,
+            rows: size.rows,
+        },
+        commands,
+        cancelled,
+        events,
+    )
 }
 
 pub(super) fn stream_device(
@@ -284,6 +328,11 @@ fn stream_request(
             columns,
             rows,
         } => (device, DeviceSize::new(*columns, *rows)?),
+        RemoteRequest::OpenHost {
+            host,
+            columns,
+            rows,
+        } => (host, DeviceSize::new(*columns, *rows)?),
         RemoteRequest::OpenAdb { device, service } => {
             crate::validate_adb_service(service)?;
             (device, DeviceSize::new(80, 24)?)
@@ -303,8 +352,10 @@ fn stream_request(
             let mut channel = tokio::time::timeout(Duration::from_secs(5), session.channel_open_session()).await??;
             channel.exec(true, serde_json::to_vec(&request)?).await?;
             let mut started = false;
-            let mut opening = Some(tokio::time::Instant::now() + Duration::from_secs(20));
+            let host = matches!(request, RemoteRequest::OpenHost { .. });
+            let mut opening = Some(tokio::time::Instant::now() + Duration::from_secs(if host { 45 } else { 20 }));
             let mut exit = None;
+            let mut shell_exit = None;
             let mut failure = None;
             loop {
                 ensure!(!cancelled.load(Ordering::Acquire) && core.is_active() && core.has_peer(&device.id), "device_stream_cancelled");
@@ -334,6 +385,12 @@ fn stream_request(
                         ensure!(data.len() <= 4096, "invalid_device_event");
                         failure = Some(String::from_utf8_lossy(&data).into_owned());
                     }
+                    Some(ChannelMsg::ExtendedData { ext: 4, data }) => {
+                        ensure!(host && started && shell_exit.is_none() && data.len() <= 1024, "invalid_device_event");
+                        let (code, signal): (u32, Option<String>) = serde_json::from_slice(&data)?;
+                        ensure!(signal.as_ref().is_none_or(|signal| signal.len() <= 128), "invalid_device_event");
+                        shell_exit = Some(DeviceEvent::Exited { code, signal });
+                    }
                     Some(ChannelMsg::ExitStatus { exit_status }) => exit = Some(exit_status),
                     Some(ChannelMsg::Failure) => bail!("device_request_refused"),
                     Some(ChannelMsg::Close) | None => break,
@@ -342,7 +399,7 @@ fn stream_request(
             }
             if let Some(failure) = failure { bail!("{failure}"); }
             ensure!(exit == Some(0), "device_connection_lost");
-            events(DeviceEvent::Closed)?;
+            events(shell_exit.unwrap_or(DeviceEvent::Closed))?;
             Ok(())
         }.await;
         let _ = tokio::time::timeout(Duration::from_secs(1), session.disconnect(russh::Disconnect::ByApplication, "device stream ended", "en")).await;

@@ -7,7 +7,9 @@ use std::sync::{
 use std::time::Duration;
 
 use anyhow::{Result, ensure};
-use shellrs_lan::{Core, DeviceEvent, DeviceInput, DeviceKind, DeviceSize, SharedDevice};
+use shellrs_lan::{
+    Core, DeviceEvent, DeviceInput, DeviceKind, DeviceSize, SharedDevice, SharedHost,
+};
 
 use crate::terminal::{
     SerialTerminalTransportProvider, SharedTerminalTransportFactory, TerminalSize,
@@ -19,12 +21,30 @@ use crate::terminal::{
 pub(crate) struct DeviceTerminalFactory {
     core: Arc<Core>,
     peer: String,
-    device: SharedDevice,
+    target: TerminalTarget,
+}
+
+#[derive(Clone)]
+enum TerminalTarget {
+    Device(SharedDevice),
+    Ssh(SharedHost),
 }
 
 impl DeviceTerminalFactory {
     pub fn new(core: Arc<Core>, peer: String, device: SharedDevice) -> Self {
-        Self { core, peer, device }
+        Self {
+            core,
+            peer,
+            target: TerminalTarget::Device(device),
+        }
+    }
+
+    pub fn ssh(core: Arc<Core>, peer: String, host: SharedHost) -> Self {
+        Self {
+            core,
+            peer,
+            target: TerminalTarget::Ssh(host),
+        }
     }
 }
 
@@ -56,32 +76,46 @@ impl TerminalTransport for DeviceTerminalFactory {
         let worker_cancelled = cancelled.clone();
         let core = self.core.clone();
         let peer = self.peer.clone();
-        let device = self.device.id.clone();
+        let target = self.target.clone();
         let worker = std::thread::Builder::new()
             .name("shelllf-lan-terminal".into())
             .spawn(move || {
-                core.stream_device(
-                    &peer,
-                    &device,
-                    size,
-                    received,
-                    &worker_cancelled,
-                    &mut |event| {
-                        let event = match event {
-                            DeviceEvent::Started => TerminalTransportEvent::Started,
-                            DeviceEvent::Output(bytes) => TerminalTransportEvent::Output(bytes),
-                            DeviceEvent::Closed => TerminalTransportEvent::Exited {
-                                code: 0,
-                                signal: None,
-                            },
-                        };
-                        if send_event(&events, event) {
-                            Ok(())
-                        } else {
-                            Err(io::ErrorKind::BrokenPipe.into())
+                let mut forward = |event| {
+                    let event = match event {
+                        DeviceEvent::Started => TerminalTransportEvent::Started,
+                        DeviceEvent::Output(bytes) => TerminalTransportEvent::Output(bytes),
+                        DeviceEvent::Closed => TerminalTransportEvent::Exited {
+                            code: 0,
+                            signal: None,
+                        },
+                        DeviceEvent::Exited { code, signal } => {
+                            TerminalTransportEvent::Exited { code, signal }
                         }
-                    },
-                )
+                    };
+                    if send_event(&events, event) {
+                        Ok(())
+                    } else {
+                        Err(io::ErrorKind::BrokenPipe.into())
+                    }
+                };
+                match target {
+                    TerminalTarget::Device(device) => core.stream_device(
+                        &peer,
+                        &device.id,
+                        size,
+                        received,
+                        &worker_cancelled,
+                        &mut forward,
+                    ),
+                    TerminalTarget::Ssh(host) => core.stream_host(
+                        &peer,
+                        &host.id,
+                        size,
+                        received,
+                        &worker_cancelled,
+                        &mut forward,
+                    ),
+                }
             })?;
         let mut shutdown = false;
         let result = (|| -> Result<()> {
@@ -108,8 +142,7 @@ impl TerminalTransport for DeviceTerminalFactory {
                             "device_input_backpressure"
                         );
                     }
-                    Ok(TerminalTransportCommand::SendBreak)
-                        if self.device.kind == DeviceKind::Serial =>
+                    Ok(TerminalTransportCommand::SendBreak) if matches!(&self.target, TerminalTarget::Device(device) if device.kind == DeviceKind::Serial) =>
                     {
                         ensure!(
                             input.try_send(DeviceInput::Break).is_ok(),
@@ -145,8 +178,15 @@ impl TerminalTransport for DeviceTerminalFactory {
         if shutdown {
             return Ok(());
         }
-        result
-            .and(finished)
-            .map_err(|error| anyhow::anyhow!(super::describe_error(&error)))
+        result.and(finished).map_err(|error| {
+            let error = if matches!(&self.target, TerminalTarget::Ssh(_))
+                && error.to_string().contains("device_request_refused")
+            {
+                anyhow::anyhow!("shared_host_terminal_unavailable")
+            } else {
+                error
+            };
+            anyhow::anyhow!(super::describe_error(&error))
+        })
     }
 }

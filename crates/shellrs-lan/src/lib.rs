@@ -39,6 +39,7 @@ pub use transport::{Network, RemoteRequest, Response};
 
 pub const TCP_PORT: u16 = 45838;
 pub const DISCOVERY_PORT: u16 = 45837;
+pub const MIN_PAIRING_PASSWORD_CHARS: usize = 6;
 pub const MAX_COMMAND: usize = 16 * 1024;
 pub const MAX_OUTPUT: usize = 1024 * 1024;
 const MAX_PEERS: usize = 64;
@@ -82,6 +83,19 @@ impl SharedHost {
 
 pub trait Executor: Send + Sync + 'static {
     fn hosts(&self) -> Vec<SharedHost>;
+    fn has_host(&self, host: &str) -> bool {
+        self.hosts().iter().any(|item| item.id == host)
+    }
+    fn open_terminal(
+        &self,
+        _host: &str,
+        _size: DeviceSize,
+        _commands: tokio::sync::mpsc::Receiver<DeviceInput>,
+        _events: tokio::sync::mpsc::Sender<DeviceEvent>,
+        _cancelled: &AtomicBool,
+    ) -> Result<()> {
+        anyhow::bail!("shared_host_terminal_unavailable")
+    }
     fn execute(
         &self,
         host: &str,
@@ -350,6 +364,7 @@ impl Core {
         }
         self.persist(&configuration)?;
         state.configuration = configuration;
+        self.invalidate_disallowed_devices(&state.configuration);
         Ok(())
     }
 
@@ -524,6 +539,7 @@ impl Core {
         grant.execute = execute;
         self.persist(&configuration)?;
         state.configuration = configuration;
+        self.invalidate_disallowed_devices(&state.configuration);
         Ok(())
     }
 

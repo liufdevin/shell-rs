@@ -3619,6 +3619,10 @@ impl Workspace {
             return;
         }
         match &action.0 {
+            crate::lan::LanCommand::OpenHost { peer, host } => {
+                self.open_lan_host(peer, host, window, cx);
+                return;
+            }
             crate::lan::LanCommand::ManageAdb { peer, device } => {
                 self.open_lan_adb(peer, device, false, window, cx);
                 return;
@@ -4129,5 +4133,43 @@ impl Workspace {
                     .map(|layer| deferred(layer).with_priority(NOTIFICATION_PRIORITY)),
             )
             .into_any_element()
+    }
+
+    fn open_lan_host(
+        &mut self,
+        peer: &str,
+        host: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some((core, target, owner)) = self.lan.read(cx).host_target(peer, host) else {
+            window.push_notification(Notification::error(t!("lan.ssh_refresh_first")), cx);
+            return;
+        };
+        let title = format!("LAN · {owner} · SSH · {}", target.name);
+        let factory: SharedTerminalTransportFactory = Arc::new(
+            crate::lan::DeviceTerminalFactory::ssh(core, peer.to_owned(), target),
+        );
+        let id = LocalTerminalId(self.next_local_terminal_id);
+        self.next_local_terminal_id += 1;
+        let name = Some(SavedName {
+            name: title.into(),
+            fixed: true,
+            title: None,
+        });
+        let (panel, subscription) = new_local_terminal_panel(id, factory.clone(), name, window, cx);
+        self._subscriptions.push(subscription);
+        let focus = panel.read(cx).focus_handle(cx);
+        self._subscriptions.push(follow_focus(
+            CenterTab::LocalTerminal(id),
+            &focus,
+            window,
+            cx,
+        ));
+        self.lan_local_factories.insert(id, factory);
+        self.local_terminals.insert(id, panel.clone());
+        self.dock_area.update(cx, |area, cx| {
+            area.add_panel_view(panel_handle(panel), DockPlacement::Center, None, window, cx)
+        });
     }
 }

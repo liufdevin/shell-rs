@@ -4,6 +4,7 @@ mod device_page;
 pub mod firewall;
 mod page;
 mod prompt;
+mod ssh_terminal;
 mod terminal;
 
 use std::collections::BTreeSet;
@@ -69,6 +70,10 @@ pub enum LanCommand {
     OpenDevice {
         peer: String,
         device: String,
+    },
+    OpenHost {
+        peer: String,
+        host: String,
     },
     ManageAdb {
         peer: String,
@@ -215,6 +220,9 @@ impl LanService {
     pub fn permits_execution(&self) -> bool {
         self.core.as_ref().is_some_and(|core| core.allow_execute())
     }
+    pub fn is_remote_execution_allowed(&self) -> bool {
+        self.can_execute
+    }
     pub fn peers(&self) -> Vec<Device> {
         self.core
             .as_ref()
@@ -256,6 +264,7 @@ impl LanService {
             && adapter.update(store)
             && let Some(core) = &self.core
         {
+            core.cancel_unauthorized_devices();
             core.hosts_changed();
         }
     }
@@ -658,6 +667,7 @@ impl LanService {
             | LanCommand::RevokeDevices(_)
             | LanCommand::DisconnectDevice(_)
             | LanCommand::OpenDevice { .. }
+            | LanCommand::OpenHost { .. }
             | LanCommand::ManageAdb { .. }
             | LanCommand::AdbFiles { .. }
             | LanCommand::ManageDevicePermissions(_)
@@ -796,6 +806,24 @@ impl LanService {
             .name;
         Some((core, device, owner))
     }
+
+    pub(crate) fn host_target(
+        &self,
+        peer: &str,
+        host: &str,
+    ) -> Option<(Arc<Core>, SharedHost, String)> {
+        if self.peer.as_deref() != Some(peer) || !self.can_execute {
+            return None;
+        }
+        let host = self.remote.iter().find(|target| target.id == host)?.clone();
+        let core = self.core.clone()?;
+        let owner = core
+            .peers()
+            .into_iter()
+            .find(|target| target.id == peer)?
+            .name;
+        Some((core, host, owner))
+    }
 }
 
 impl Drop for LanService {
@@ -839,7 +867,13 @@ fn test_bind_address(
 pub(super) fn error_text(error: &anyhow::Error) -> String {
     tracing::warn!(error = %format!("{error:#}"), "LAN operation failed");
     let text = error.to_string();
-    if text.contains("blocked_by_device") {
+    if text.contains("shared_host_terminal_unavailable") {
+        t!("lan.ssh_terminal_unavailable").to_string()
+    } else if text.contains("shared_host_shell_refused") {
+        t!("lan.ssh_shell_refused").to_string()
+    } else if text.contains("shared_host_connection_lost") {
+        t!("lan.ssh_connection_lost").to_string()
+    } else if text.contains("blocked_by_device") {
         t!("lan.blocked_by_device").to_string()
     } else if text.contains("invalid_network_interface") {
         t!("lan.invalid_interface").to_string()

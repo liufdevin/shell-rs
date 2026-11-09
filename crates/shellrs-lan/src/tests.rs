@@ -6,6 +6,51 @@ struct FakeExecutor {
     started: Arc<AtomicBool>,
 }
 impl Executor for FakeExecutor {
+    fn open_terminal(
+        &self,
+        _: &str,
+        size: DeviceSize,
+        mut commands: tokio::sync::mpsc::Receiver<DeviceInput>,
+        events: tokio::sync::mpsc::Sender<DeviceEvent>,
+        cancelled: &AtomicBool,
+    ) -> Result<()> {
+        events.blocking_send(DeviceEvent::Started)?;
+        events.blocking_send(DeviceEvent::Output(
+            format!("{}x{}", size.columns, size.rows).into_bytes(),
+        ))?;
+        while !cancelled.load(Ordering::Acquire) {
+            match commands.try_recv() {
+                Ok(DeviceInput::Write(bytes)) if bytes == b"exit7" => {
+                    events.blocking_send(DeviceEvent::Exited {
+                        code: 7,
+                        signal: None,
+                    })?;
+                    return Ok(());
+                }
+                Ok(DeviceInput::Write(bytes)) if bytes == b"flood" => {
+                    for _ in 0..140 {
+                        events.blocking_send(DeviceEvent::Output(vec![b'x'; DEVICE_CHUNK]))?;
+                    }
+                }
+                Ok(DeviceInput::Write(bytes)) => {
+                    events.blocking_send(DeviceEvent::Output(bytes))?
+                }
+                Ok(DeviceInput::Resize(size)) => {
+                    events.blocking_send(DeviceEvent::Output(
+                        format!("{}x{}", size.columns, size.rows).into_bytes(),
+                    ))?;
+                }
+                Ok(DeviceInput::Break) => {}
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
+                    std::thread::sleep(Duration::from_millis(5))
+                }
+                Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => break,
+            }
+        }
+        self.cancelled.store(true, Ordering::Release);
+        Ok(())
+    }
+
     fn hosts(&self) -> Vec<SharedHost> {
         vec![
             SharedHost::new(
@@ -48,6 +93,184 @@ impl Executor for FakeExecutor {
             output(true, b"stderr")?;
         }
         Ok(7)
+    }
+}
+
+struct HostStream {
+    input: std::sync::mpsc::Sender<DeviceInput>,
+    events: std::sync::mpsc::Receiver<DeviceEvent>,
+    worker: std::thread::JoinHandle<Result<()>>,
+}
+
+fn open_host(core: &Arc<Core>, peer: &str, host: &str) -> HostStream {
+    let (input, commands) = std::sync::mpsc::channel();
+    let (events, received) = std::sync::mpsc::channel();
+    let core = core.clone();
+    let peer = peer.to_owned();
+    let host = host.to_owned();
+    let worker = std::thread::spawn(move || {
+        core.stream_host(
+            &peer,
+            &host,
+            DeviceSize::new(90, 25).unwrap(),
+            commands,
+            &AtomicBool::new(false),
+            &mut |event| {
+                events
+                    .send(event)
+                    .map_err(|_| io::ErrorKind::BrokenPipe.into())
+            },
+        )
+    });
+    HostStream {
+        input,
+        events: received,
+        worker,
+    }
+}
+
+fn host_started(stream: &HostStream) {
+    assert_eq!(
+        stream.events.recv_timeout(Duration::from_secs(5)).unwrap(),
+        DeviceEvent::Started
+    );
+    assert_eq!(
+        stream.events.recv_timeout(Duration::from_secs(5)).unwrap(),
+        DeviceEvent::Output(b"90x25".to_vec())
+    );
+}
+
+#[test]
+fn ssh_terminal_streams_support_binary_input_resize_large_output_exit_and_multiple_tabs() {
+    let (_a_directory, a, _, _) = fixture("A");
+    let (_b_directory, b, _, _) = fixture("B");
+    let _a_network = running(&a);
+    let b_network = running(&b);
+    b.set_sharing(BTreeSet::from(["shared".into()]), true)
+        .unwrap();
+    let target = a.inspect(b_network.tcp_address).unwrap();
+    a.pair_password(target.clone(), "correct horse battery")
+        .unwrap();
+    assert!(!b.device_access_enabled());
+    let stream = open_host(&a, b.id(), "shared");
+    host_started(&stream);
+    let second = open_host(&a, b.id(), "shared");
+    host_started(&second);
+    stream
+        .input
+        .send(DeviceInput::Write(vec![0, 255, 3, 13, 10]))
+        .unwrap();
+    assert_eq!(
+        stream.events.recv_timeout(Duration::from_secs(5)).unwrap(),
+        DeviceEvent::Output(vec![0, 255, 3, 13, 10])
+    );
+    stream
+        .input
+        .send(DeviceInput::Resize(DeviceSize::new(130, 42).unwrap()))
+        .unwrap();
+    assert_eq!(
+        stream.events.recv_timeout(Duration::from_secs(5)).unwrap(),
+        DeviceEvent::Output(b"130x42".to_vec())
+    );
+    stream
+        .input
+        .send(DeviceInput::Write(b"flood".to_vec()))
+        .unwrap();
+    let mut bytes = 0;
+    while bytes < 140 * DEVICE_CHUNK {
+        let DeviceEvent::Output(output) =
+            stream.events.recv_timeout(Duration::from_secs(5)).unwrap()
+        else {
+            panic!("missing terminal output")
+        };
+        bytes += output.len();
+    }
+    assert!(bytes > MAX_OUTPUT);
+    stream
+        .input
+        .send(DeviceInput::Write(b"exit7".to_vec()))
+        .unwrap();
+    assert_eq!(
+        stream.events.recv_timeout(Duration::from_secs(5)).unwrap(),
+        DeviceEvent::Exited {
+            code: 7,
+            signal: None
+        }
+    );
+    stream.worker.join().unwrap().unwrap();
+    b.disconnect_device(
+        b.active_devices()
+            .iter()
+            .map(|active| active.id)
+            .max()
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(second.worker.join().unwrap().is_err());
+    assert!(eventually(|| b.active_devices().is_empty()));
+    assert!(
+        b.audit()
+            .iter()
+            .any(|entry| entry.outcome == "ssh_terminal")
+    );
+    assert!(
+        b.audit()
+            .iter()
+            .all(|entry| !entry.outcome.contains("exit7"))
+    );
+}
+
+#[test]
+fn ssh_terminals_enforce_host_and_execution_permissions_and_revoke_silent_streams() {
+    let (_a_directory, a, _, _) = fixture("A");
+    let (_b_directory, b, _, _) = fixture("B");
+    let _a_network = running(&a);
+    let b_network = running(&b);
+    b.set_sharing(BTreeSet::from(["shared".into()]), false)
+        .unwrap();
+    let target = a.inspect(b_network.tcp_address).unwrap();
+    a.pair_password(target.clone(), "correct horse battery")
+        .unwrap();
+    assert!(
+        open_host(&a, b.id(), "shared")
+            .worker
+            .join()
+            .unwrap()
+            .is_err()
+    );
+    b.set_sharing(BTreeSet::from(["shared".into()]), true)
+        .unwrap();
+    b.set_execution_permission(a.id(), true).unwrap();
+    assert!(
+        open_host(&a, b.id(), "private")
+            .worker
+            .join()
+            .unwrap()
+            .is_err()
+    );
+    for action in 0..6 {
+        b.set_locked(false);
+        b.set_sharing(BTreeSet::from(["shared".into()]), true)
+            .unwrap();
+        a.pair_password(target.clone(), "correct horse battery")
+            .unwrap();
+        let stream = open_host(&a, b.id(), "shared");
+        host_started(&stream);
+        match action {
+            0 => {
+                b.set_execution_permission(a.id(), false).unwrap();
+                b.set_execution_permission(a.id(), true).unwrap();
+            }
+            1 => b.set_sharing(BTreeSet::new(), true).unwrap(),
+            2 => b
+                .set_sharing(BTreeSet::from(["shared".into()]), false)
+                .unwrap(),
+            3 => b.revoke(a.id()).unwrap(),
+            4 => b.set_locked(true),
+            _ => b.set_password("a changed strong password").unwrap(),
+        }
+        assert!(stream.worker.join().unwrap().is_err());
+        assert!(eventually(|| b.active_devices().is_empty()));
     }
 }
 
@@ -104,6 +327,34 @@ fn enabling_requires_a_password_and_verifiers_do_not_store_plaintext() {
     let reloaded = Core::load(directory.path(), "B", other.executor.clone()).unwrap();
     assert_eq!(core.id(), reloaded.id());
     assert!(reloaded.has_password());
+}
+
+#[test]
+fn six_character_password_pairs_over_encrypted_connections_and_survives_reload() {
+    let (_a_directory, a, _, _) = fixture("A");
+    let (b_directory, b, _, _) = fixture("B");
+    assert!(b.set_password("abcde").is_err());
+    a.set_password("local6").unwrap();
+    b.set_password("lan6ok").unwrap();
+    let _a_network = Network::start(a.clone(), std::net::Ipv4Addr::LOCALHOST, 0, 0).unwrap();
+    let b_network = Network::start(b.clone(), std::net::Ipv4Addr::LOCALHOST, 0, 0).unwrap();
+    let target = a.inspect(b_network.tcp_address).unwrap();
+    assert!(a.pair_password(target.clone(), "wrong6").is_err());
+    assert!(b.grants().is_empty());
+    a.pair_password(target, "lan6ok").unwrap();
+    assert_eq!(b.grants()[0].id, a.id());
+    assert!(
+        !std::fs::read_to_string(b_directory.path().join("access.json"))
+            .unwrap()
+            .contains("lan6ok")
+    );
+    drop(b_network);
+    let reloaded = Core::load(b_directory.path(), "B", b.executor.clone()).unwrap();
+    assert_eq!(b.id(), reloaded.id());
+    let network = Network::start(reloaded.clone(), std::net::Ipv4Addr::LOCALHOST, 0, 0).unwrap();
+    a.pair_password(a.inspect(network.tcp_address).unwrap(), "lan6ok")
+        .unwrap();
+    assert_eq!(reloaded.grants()[0].id, a.id());
 }
 
 #[test]

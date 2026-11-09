@@ -35,6 +35,11 @@ pub enum RemoteRequest {
         columns: u16,
         rows: u16,
     },
+    OpenHost {
+        host: String,
+        columns: u16,
+        rows: u16,
+    },
     OpenAdb {
         device: String,
         service: String,
@@ -360,13 +365,18 @@ impl server::Handler for PeerHandler {
                 device,
                 columns,
                 rows,
-            } => Some((device.clone(), *columns, *rows, None)),
+            } => Some((device.clone(), *columns, *rows, None, false)),
+            RemoteRequest::OpenHost {
+                host,
+                columns,
+                rows,
+            } => Some((host.clone(), *columns, *rows, None, true)),
             RemoteRequest::OpenAdb { device, service } => {
-                Some((device.clone(), 80, 24, Some(service.clone())))
+                Some((device.clone(), 80, 24, Some(service.clone()), false))
             }
             _ => None,
         };
-        if let Some((device, columns, rows, service)) = opening {
+        if let Some((device, columns, rows, service, host)) = opening {
             let size = DeviceSize::new(columns, rows).map_err(|error| {
                 russh::Error::IO(io::Error::new(
                     io::ErrorKind::InvalidInput,
@@ -384,6 +394,7 @@ impl server::Handler for PeerHandler {
                     source: self.address.ip(),
                     size,
                     service,
+                    host,
                 },
                 receiver,
                 self.cancel.clone(),
@@ -545,7 +556,9 @@ async fn serve(
                 .await
                 .map_err(|_| anyhow::anyhow!("disconnected"))?;
         }
-        RemoteRequest::OpenDevice { .. } | RemoteRequest::OpenAdb { .. } => {
+        RemoteRequest::OpenDevice { .. }
+        | RemoteRequest::OpenAdb { .. }
+        | RemoteRequest::OpenHost { .. } => {
             bail!("invalid_device_request")
         }
         RemoteRequest::Status => {

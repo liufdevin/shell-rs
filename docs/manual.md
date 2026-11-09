@@ -218,7 +218,7 @@ Click the credentials (key) icon in the title bar and the left sidebar switches 
 
 ## Sync
 
-Use “Settings › LAN cooperation” for discovery, password/approval pairing and interactive serial/ADB terminals. Remote ADB devices also support controller-side mirroring/control, streamed APK installation and a dedicated dual-pane file browser. The owning computer configures and whitelists its devices; password pairing grants that whitelist, with per-computer permissions, live revocation and metadata-only audit logs. Serial devices do not need an SSH server. The older SSH command-sharing route remains available. This is separate from data sync; see [LAN cooperation](lan.zh.md) for setup and limitations.
+Use “Settings › LAN cooperation” for discovery, password/approval pairing and interactive SSH/serial/ADB terminals. Remote ADB devices also support controller-side mirroring/control, streamed APK installation and a dedicated dual-pane file browser. Shared SSH hosts use independent SSH permissions; credentials and host-key verification stay on the sharing computer. SSH terminals support multiple tabs, resizing and reconnecting, but not shared SFTP, monitoring sidebars or port forwarding. The owning computer configures and whitelists its devices, with per-computer permissions, live revocation and metadata-only audit logs. Serial devices do not need an SSH server. This is separate from data sync; see [LAN cooperation](lan.zh.md) for setup and limitations.
 
 The settings category formerly called “Cloud sync” is now “Sync”, with host migration alongside cross-device sync.
 

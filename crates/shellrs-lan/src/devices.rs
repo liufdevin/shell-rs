@@ -140,6 +140,7 @@ pub enum DeviceInput {
 pub enum DeviceEvent {
     Started,
     Output(Vec<u8>),
+    Exited { code: u32, signal: Option<String> },
     Closed,
 }
 
@@ -204,6 +205,7 @@ pub(super) struct DeviceLease {
     pub snapshot: ActiveDevice,
     pub resource: String,
     pub cancelled: Arc<AtomicBool>,
+    pub host: bool,
 }
 
 impl Core {
@@ -468,10 +470,10 @@ impl Core {
             .lock()
             .unwrap()
             .values()
-            .map(|lease| (lease.snapshot.clone(), lease.cancelled.clone()))
+            .map(|lease| (lease.snapshot.clone(), lease.cancelled.clone(), lease.host))
             .collect();
-        for (snapshot, cancelled) in snapshots {
-            if !self.device_authorized(&snapshot.peer, &snapshot.device, snapshot.source) {
+        for (snapshot, cancelled, host) in snapshots {
+            if !self.stream_authorized(&snapshot.peer, &snapshot.device, snapshot.source, host) {
                 cancelled.store(true, Ordering::Release);
             }
         }
@@ -492,7 +494,11 @@ impl Core {
         self.device_generation.fetch_add(1, Ordering::AcqRel);
         for lease in self.device_leases.lock().unwrap().values() {
             let target = &lease.snapshot;
-            if !configuration.device_access_enabled
+            if lease.host {
+                if !host_permitted(configuration, &target.peer, &target.device, target.source) {
+                    lease.cancelled.store(true, Ordering::Release);
+                }
+            } else if !configuration.device_access_enabled
                 || configuration.blocked_ips.contains(&target.source)
                 || !configuration.grants.contains_key(&target.peer)
                 || !configuration.shared_devices.contains(&target.device)
@@ -506,25 +512,54 @@ impl Core {
         }
     }
 
-    pub(super) fn acquire_device(
+    pub(super) fn stream_authorized(
+        &self,
+        peer: &str,
+        target: &str,
+        source: IpAddr,
+        host: bool,
+    ) -> bool {
+        if !host {
+            return self.device_authorized(peer, target, source);
+        }
+        self.is_active()
+            && host_permitted(
+                &self.state.lock().unwrap().configuration,
+                peer,
+                target,
+                source,
+            )
+            && self.executor.has_host(target)
+    }
+
+    pub(super) fn acquire_stream(
         &self,
         peer: &str,
         device: &str,
         source: IpAddr,
         cancelled: Arc<AtomicBool>,
+        host: bool,
     ) -> Result<u64> {
         let generation = self.device_generation.load(Ordering::Acquire);
         ensure!(
-            self.device_authorized(peer, device, source),
+            self.stream_authorized(peer, device, source, host),
             "device_control_not_authorized"
         );
-        let resource = self
-            .device_provider
-            .read()
-            .unwrap()
-            .resource(device)
-            .ok_or_else(|| anyhow::anyhow!("device_unavailable"))?;
-        let mut entry = AuditEntry::new(AuditAction::Open, peer, device, "requested");
+        let resource = if host {
+            format!("ssh:{device}")
+        } else {
+            self.device_provider
+                .read()
+                .unwrap()
+                .resource(device)
+                .ok_or_else(|| anyhow::anyhow!("device_unavailable"))?
+        };
+        let mut entry = AuditEntry::new(
+            AuditAction::Open,
+            peer,
+            device,
+            if host { "ssh_terminal" } else { "requested" },
+        );
         entry.source = Some(source);
         self.record_device_audit(entry)?;
         let mut leases = self.device_leases.lock().unwrap();
@@ -534,7 +569,7 @@ impl Core {
         );
         ensure!(leases.len() < 16, "too_many_device_streams");
         ensure!(
-            resource.starts_with("adb:")
+            host || resource.starts_with("adb:")
                 || !leases.values().any(|lease| lease.resource == resource),
             "device_busy"
         );
@@ -550,6 +585,7 @@ impl Core {
                 },
                 resource,
                 cancelled,
+                host,
             },
         );
         Ok(id)
@@ -575,6 +611,23 @@ impl Core {
             .find(|target| target.id == peer)
             .ok_or_else(|| anyhow::anyhow!("device is not paired"))?;
         super::transport::stream_device(self, &target, device, size, commands, cancelled, events)
+    }
+
+    pub fn stream_host(
+        &self,
+        peer: &str,
+        host: &str,
+        size: DeviceSize,
+        commands: std::sync::mpsc::Receiver<DeviceInput>,
+        cancelled: &AtomicBool,
+        events: &mut dyn FnMut(DeviceEvent) -> std::io::Result<()>,
+    ) -> Result<()> {
+        let target = self
+            .peers()
+            .into_iter()
+            .find(|target| target.id == peer)
+            .ok_or_else(|| anyhow::anyhow!("device is not paired"))?;
+        crate::device_transport::stream_host(self, &target, host, size, commands, cancelled, events)
     }
 
     pub fn stream_adb(
@@ -605,6 +658,21 @@ impl Core {
             .peers
             .contains_key(peer)
     }
+}
+
+fn host_permitted(
+    configuration: &crate::Configuration,
+    peer: &str,
+    host: &str,
+    source: IpAddr,
+) -> bool {
+    !configuration.blocked_ips.contains(&source)
+        && configuration.allow_execute
+        && configuration.shared_hosts.contains(host)
+        && configuration
+            .grants
+            .get(peer)
+            .is_some_and(|grant| grant.execute && grant.hosts.contains(host))
 }
 
 pub fn validate_adb_service(service: &str) -> Result<()> {

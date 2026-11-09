@@ -4,8 +4,8 @@ settings.category.lan:
   zh-CN: 局域网协作
   en: LAN cooperation
 lan.description:
-  zh-CN: 在局域网内配对两台 ShellLF，像本机终端一样使用对方白名单中的串口和 ADB 设备。设备在对方电脑上打开，数据经过加密传输。默认关闭，仅用于局域网内协作。
-  en: Pair two ShellLF computers on your LAN and use whitelisted serial ports and ADB devices in interactive terminal tabs. Devices open on the sharing computer and traffic is encrypted. Off by default; local networks only.
+  zh-CN: 在局域网内配对两台 ShellLF，使用对方授权共享的 SSH 主机、串口和 ADB 设备。连接在对方电脑上建立，数据经过加密传输。默认关闭，仅用于局域网内协作。
+  en: Pair two ShellLF computers on your LAN and use authorized shared SSH hosts, serial ports and ADB devices. Connections open on the sharing computer and traffic is encrypted. Off by default; local networks only.
 lan.network_help:
   zh-CN: 两端都需开启协作。使用 TCP 45838 加密连接、UDP 45837 发现设备；请允许 ShellLF 的私有网络入站连接。Windows 可使用下方按钮检查或配置防火墙。串口参数在被控电脑的主机配置中设置。
   en: Enable cooperation on both computers. Encrypted connections use TCP 45838; discovery uses UDP 45837. Allow ShellLF inbound connections on private networks. On Windows, use the buttons below to check or configure the firewall. Configure serial parameters in the sharing computer’s saved hosts.
@@ -115,14 +115,14 @@ lan.unavailable:
   zh-CN: 局域网协作尚未就绪、未开启或应用已锁定
   en: LAN cooperation is not ready, disabled or the app is locked
 lan.password_help:
-  zh-CN: 配对密码（至少 12 个字符）。开启前必须设置。更换密码会撤销所有已授予的远程访问权限。
-  en: Pairing password (at least 12 characters). Required before enabling. Changing it revokes all granted remote access.
+  zh-CN: 配对密码（至少 6 个字符）。开启前必须设置。更换密码会撤销所有已授予的远程访问权限。
+  en: Pairing password (at least 6 characters). Required before enabling. Changing it revokes all granted remote access.
 lan.repeat_password:
   zh-CN: 再次输入配对密码
   en: Repeat pairing password
 lan.password_mismatch:
-  zh-CN: 两次密码必须一致，且至少为 12 个字符
-  en: Passwords must match and contain at least 12 characters
+  zh-CN: 两次密码必须一致，且至少为 6 个字符
+  en: Passwords must match and contain at least 6 characters
 lan.save_password:
   zh-CN: 设置配对密码
   en: Set pairing password
@@ -133,11 +133,29 @@ lan.shared_hosts:
   zh-CN: 共享给配对设备的 SSH 主机
   en: SSH hosts shared with paired devices
 lan.allow_execution:
-  zh-CN: 允许配对设备执行命令
-  en: Allow paired devices to execute commands
+  zh-CN: 允许配对设备使用 SSH 终端和执行命令
+  en: Allow paired devices to use SSH terminals and commands
 lan.execution_help:
-  zh-CN: 默认仅查看。开启后，知道配对密码的设备可在选中的主机上按其登录账号的权限执行命令；也可逐台授予执行权限。取消共享、撤销授权或锁定应用会中止相关执行连接。
-  en: View-only by default. When enabled, devices knowing your pairing password can execute commands on selected hosts with their login accounts’ permissions. Execution can also be granted per device. Unsharing, revoking access or locking the app aborts affected execution connections.
+  zh-CN: 默认仅查看。开启后，获准的配对电脑可按主机登录账号的权限使用交互 SSH 终端和执行命令；密码配对会取得当时允许的权限，也可逐台授予。凭据和主机密钥校验留在本机，取消共享、撤销授权或锁定应用会断开相关终端。
+  en: View-only by default. Authorized paired computers may use interactive SSH terminals and commands with the host account’s permissions. Password pairing grants currently allowed permissions; access can also be granted per computer. Credentials and host-key verification stay here. Unsharing, revoking access or locking the app disconnects affected terminals.
+lan.open_ssh_terminal:
+  zh-CN: 打开 SSH 终端
+  en: Open SSH terminal
+lan.ssh_terminal_help:
+  zh-CN: SSH 终端支持持续输入输出、Ctrl+C、终端尺寸变化和重连。连接由对方电脑建立，请先在对方保存凭据并确认主机密钥。本入口暂不提供 SFTP、监控侧栏或端口转发，也不会把主机复制到本机数据库。
+  en: SSH terminals support interactive input/output, Ctrl+C, resizing and reconnecting. The sharing computer connects using its saved credentials and verified host key. SFTP, monitoring sidebars and port forwarding are not provided here; hosts are not copied into this computer’s database.
+lan.ssh_refresh_first:
+  zh-CN: 请先刷新对方的共享 SSH 主机列表，并确认已获得 SSH 终端使用权限
+  en: Refresh the shared SSH host list and verify that you have SSH terminal permission
+lan.ssh_terminal_unavailable:
+  zh-CN: 对方程序尚不支持共享 SSH 交互终端，请将两端升级到新版后重试
+  en: The sharing app does not support interactive shared SSH terminals. Update both computers and retry.
+lan.ssh_shell_refused:
+  zh-CN: SSH 主机拒绝了交互终端请求，请在被控电脑检查该账号的终端权限
+  en: The SSH host refused an interactive terminal. Check the account’s terminal permissions on the sharing computer.
+lan.ssh_connection_lost:
+  zh-CN: 共享 SSH 主机连接已中断，可核实网络和权限后重新连接
+  en: The shared SSH connection was lost. Check the network and permissions, then reconnect.
 lan.connect:
   zh-CN: 连接另一台电脑
   en: Connect to another computer
@@ -172,8 +190,8 @@ lan.waiting:
   zh-CN: 已发送配对请求，等待对方接受或拒绝
   en: Pairing requested; waiting for the other computer to accept or reject
 lan.paired:
-  zh-CN: 已配对，可查看对方共享的主机
-  en: Paired; you can view the shared hosts
+  zh-CN: 已配对，可查看对方授权共享的主机和设备
+  en: Paired; you can view authorized shared hosts and devices
 lan.rejected:
   zh-CN: 对方电脑已拒绝本次配对请求
   en: The other computer rejected this pairing request
@@ -208,8 +226,8 @@ lan.revoke:
   zh-CN: 撤销授权
   en: Revoke access
 lan.grant_execute:
-  zh-CN: 此设备可执行命令
-  en: This device may execute commands
+  zh-CN: 此电脑可使用 SSH 终端和执行命令
+  en: This computer may use SSH terminals and commands
 lan.blacklist:
   zh-CN: IP 黑名单
   en: IP blacklist
@@ -220,8 +238,8 @@ lan.pair_request_title:
   zh-CN: 是否接受局域网配对？
   en: Accept LAN pairing?
 lan.pair_request_detail:
-  zh-CN: "设备「%{name}」（来源 IP：%{ip}）请求访问本机共享的 SSH 主机。"
-  en: "Device “%{name}” (source IP: %{ip}) requests access to this computer’s shared SSH hosts."
+  zh-CN: "设备「%{name}」（来源 IP：%{ip}）请求访问本机授权共享的主机和设备。"
+  en: "Device “%{name}” (source IP: %{ip}) requests access to this computer’s authorized shared hosts and devices."
 lan.pair_permission:
   zh-CN: 核对两端显示的配对码。“接受，仅查看”不授予串口或 ADB 控制权；“接受并允许设备控制”授予当前白名单设备的交互访问。密码配对成功则自动取得当前白名单设备权限。
   en: Compare the verification codes on both computers. View-only acceptance grants no serial or ADB control. Accepting device control grants interactive access to the current whitelist. Successful password pairing grants the current whitelisted device permissions automatically.
@@ -280,14 +298,14 @@ lan.devices.refresh_first:
   zh-CN: 请先刷新对方的共享设备列表，再打开设备。
   en: Refresh the remote device list before opening a device.
 lan.devices.active:
-  zh-CN: 本机正在共享的设备连接
-  en: Active shared-device connections on this computer
+  zh-CN: 本机正在共享的连接
+  en: Active shared connections on this computer
 lan.devices.disconnect:
   zh-CN: 立即断开
   en: Disconnect now
 lan.devices.audit:
-  zh-CN: 设备操作日志（最近 50 条）
-  en: Device activity log (latest 50)
+  zh-CN: 共享操作日志（最近 50 条）
+  en: Sharing activity log (latest 50)
 lan.devices.audit_help:
   zh-CN: 本机持久保留最近 500 条连接、拒绝、权限变更和 Break 记录，以及连接收发字节数。不记录逐键输入、终端内容或密码。完整记录位于数据目录的 lan/device-audit.json。
   en: The latest 500 connection, denial, permission-change and Break records and connection byte counts are saved locally. Keystrokes, terminal contents and passwords are not recorded. The complete log is in lan/device-audit.json under the data directory.
