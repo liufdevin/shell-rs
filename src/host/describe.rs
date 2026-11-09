@@ -183,6 +183,7 @@ impl ErrorMessage for KeyFileError {
 /// That `change` is not in the database, which said `error`.
 fn not_saved(change: Change, error: &str) -> SharedString {
     match change {
+        Change::TimestampPreference => t!("utilities.persist_failed", error = error),
         Change::NewHost => t!("host.store.not_saved.new_host", error = error),
         Change::SaveHost => t!("host.store.not_saved.save_host", error = error),
         Change::DeleteHost => t!("host.store.not_saved.delete_host", error = error),

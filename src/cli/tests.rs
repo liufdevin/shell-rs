@@ -136,7 +136,7 @@ fn store() -> HostStore {
 }
 
 #[test]
-fn a_serial_host_is_listed_but_runs_nothing() {
+fn a_serial_host_requires_terminal_mode_and_linux_shell_opt_in() {
     let dir = tempfile::tempdir().unwrap();
     let socket = cli_endpoint(dir.path());
     let server = CliServer::start(socket.clone(), Arc::new(FakeBackend::default())).unwrap();
@@ -161,21 +161,72 @@ fn a_serial_host_is_listed_but_runs_nothing() {
     assert_eq!(code, 0);
     assert!(stdout.contains("COM3 · 115200 8N1"), "{stdout}");
 
-    for request in [
-        Request::Exec {
-            host: id.clone(),
-            command: "true".into(),
-        },
-        Request::ExecInTerminal {
-            host: id.clone(),
-            command: "true".into(),
-        },
+    for (request, expected) in [
+        (
+            Request::Exec {
+                host: id.clone(),
+                command: "true".into(),
+            },
+            "[not_ssh]",
+        ),
+        (
+            Request::ExecInTerminal {
+                host: id.clone(),
+                command: "true".into(),
+            },
+            "[bad_request]",
+        ),
     ] {
         let (code, _, stderr) = run(&socket, request, false);
         assert_eq!(code, 255);
         let stderr = String::from_utf8(stderr).unwrap();
-        assert!(stderr.contains("[not_ssh] console 是串口主机"), "{stderr}");
+        assert!(stderr.contains(expected), "{stderr}");
     }
+}
+
+#[test]
+fn serial_terminal_commands_and_connect_use_the_app_without_an_ssh_backend() {
+    let dir = tempfile::tempdir().unwrap();
+    let socket = cli_endpoint(dir.path());
+    let backend = Arc::new(FakeBackend::default());
+    let server = CliServer::start(socket.clone(), backend.clone()).unwrap();
+    let mut store = HostStore::empty();
+    let settings = SerialSettings {
+        linux_shell: true,
+        ..Default::default()
+    };
+    let host = store.insert_unnotified(HostDraft::serial("console", "COM3", settings, None));
+    let id = store.host(host).unwrap().public_id.to_string();
+    server.set_hosts(&store);
+    server.set_enabled(true);
+    let request = Request::ExecInTerminal {
+        host: id.clone(),
+        command: "systemctl is-active bluetooth".into(),
+    };
+    let address = socket.clone();
+    let command = std::thread::spawn(move || run_exec_json(&address, request));
+    let (host, handle) = take_run(&server);
+    assert_eq!(host, id);
+    let terminal = answer_run(handle, "/bin/bash", "active\r\n", 0);
+    assert_eq!(command.join().unwrap().0, 0);
+    terminal.join().unwrap();
+    let address = socket;
+    let requested = id.clone();
+    let connect =
+        std::thread::spawn(move || run(&address, Request::Connect { host: requested }, true));
+    let (change, reply) = take_change(&server);
+    assert!(matches!(change, CliChange::ConnectHost { host } if host == id));
+    reply.send(Ok(Reply::Connected {
+        host: id.clone(),
+        terminal: 1,
+    }));
+    let (code, output, _) = connect.join().unwrap();
+    assert_eq!(code, 0);
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&output).unwrap()["state"],
+        "connected"
+    );
+    assert!(backend.calls.lock().unwrap().is_empty());
 }
 
 struct Fixture {
@@ -646,6 +697,9 @@ fn the_socket_belongs_to_one_app_at_a_time_and_goes_with_it() {
 #[test]
 fn exec_takes_its_command_as_one_argument_or_from_stdin() {
     let parse = |args: &[&str]| Cli::try_parse_from(args).map(|cli| cli.command);
+    assert!(
+        matches!(parse(&["shelllf-cli", "connect", "SERIAL", "--json"]), Ok(Command::Connect { id, json: true }) if id == "SERIAL")
+    );
     assert!(matches!(
         parse(&["shellrs", "exec", "ID", "df -h | head"]),
         Ok(Command::Exec { command: Some(command), stdin: false, .. }) if command == "df -h | head"

@@ -16,6 +16,10 @@ pub enum TerminalTransportCommand {
     /// A file transfer's bytes (ZMODEM): written as they are, which for
     /// a Telnet terminal means past its local line editing.
     WriteData(Vec<u8>),
+    SetSerialBaud {
+        baud: u32,
+        reply: mpsc::Sender<Result<(), String>>,
+    },
     Resize(TerminalSize),
     PromptReply {
         request_id: u64,
@@ -99,6 +103,9 @@ impl TerminalChannels {
 impl std::fmt::Debug for TerminalTransportCommand {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::SetSerialBaud { baud, .. } => {
+                formatter.debug_tuple("SetSerialBaud").field(baud).finish()
+            }
             Self::Write(bytes) => formatter.debug_tuple("Write").field(&bytes.len()).finish(),
             Self::WriteData(bytes) => formatter
                 .debug_tuple("WriteData")

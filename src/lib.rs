@@ -43,6 +43,7 @@ pub mod telnet;
 pub mod terminal;
 pub mod tmux;
 pub mod update;
+pub mod utilities;
 pub mod workspace;
 
 #[cfg(test)]

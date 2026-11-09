@@ -73,6 +73,12 @@ shelllf-cli sync <host-id> ./dist /opt/app --delete
 
 `sync` copies what the local folder holds into the remote folder, making the remote folder when it is not there (its parent must exist). Files with the same size and modification time are skipped, so running it again copies only what changed. `--delete` first removes what is in the remote folder and not in the local one. It only goes from this machine to the host.
 
+## Serial Hosts
+
+Use `shelllf-cli connect <host-id> --json` to open or reuse the host’s terminal in ShellLF. A disconnected tab is reconnected instead of opening a competing serial port. Success means the port transport is connected, not that the device is logged in. Port-busy errors are reported without forcing another program off the port.
+
+For serial command execution, enable the host’s Linux shell mode, log in to bash/dash/busybox ash in its terminal and turn off HEX receive/send. Then use `shelllf-cli exec <host-id> --terminal '<command>'` (or JSON with `"terminal":true`). The existing terminal connection is used; Ctrl-C is sent first. Do not use this on a bootloader, binary protocol or a terminal the user has not handed to you. File transfers via CLI remain SSH-only. Both the desktop and CLI must be updated for this feature.
+
 ## Manage Hosts and Credentials
 
 ```bash
@@ -99,7 +105,7 @@ EOF
 - `group` is a path such as `生产/web`; groups that are not there are made.
 - A host logs in with `"auth": "password"` (its own password), `"credential"` (a saved credential, by its ID; the host takes the credential's user) or `"no_password"` (the SSH agent and the default keys).
 - `route` is `{"type": "direct"}`, `{"type": "jump", "hosts": ["<host-id>", ...]}` or `{"type": "proxy", "kind": "http", "host": "...", "port": 3128}`.
-- A host listed with `"protocol": "serial"` is a serial port of the user's computer, opened in a ShellRS terminal; it has `serial` (`device`, `baud`, `data_bits`, `parity`, `stop_bits`, `flow_control`) instead of `host`, `port`, `user`, `auth` and `route`. Create one with `{"name": "console", "serial": {"device": "/dev/ttyUSB0", "baud": 115200}}`. `exec`, `upload`, `download` and `sync` don't work on serial hosts.
+- A host listed with `"protocol": "serial"` is a serial port of the user's computer, opened in a ShellRS terminal; it has `serial` (`device`, `baud`, `data_bits`, `parity`, `stop_bits`, `flow_control`) instead of `host`, `port`, `user`, `auth` and `route`. Create one with `{"name": "console", "serial": {"device": "/dev/ttyUSB0", "baud": 115200}}`. Use `connect` and `exec --terminal` as described above. Ordinary SSH `exec`, `upload`, `download` and `sync` remain unavailable for serial hosts.
 - A host listed with `"protocol": "telnet"` is a Telnet server (switches, console servers, embedded devices), opened in a ShellRS terminal. It has `host`, `port` (23 by default), `route` and `telnet` (`user_prompt`, `password_prompt`); its `auth` is its automatic login: `password` types `user` and `password` at the device's prompts, `credential` a password credential's, `no_password` none. Create one with `{"name": "switch", "protocol": "telnet", "host": "10.0.0.5", "auth": "password", "user": "admin", "password": "…"}`. `exec`, `upload`, `download` and `sync` don't work on Telnet hosts either.
 - A credential is `"kind": "password"`, `"key"` (with `key_path`, a key file on this machine, or `private_key`, the key's text for ShellRS to keep) or `"agent"`.
 - `hosts update` can change `protocol`: the host keeps its name, group and notes (between SSH and Telnet, its address and route too) and takes the new protocol's defaults for everything else, so give its new fields in the same request (a serial host's `serial.device`). An SSH host that other hosts use as a jump host or port forwards go via stays SSH. Tabs already open in ShellRS keep the settings they opened with.

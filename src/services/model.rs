@@ -265,6 +265,7 @@ pub enum ServiceRow {
 /// One reading of a host's services, by name.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ServiceTable {
+    unreadable: u32,
     services: Vec<Service>,
     /// 「systemd 249」.
     version: Option<String>,
@@ -277,6 +278,7 @@ impl ServiceTable {
         services.sort_by(|a, b| a.name.cmp(&b.name));
         services.dedup_by(|a, b| a.name == b.name);
         Self {
+            unreadable: 0,
             services,
             version,
             state,
@@ -285,6 +287,11 @@ impl ServiceTable {
 
     pub fn services(&self) -> &[Service] {
         &self.services
+    }
+
+    pub fn with_unreadable(mut self, count: u32) -> Self {
+        self.unreadable = count;
+        self
     }
 
     pub fn service(&self, name: &str) -> Option<&Service> {
@@ -298,6 +305,8 @@ impl ServiceTable {
             self.state
                 .as_deref()
                 .map(|state| system_state_label(state).into()),
+            (self.unreadable > 0)
+                .then(|| t!("services.panel.unreadable", count = self.unreadable).to_string()),
         ]
         .into_iter()
         .flatten()

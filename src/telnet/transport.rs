@@ -235,6 +235,7 @@ impl TelnetTransport {
                     }
                     Some(
                         TerminalTransportCommand::SerialTransfer(_)
+                        | TerminalTransportCommand::SetSerialBaud { .. }
                         | TerminalTransportCommand::Monitor(_)
                         | TerminalTransportCommand::OpenSftp(_)
                         | TerminalTransportCommand::PromptReply { .. },

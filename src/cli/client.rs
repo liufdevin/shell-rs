@@ -259,6 +259,21 @@ where
                     progress.clear(console.stderr);
                 }
                 match reply {
+                    Reply::Connected { host, terminal } => {
+                        if console.json {
+                            print_json(
+                                &serde_json::json!({"host": host, "terminal": terminal, "state": "connected"}),
+                                console,
+                            )?;
+                        } else {
+                            writeln!(
+                                console.stdout,
+                                "{}",
+                                t!("cli.connected", host = host, terminal = terminal)
+                            )?;
+                        }
+                        return Ok(0);
+                    }
                     Reply::Lan { value } => {
                         writeln!(console.stdout, "{}", ascii_json(&value))?;
                         return Ok(0);

@@ -1,0 +1,43 @@
+_version: 2
+utilities.persist_failed:
+  zh-CN: "无法保存主机时间戳设置，本次运行仍会生效：%{error}"
+  en: "Could not save the host timestamp preference; it still applies for this run: %{error}"
+utilities.title:
+  zh-CN: 实用工具
+  en: Utilities
+utilities.timestamps:
+  zh-CN: 显示接收时间戳
+  en: Show receive timestamps
+utilities.help:
+  zh-CN: 对当前主机生效并自动保存。时间是本机接收输出的时间，不是设备生成时间。点击左侧两个时间戳测量间隔；开启前的历史不补造时间，全屏程序不叠加时间戳。
+  en: Saved for this host. Times reflect local output reception, not device generation. Select two timestamps on the left to measure an interval. Earlier history has no invented times; full-screen applications have no timestamp overlay.
+utilities.select_help:
+  zh-CN: 请依次选择起点和终点时间戳
+  en: Select a start timestamp, then an end timestamp
+utilities.unselected:
+  zh-CN: 未选择
+  en: Not selected
+utilities.start:
+  zh-CN: "起点：%{time}"
+  en: "Start: %{time}"
+utilities.end:
+  zh-CN: "终点：%{time}"
+  en: "End: %{time}"
+utilities.difference:
+  zh-CN: "相差 %{seconds} 秒（%{millis} 毫秒）"
+  en: "Difference: %{seconds} seconds (%{millis} ms)"
+utilities.clear:
+  zh-CN: 重新选择
+  en: Reset selection
+utilities.copy:
+  zh-CN: 带时间戳复制选中文本
+  en: Copy selected text with timestamps
+utilities.copy_difference:
+  zh-CN: 复制时间差
+  en: Copy time difference
+utilities.set_start:
+  zh-CN: 将选中文本的首行设为起点
+  en: Use first selected line as start
+utilities.set_end:
+  zh-CN: 将选中文本的末行设为终点
+  en: Use last selected line as end

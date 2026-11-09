@@ -558,19 +558,38 @@ impl DeviceManager {
                         process.stop();
                         return Ok(());
                     }
-                    let _ = sender.send(Message::MirrorStarted(id.clone(), mirror_id));
+                    let started = std::time::Instant::now();
+                    let mut ready = false;
                     loop {
                         if cancel.load(Ordering::Acquire) || device.remote_cancelled() {
                             process.stop();
                             return Ok(());
                         }
                         if !process.poll()? {
+                            if !ready {
+                                anyhow::bail!(t!("android.mirror_not_ready"));
+                            }
                             return Ok(());
+                        }
+                        if !ready {
+                            if process.is_ready()? {
+                                ready = true;
+                                let _ = sender.send(Message::MirrorStarted(id.clone(), mirror_id));
+                            } else if started.elapsed() >= Duration::from_secs(45) {
+                                process.stop();
+                                if let Ok(Some(output)) = process.diagnostics() {
+                                    tracing::warn!(%output, "Android mirroring startup timed out");
+                                }
+                                anyhow::bail!(t!("android.mirror_timeout"));
+                            }
                         }
                         std::thread::sleep(Duration::from_millis(50));
                     }
                 };
-                let result = run().map_err(|error| error.to_string());
+                let result = run().map_err(|error| {
+                    tracing::warn!(%error, "Android mirroring failed");
+                    error.to_string()
+                });
                 let _ = sender.send(Message::MirrorEnded(id, mirror_id, result));
             });
         match worker {

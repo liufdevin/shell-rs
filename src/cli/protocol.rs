@@ -120,6 +120,9 @@ pub struct VersionOnly {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Request {
+    Connect {
+        host: String,
+    },
     Lan {
         request: shellrs_lan::ClientRequest,
     },
@@ -208,6 +211,10 @@ pub enum Request {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Reply {
+    Connected {
+        host: String,
+        terminal: u64,
+    },
     Lan {
         value: serde_json::Value,
     },

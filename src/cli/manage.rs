@@ -26,6 +26,9 @@ use super::protocol::{
 /// Hosts and credentials are named by the IDs the CLI prints.
 #[derive(Debug)]
 pub enum CliChange {
+    ConnectHost {
+        host: String,
+    },
     CreateHost(HostFields),
     UpdateHost {
         host: String,

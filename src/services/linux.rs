@@ -64,8 +64,14 @@ pub fn command() -> String {
          echo @@state; systemctl is-system-running 2>/dev/null; \
          names=$({{ systemctl list-unit-files --type=service --no-legend --no-pager 2>/dev/null; \
          systemctl list-units --type=service --all --no-legend --no-pager --plain 2>/dev/null; }} \
-         | while read -r name rest; do case $name in (*@.service) ;; (*.service) printf \"%s\\n\" \"$name\";; esac; done); \
-         echo @@units; systemctl show {properties} -- $names 2>/dev/null; \
+         | while read -r name rest; do case $name in (*@.service) ;; (*.service) printf \"%s\\n\" \"$name\";; esac; done | sort -u); \
+         echo @@units; if test -n \"$names\"; then \
+         units=$(systemctl show {properties} -- $names 2>/dev/null); result=$?; \
+         if test \"$result\" = 0; then printf \"%s\\n\" \"$units\"; else \
+         failed=0; for name in $names; do \
+         unit=$(systemctl show {properties} -- \"$name\" 2>/dev/null); result=$?; \
+         if test \"$result\" = 0; then printf \"%s\\n\\n\" \"$unit\"; else failed=$((failed + 1)); fi; done; \
+         echo @@unreadable; printf \"%s\\n\" \"$failed\"; fi; fi; \
          else echo @@unsupported; uname -s; fi'",
         properties = properties(&LIST_PROPERTIES),
     )
@@ -207,11 +213,13 @@ pub fn parse(output: &str) -> Parsed {
             )
         })
         .collect();
-    Parsed::Table(ServiceTable::new(
-        services,
-        version,
-        first("state").map(str::to_owned),
-    ))
+    Parsed::Table(
+        ServiceTable::new(services, version, first("state").map(str::to_owned)).with_unreadable(
+            first("unreadable")
+                .and_then(|count| count.parse().ok())
+                .unwrap_or(0),
+        ),
+    )
 }
 
 /// `systemctl show`'s `Key=value` lines, a blank line between units.
@@ -308,6 +316,55 @@ UnitFileState=static
 FragmentPath=/lib/systemd/system/certbot.service
 LoadState=loaded
 ";
+
+    #[test]
+    #[cfg_attr(windows, ignore = "requires a POSIX shell in SHELLRS_TEST_SH")]
+    fn an_unreadable_unit_does_not_hide_bluetooth_or_later_services() {
+        let mock = r#"
+export PATH=/usr/bin:/bin:$PATH
+systemctl() {
+    case "$1" in
+        --version) printf 'systemd 237\n';;
+        is-system-running) printf 'running\n';;
+        list-unit-files) printf '%s\n' 'alsa-restore.service static' 'alsa-state.service static' 'alsa-utils.service bad' 'apt-daily-upgrade.service static' 'apt-daily.service disabled' 'bad.service bad' 'bluetooth.service enabled';;
+        list-units) printf '%s\n' 'bluetooth.service loaded active running Bluetooth service';;
+        show)
+            shift
+            while test "$1" = -p; do shift 2; done
+            shift
+            for name in "$@"; do
+                if test "$name" = bad.service; then printf 'Failed to get properties\n' >&2; return 1; fi
+                printf 'Id=%s\nDescription=%s\nActiveState=active\nUnitFileState=enabled\nFragmentPath=/lib/systemd/system/%s\nLoadState=loaded\n\n' "$name" "$name" "$name"
+            done;;
+    esac
+}
+"#;
+        let command = command().replace("test -d /run/systemd/system", "true");
+        let inner = command
+            .strip_prefix("sh -c '")
+            .unwrap()
+            .strip_suffix('\'')
+            .unwrap();
+        let program = std::env::var_os("SHELLRS_TEST_SH").unwrap_or_else(|| "sh".into());
+        let output = std::process::Command::new(program)
+            .args(["-c", &format!("{mock}\n{inner}")])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let Parsed::Table(table) = parse(&String::from_utf8(output.stdout).unwrap()) else {
+            panic!("not a service table");
+        };
+        assert_eq!(table.services().len(), 6);
+        assert_eq!(
+            table.service("bluetooth.service").unwrap().active,
+            ActiveState::Active
+        );
+        assert!(table.summary().contains("1 项服务读取失败"));
+    }
 
     #[test]
     fn systemctl_show_gives_the_services_but_those_without_a_file() {

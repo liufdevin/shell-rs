@@ -1563,6 +1563,17 @@ impl Workspace {
         self.open_remote_terminal(host_id, Some(copy), window, cx);
     }
 
+    fn on_duplicate_active_terminal(
+        &mut self,
+        _: &crate::app::DuplicateActiveTerminal,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(CenterTab::Terminal(id)) = self.tab_in_window(window) {
+            self.on_duplicate_terminal(&DuplicateTerminal(id), window, cx);
+        }
+    }
+
     fn open_remote_terminal(
         &mut self,
         host_id: HostId,
@@ -3257,6 +3268,17 @@ fn new_terminal_panel(
         }
         None => TerminalPanel::new(terminal_id, host_id, store.clone(), transports, window, cx),
     });
+    let host = panel.read(cx).host();
+    let shared_serial = host.address.starts_with("lan-device:");
+    let key = if shared_serial {
+        host.address.to_string()
+    } else {
+        format!("host:{}", host.public_id)
+    };
+    let timestamp_owner = (!shared_serial).then_some(host_id);
+    panel.read(cx).terminal().clone().update(cx, |view, cx| {
+        view.bind_timestamps(store.clone(), key, timestamp_owner, cx)
+    });
     let subscription = cx.subscribe_in(
         &panel,
         window,
@@ -3760,6 +3782,18 @@ impl Workspace {
             transports.serial = factory;
             self.lan_serial_transports.insert(host, transports);
             self.open_remote_terminal(host, None, window, cx);
+            let key = format!("lan-device:{peer}:{device}");
+            let panels: Vec<_> = self
+                .terminals
+                .values()
+                .filter(|panel| panel.read(cx).host_id() == host)
+                .cloned()
+                .collect();
+            for panel in panels {
+                panel.read(cx).terminal().clone().update(cx, |view, cx| {
+                    view.bind_timestamps(self.store.clone(), key.clone(), None, cx)
+                });
+            }
         } else {
             let id = LocalTerminalId(self.next_local_terminal_id);
             self.next_local_terminal_id += 1;
@@ -3771,6 +3805,10 @@ impl Workspace {
             });
             let (panel, subscription) =
                 new_local_terminal_panel(id, factory.clone(), name, window, cx);
+            let key = format!("lan:{peer}:device:{device}");
+            panel.read(cx).terminal().clone().update(cx, |view, cx| {
+                view.bind_timestamps(self.store.clone(), key, None, cx)
+            });
             self._subscriptions.push(subscription);
             let focus = panel.read(cx).focus_handle(cx);
             self._subscriptions.push(follow_focus(
@@ -3863,6 +3901,8 @@ impl Workspace {
             .on_action(cx.listener(Self::on_close_detached_tab))
             .on_action(cx.listener(Self::on_new_host))
             .on_action(cx.listener(Self::on_lan_action))
+            .on_action(cx.listener(Self::on_utility_action))
+            .on_action(cx.listener(Self::on_serial_tool_action))
             .on_action(cx.listener(Self::on_new_temporary_connection))
             .on_action(cx.listener(Self::on_quick_connect))
             .on_action(cx.listener(Self::on_new_local_terminal))
@@ -3896,6 +3936,7 @@ impl Workspace {
             .on_action(cx.listener(Self::on_delete_group))
             .on_action(cx.listener(Self::on_connect_host))
             .on_action(cx.listener(Self::on_duplicate_terminal))
+            .on_action(cx.listener(Self::on_duplicate_active_terminal))
             .on_action(cx.listener(Self::on_connect_group))
             .on_action(cx.listener(Self::on_reconnect_terminal))
             .on_action(cx.listener(Self::on_disconnect_terminal))
@@ -4147,6 +4188,7 @@ impl Workspace {
             return;
         };
         let title = format!("LAN · {owner} · SSH · {}", target.name);
+        let timestamp_key = format!("lan:{peer}:ssh:{}", target.id);
         let factory: SharedTerminalTransportFactory = Arc::new(
             crate::lan::DeviceTerminalFactory::ssh(core, peer.to_owned(), target),
         );
@@ -4158,6 +4200,9 @@ impl Workspace {
             title: None,
         });
         let (panel, subscription) = new_local_terminal_panel(id, factory.clone(), name, window, cx);
+        panel.read(cx).terminal().clone().update(cx, |view, cx| {
+            view.bind_timestamps(self.store.clone(), timestamp_key, None, cx)
+        });
         self._subscriptions.push(subscription);
         let focus = panel.read(cx).focus_handle(cx);
         self._subscriptions.push(follow_focus(
@@ -4171,5 +4216,42 @@ impl Workspace {
         self.dock_area.update(cx, |area, cx| {
             area.add_panel_view(panel_handle(panel), DockPlacement::Center, None, window, cx)
         });
+    }
+}
+
+impl Workspace {
+    fn on_serial_tool_action(
+        &mut self,
+        action: &crate::app::SerialToolAction,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.tools.update(cx, |tools, cx| {
+            tools.serial_tool_command(&action.0, window, cx)
+        });
+    }
+
+    fn on_utility_action(
+        &mut self,
+        action: &crate::app::UtilityAction,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let view = if let crate::utilities::UtilityCommand::Pick(owner, _) = &action.0 {
+            self.terminals
+                .values()
+                .map(|panel| panel.read(cx).terminal().clone())
+                .chain(
+                    self.local_terminals
+                        .values()
+                        .map(|panel| panel.read(cx).terminal().clone()),
+                )
+                .find(|view| view.entity_id() == *owner)
+        } else {
+            self.tools.read(cx).utilities_target(cx)
+        };
+        if let Some(view) = view {
+            view.update(cx, |view, cx| view.timestamp_command(&action.0, cx));
+        }
     }
 }

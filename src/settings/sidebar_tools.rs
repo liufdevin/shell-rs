@@ -249,6 +249,7 @@ fn tile(tool: ToolKind, shown: bool, store: &Entity<SettingsStore>, cx: &App) ->
 /// What a tool of the right sidebar is for, in a line.
 pub(super) fn description(tool: ToolKind) -> SharedString {
     match tool {
+        ToolKind::Utilities => t!("utilities.help"),
         ToolKind::Snippets => t!("settings.sidebar_tools.snippets"),
         ToolKind::History => t!("settings.sidebar_tools.history"),
         ToolKind::Files => t!("settings.sidebar_tools.files"),

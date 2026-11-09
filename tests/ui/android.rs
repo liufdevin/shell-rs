@@ -47,6 +47,7 @@ struct Tools {
     hold: AtomicBool,
     missing_scrcpy: bool,
     stops: Arc<AtomicUsize>,
+    starting: Arc<AtomicBool>,
 }
 
 impl Tools {
@@ -74,9 +75,12 @@ impl Tools {
     }
 }
 
-struct Mirror(Arc<AtomicUsize>);
+struct Mirror(Arc<AtomicUsize>, Arc<AtomicBool>);
 
 impl MirrorProcess for Mirror {
+    fn is_ready(&mut self) -> Result<bool> {
+        Ok(!self.1.load(Ordering::Acquire))
+    }
     fn poll(&mut self) -> Result<bool> {
         Ok(true)
     }
@@ -121,7 +125,7 @@ impl AndroidTools for Tools {
     ) -> Result<Box<dyn MirrorProcess>> {
         self.record(format!("mirror:{}:audio={audio}", device.serial()));
         self.result(cancel)?;
-        Ok(Box::new(Mirror(self.stops.clone())))
+        Ok(Box::new(Mirror(self.stops.clone(), self.starting.clone())))
     }
 
     fn scrcpy(&self) -> Option<PathBuf> {
@@ -188,6 +192,39 @@ fn press_space(window: &mut Window, cx: &mut App) {
         }),
         cx,
     );
+}
+
+#[gpui_kit::test]
+async fn mirroring_stays_starting_until_ready_and_can_be_stopped_while_waiting(
+    cx: &mut TestAppContext,
+) {
+    let tools = Arc::new(Tools::default());
+    tools.starting.store(true, Ordering::Release);
+    let (handle, _workspace) = open(cx, vec![("android", "Helper A133")], tools.clone());
+    detected(cx, handle).await;
+    in_frame(cx, handle, |window, cx| window.click("android-mirror", cx));
+    cx.wait_for(handle.into(), Duration::from_secs(5), |_, _| {
+        tools.count("mirror:") == 1
+    })
+    .await;
+    message(cx, handle, "android-mirror-status", "正在启动投屏").await;
+    in_frame(cx, handle, |window, cx| window.click("android-mirror", cx));
+    cx.wait_for(handle.into(), Duration::from_secs(5), |_, _| {
+        tools.stops.load(Ordering::Acquire) == 1
+    })
+    .await;
+    in_frame(cx, handle, |window, _| {
+        assert!(window.try_find("android-mirror-status").is_none())
+    });
+    in_frame(cx, handle, |window, cx| window.click("android-mirror", cx));
+    cx.wait_for(handle.into(), Duration::from_secs(5), |_, _| {
+        tools.count("mirror:") == 2
+    })
+    .await;
+    message(cx, handle, "android-mirror-status", "正在启动投屏").await;
+    tools.starting.store(false, Ordering::Release);
+    message(cx, handle, "android-mirror-status", "投屏运行中").await;
+    in_frame(cx, handle, |window, cx| window.click("android-mirror", cx));
 }
 
 #[gpui_kit::test]

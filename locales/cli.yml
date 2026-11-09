@@ -1,4 +1,16 @@
 _version: 2
+cli.connected:
+  zh-CN: "主机 %{host} 的终端 %{terminal} 已连接"
+  en: "Host %{host} is connected in terminal %{terminal}"
+cli.connect_failed:
+  zh-CN: 主机终端未能连接或连接超时，请在 ShellLF 中检查登录提示和端口状态。
+  en: The host terminal failed to connect or timed out. Check login prompts and port status in ShellLF.
+cli.terminal.serial_shell_required:
+  zh-CN: 请先在串口主机设置中开启 Linux Shell 模式并重新打开终端，登录到 bash、dash 或 busybox ash 后再执行命令。
+  en: Enable Linux shell mode for the serial host and reopen its terminal. Log in to bash, dash or busybox ash before executing commands.
+cli.terminal.serial_hex:
+  zh-CN: 请先关闭串口的 HEX 接收和 HEX 发送，再执行终端命令。
+  en: Turn off serial HEX receive and HEX send before executing terminal commands.
 
 # 外部 CLI: what the `shelllf-cli` command prints, and the messages the app
 # sends back to it. CLI output uses plain ASCII quotes and apostrophes, so
@@ -282,8 +294,8 @@ cli.server.not_absolute:
   zh-CN: 本地路径必须是绝对路径：%{path}
   en: "The local path must be absolute: %{path}"
 cli.server.not_ssh:
-  zh-CN: "%{name} 是串口主机，没有 SSH 连接，只能在 ShellLF 的终端里用"
-  en: "%{name} is a serial host. It has no SSH connection and can only be used in a ShellLF terminal."
+  zh-CN: "%{name} 是串口主机。执行 Linux 命令请先 connect，再使用 exec --terminal；不支持 SSH 文件传输。"
+  en: "%{name} is a serial host. Use connect followed by exec --terminal for Linux commands. SSH file transfers are not supported."
 cli.server.not_ssh_telnet:
   zh-CN: "%{name} 是 Telnet 主机，没有 SSH 连接，只能在 ShellLF 的终端里用"
   en: "%{name} is a Telnet host. It has no SSH connection and can only be used in a ShellLF terminal."
@@ -422,11 +434,11 @@ cli.terminal.timed_out:
   zh-CN: ShellLF 没有及时处理这条命令，命令没有执行：请稍后再试
   en: ShellLF didn't get to the command in time, so it didn't run. Try again later.
 cli.terminal.no_terminal:
-  zh-CN: 这台主机在 ShellLF 里没有打开的终端：请先在 ShellLF 里打开它的终端
-  en: This host has no terminal open in ShellLF. Open its terminal in ShellLF first.
+  zh-CN: 这台主机没有打开的终端，请先在 ShellLF 中打开，或使用 shelllf-cli connect 连接主机。
+  en: This host has no open terminal. Open it in ShellLF or use shelllf-cli connect first.
 cli.terminal.not_connected:
-  zh-CN: 这台主机在 ShellLF 里的终端没有连接：请先在 ShellLF 里重新连接
-  en: This host's terminal in ShellLF isn't connected. Reconnect it in ShellLF first.
+  zh-CN: 这台主机的终端未连接，请在 ShellLF 中重连，或使用 shelllf-cli connect。
+  en: This host’s terminal is disconnected. Reconnect it in ShellLF or use shelllf-cli connect.
 cli.terminal.unknown_shell:
   zh-CN: 认不出终端里的 shell：只支持 Linux 上的 bash、dash 和 busybox ash
   en: Couldn't tell which shell the terminal runs. Only bash, dash and busybox ash on Linux are supported.

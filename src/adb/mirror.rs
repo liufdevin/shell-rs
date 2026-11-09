@@ -123,6 +123,11 @@ impl ScrcpyProcess {
             let _ = child.wait();
             return Err(error.into());
         }
+        tracing::info!(
+            pid = child.id(),
+            remote = device.server_socket().is_some(),
+            "scrcpy started; waiting for mirroring window"
+        );
         Ok(Self {
             child,
             group,
@@ -132,6 +137,33 @@ impl ScrcpyProcess {
     }
 }
 impl MirrorProcess for ScrcpyProcess {
+    fn diagnostics(&mut self) -> Result<Option<String>> {
+        let size = self.log.metadata()?.len();
+        let mut bytes = vec![0; size.min(8192) as usize];
+        let offset = size.saturating_sub(8192);
+        #[cfg(windows)]
+        let count = {
+            use std::os::windows::fs::FileExt as _;
+            self.log.seek_read(&mut bytes, offset)?
+        };
+        #[cfg(unix)]
+        let count = {
+            use std::os::unix::fs::FileExt as _;
+            self.log.read_at(&mut bytes, offset)?
+        };
+        let output = clean_output(&String::from_utf8_lossy(&bytes[..count]));
+        Ok((!output.trim().is_empty()).then_some(output))
+    }
+    fn is_ready(&mut self) -> Result<bool> {
+        #[cfg(windows)]
+        {
+            Ok(has_visible_window(self.child.id()))
+        }
+        #[cfg(not(windows))]
+        {
+            Ok(true)
+        }
+    }
     fn poll(&mut self) -> Result<bool> {
         if self.ended {
             return Ok(false);
@@ -163,6 +195,41 @@ impl MirrorProcess for ScrcpyProcess {
             self.ended = true;
         }
     }
+}
+
+#[cfg(windows)]
+fn has_visible_window(process: u32) -> bool {
+    use windows_sys::{
+        Win32::{
+            Foundation::{HWND, LPARAM},
+            UI::WindowsAndMessaging::{EnumWindows, GetWindowThreadProcessId, IsWindowVisible},
+        },
+        core::BOOL,
+    };
+    struct Search {
+        process: u32,
+        found: bool,
+    }
+    unsafe extern "system" fn visit(window: HWND, parameter: LPARAM) -> BOOL {
+        let search = unsafe { &mut *(parameter as *mut Search) };
+        let mut process = 0;
+        unsafe {
+            GetWindowThreadProcessId(window, &mut process);
+        }
+        if process == search.process && unsafe { IsWindowVisible(window) } != 0 {
+            search.found = true;
+            return 0;
+        }
+        1
+    }
+    let mut search = Search {
+        process,
+        found: false,
+    };
+    unsafe {
+        EnumWindows(Some(visit), (&mut search as *mut Search) as LPARAM);
+    }
+    search.found
 }
 impl Drop for ScrcpyProcess {
     fn drop(&mut self) {

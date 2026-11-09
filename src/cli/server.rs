@@ -243,7 +243,8 @@ impl CliUse {
             Request::Upload { .. } => Some(Self::Upload),
             Request::Download { .. } => Some(Self::Download),
             Request::Sync { .. } => Some(Self::Sync),
-            Request::List { .. }
+            Request::Connect { .. }
+            | Request::List { .. }
             | Request::ShowHost { .. }
             | Request::CreateHost { .. }
             | Request::UpdateHost { .. }
@@ -738,6 +739,15 @@ fn respond(
             .push(usage);
     }
     match envelope.request {
+        Request::Connect { host } => {
+            let target = find(shared, &host)?;
+            change(
+                shared,
+                CliChange::ConnectHost {
+                    host: target.info.id,
+                },
+            )
+        }
         Request::Lan { request } => {
             let core = shared
                 .lan
@@ -821,7 +831,21 @@ fn respond(
             Ok(Reply::Exit { code })
         }
         Request::ExecInTerminal { host, command } => {
-            let target = find_ssh(shared, &host)?;
+            let target = find(shared, &host)?;
+            if target.host.kind() == ProtocolKind::Telnet {
+                find_ssh(shared, &host)?;
+            }
+            if target
+                .host
+                .protocol
+                .serial()
+                .is_some_and(|settings| !settings.linux_shell)
+            {
+                return Err(CliError::new(
+                    ErrorCode::BadRequest,
+                    t!("cli.terminal.serial_shell_required"),
+                ));
+            }
             run_in_terminal(shared, writer, &target.info.id, command)
         }
         Request::Upload {

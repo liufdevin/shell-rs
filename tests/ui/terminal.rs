@@ -3,7 +3,7 @@
 
 use crate::support::*;
 use shellrs::app::SnippetShortcut;
-use shellrs::app::{CopyTerminal, DuplicateTerminal, SelectAllTerminal, Shortcut};
+use shellrs::app::{CopyTerminal, DuplicateTerminal, SelectAllTerminal};
 use shellrs::host::SnippetDraft;
 use shellrs::terminal::{MiddleClick, RightClick};
 
@@ -583,29 +583,11 @@ async fn tab_keys_are_sent_to_the_focused_terminal(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-async fn ctrl_t_creates_a_local_terminal_while_other_control_keys_reach_the_shell(
+async fn ctrl_t_creates_a_command_terminal_while_other_control_keys_reach_the_shell(
     cx: &mut TestAppContext,
 ) {
     let factory = Arc::new(FakeTerminalFactory::default());
     let (handle, workspace) = open_workspace_with_factory(cx, factory.clone());
-    // 新建本地终端 as on Windows and Linux.
-    cx.update(|cx| {
-        let settings = workspace.read(cx).settings().clone();
-        settings.update(cx, |store, cx| {
-            store.update(
-                |settings| {
-                    settings.shortcuts.set(
-                        Shortcut::find("new-local-terminal").unwrap(),
-                        "ctrl-t".into(),
-                    );
-                    settings
-                        .shortcuts
-                        .disable(Shortcut::find("new-command-terminal").unwrap());
-                },
-                cx,
-            )
-        });
-    });
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
         window.click("new-local-terminal", cx);

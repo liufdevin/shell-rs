@@ -62,6 +62,12 @@ impl AndroidApp {
 
 pub trait MirrorProcess: Send {
     fn poll(&mut self) -> Result<bool>;
+    fn is_ready(&mut self) -> Result<bool> {
+        Ok(true)
+    }
+    fn diagnostics(&mut self) -> Result<Option<String>> {
+        Ok(None)
+    }
     fn stop(&mut self);
 }
 

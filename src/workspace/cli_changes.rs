@@ -135,7 +135,26 @@ impl Workspace {
                     .max_by_key(|panel| panel.read(cx).id().0)
             });
         match panel {
-            Some(panel) => panel.read(cx).terminal().read(cx).run_command(run, cx),
+            Some(panel) => {
+                let panel = panel.read(cx);
+                if panel
+                    .host()
+                    .protocol
+                    .serial()
+                    .is_some_and(|settings| !settings.linux_shell)
+                {
+                    return Err(RunFailure::Encoding(
+                        t!("cli.terminal.serial_shell_required").to_string(),
+                    ));
+                }
+                let modes = panel.serial_modes(cx);
+                if panel.host().is_serial() && (modes.send_hex || modes.receive_hex) {
+                    return Err(RunFailure::Encoding(
+                        t!("cli.terminal.serial_hex").to_string(),
+                    ));
+                }
+                panel.terminal().read(cx).run_command(run, cx)
+            }
             None if self.terminal(host, cx).is_some() => Err(RunFailure::NotConnected),
             None => Err(RunFailure::NoTerminal),
         }
@@ -147,11 +166,12 @@ impl Workspace {
     pub fn apply_cli_change(
         &mut self,
         change: CliChange,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Task<Result<Reply, CliError>> {
         let store = self.store.read(cx);
         match change {
+            CliChange::ConnectHost { host } => self.connect_host_from_cli(&host, window, cx),
             CliChange::CreateHost(fields) => self.save_host_from_cli(None, fields, cx),
             CliChange::UpdateHost { host, fields } => match find_saved_host(store, &host) {
                 Ok(id) => self.save_host_from_cli(Some(id), fields, cx),
@@ -173,6 +193,87 @@ impl Workspace {
                 Task::ready(self.delete_credential_from_cli(&credential, cx))
             }
         }
+    }
+
+    fn connect_host_from_cli(
+        &mut self,
+        public_id: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<Reply, CliError>> {
+        if crate::app_lock::is_locked(cx) && !self.settings().read(cx).settings().app_lock_allow_cli
+        {
+            return Task::ready(Err(CliError::new(
+                ErrorCode::NotEnabled,
+                t!("cli.server.not_enabled"),
+            )));
+        }
+        let host_id = match find_host(self.store.read(cx), public_id) {
+            Ok(host) => host.id,
+            Err(error) => return Task::ready(Err(error)),
+        };
+        let existing = self
+            .terminals
+            .values()
+            .filter(|panel| panel.read(cx).host_id() == host_id)
+            .max_by_key(|panel| {
+                (
+                    matches!(panel.read(cx).lifecycle(cx), TerminalLifecycle::Running),
+                    panel.read(cx).id().0,
+                )
+            })
+            .cloned();
+        let panel = if let Some(panel) = existing {
+            if !matches!(
+                panel.read(cx).lifecycle(cx),
+                TerminalLifecycle::Running | TerminalLifecycle::Starting
+            ) {
+                panel.update(cx, |panel, cx| panel.reconnect(window, cx));
+            }
+            panel
+        } else {
+            self.connect_host(host_id, window, cx);
+            let Some(panel) = self
+                .terminals
+                .values()
+                .find(|panel| panel.read(cx).host_id() == host_id)
+                .cloned()
+            else {
+                return Task::ready(Err(CliError::new(
+                    ErrorCode::ConnectFailed,
+                    t!("cli.terminal.no_terminal"),
+                )));
+            };
+            panel
+        };
+        let host = public_id.to_owned();
+        cx.spawn(async move |_, cx| {
+            let start = std::time::Instant::now();
+            loop {
+                match panel.read_with(cx, |panel, cx| (panel.id(), panel.lifecycle(cx))) {
+                    (id, TerminalLifecycle::Running) => {
+                        return Ok(Reply::Connected {
+                            host,
+                            terminal: id.0,
+                        });
+                    }
+                    (_, TerminalLifecycle::Starting)
+                        if start.elapsed() < Duration::from_secs(45) => {}
+                    (_, TerminalLifecycle::Failed(error)) => {
+                        return Err(CliError::new(ErrorCode::ConnectFailed, error.to_string()));
+                    }
+                    _ => {
+                        return Err(CliError::new(
+                            ErrorCode::ConnectFailed,
+                            t!("cli.connect_failed"),
+                        ));
+                    }
+                }
+                cx.background_executor()
+                    .timer(Duration::from_millis(50))
+                    .await;
+            }
+        })
     }
 
     fn save_host_from_cli(

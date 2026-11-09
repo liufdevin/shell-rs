@@ -65,6 +65,7 @@ pub use sync::{
 /// `sftp://` link (外部连接, the app's `SshLink`) and whose terminals get one
 /// channel alone.
 pub struct HostData {
+    timestamp_targets: HashSet<String>,
     groups: Vec<HostGroup>,
     hosts: Vec<Host>,
     /// Hosts connected to without saving them: not listed. Their ids come
@@ -181,6 +182,7 @@ pub enum Change {
     Recent,
     HostOs,
     SidebarTool,
+    TimestampPreference,
     NewSnippet,
     SaveSnippet,
     DeleteSnippet,
@@ -337,6 +339,7 @@ impl HostData {
     /// An empty memory-only store.
     pub fn empty() -> Self {
         Self {
+            timestamp_targets: HashSet::new(),
             groups: Vec::new(),
             hosts: Vec::new(),
             temporary: Vec::new(),
@@ -447,6 +450,7 @@ impl HostData {
             sync_pending,
         } = database.load()?;
         let sync_state = database.sync_state()?;
+        let timestamp_targets = database.timestamp_targets()?;
         recent.truncate(MAX_RECENT);
         let mut bookmarks: HashMap<_, Vec<String>> = HashMap::new();
         let mut bookmark_meta = HashMap::new();
@@ -467,6 +471,7 @@ impl HostData {
             host.credential = draft.credential;
         }
         Ok(Self {
+            timestamp_targets,
             next_group_id: groups.iter().map(|group| group.id.0).max().unwrap_or(0) + 1,
             next_host_id: hosts.iter().map(|s| s.id.0).max().unwrap_or(0) + 1,
             next_forward_id: forwards.iter().map(|rule| rule.id.0).max().unwrap_or(0) + 1,
@@ -718,6 +723,8 @@ impl HostData {
         let Some(index) = self.temporary.iter().position(|host| host.id == id) else {
             return false;
         };
+        self.timestamp_targets
+            .remove(&format!("host:{}", self.temporary[index].public_id));
         self.temporary.remove(index);
         self.external.remove(&id);
         self.secrets.forget(id.0);
@@ -977,6 +984,10 @@ impl HostData {
     }
 
     pub fn remove_unnotified(&mut self, id: HostId) -> bool {
+        if let Some(host) = self.host(id) {
+            self.timestamp_targets
+                .remove(&format!("host:{}", host.public_id));
+        }
         let before = self.hosts.len();
         self.hosts.retain(|s| s.id != id);
         if self.hosts.len() == before {
@@ -1933,6 +1944,30 @@ impl HostData {
         if !self.is_temporary(id) {
             self.persist(Change::SidebarTool, |db| {
                 db.set_host_sidebar_tool(id, tool.as_deref())
+            });
+        }
+        self.changed();
+    }
+
+    pub fn timestamps_enabled(&self, target: &str) -> bool {
+        self.timestamp_targets.contains(target)
+    }
+
+    pub fn set_timestamps_enabled(&mut self, target: String, host: Option<HostId>, enabled: bool) {
+        if host.is_some_and(|host| self.host(host).is_none()) {
+            return;
+        }
+        let changed = if enabled {
+            self.timestamp_targets.insert(target.clone())
+        } else {
+            self.timestamp_targets.remove(&target)
+        };
+        if !changed {
+            return;
+        }
+        if !host.is_some_and(|host| self.is_temporary(host)) {
+            self.persist(Change::TimestampPreference, |database| {
+                database.set_timestamp_target(&target, host, enabled)
             });
         }
         self.changed();
@@ -3013,6 +3048,32 @@ mod tests {
         assert_eq!(tool(&store, id).as_deref(), Some("files"));
         let copy = store.duplicate_unnotified(id, "copy".into()).unwrap();
         assert_eq!(tool(&store, copy).as_deref(), Some("files"));
+    }
+
+    #[test]
+    fn timestamp_preferences_persist_by_host_and_are_deleted_with_the_host() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("timestamps.db");
+        let mut store = HostData::load(HostDatabase::open(&path).unwrap()).unwrap();
+        let first = store.insert(draft("first", None));
+        let second = store.insert(draft("second", None));
+        let key = format!("host:{}", store.host(first).unwrap().public_id);
+        let other = format!("host:{}", store.host(second).unwrap().public_id);
+        assert!(!store.timestamps_enabled(&key));
+        store.set_timestamps_enabled(key.clone(), Some(first), true);
+        store.set_timestamps_enabled("lan:peer:ssh:host".into(), None, true);
+        store.update(first, draft("renamed", None));
+        drop(store);
+        let mut store = HostData::load(HostDatabase::open(&path).unwrap()).unwrap();
+        assert!(store.timestamps_enabled(&key));
+        assert!(!store.timestamps_enabled(&other));
+        assert!(store.timestamps_enabled("lan:peer:ssh:host"));
+        store.remove(first);
+        assert!(!store.timestamps_enabled(&key));
+        drop(store);
+        let store = HostData::load(HostDatabase::open(&path).unwrap()).unwrap();
+        assert!(!store.timestamps_enabled(&key));
+        assert!(store.timestamps_enabled("lan:peer:ssh:host"));
     }
 
     #[test]

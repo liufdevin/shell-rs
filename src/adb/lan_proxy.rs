@@ -95,7 +95,11 @@ impl AdbProxy {
                             let state = worker_state.clone();
                             workers.push(thread::spawn(move || {
                                 let _permit = ConnectionPermit(state.clone());
-                                let _ = serve(stream, state);
+                                if let Err(error) = serve(stream, state.clone())
+                                    && !state.is_stopped()
+                                {
+                                    tracing::warn!(%error, "LAN ADB proxy request failed");
+                                }
                             }));
                         }
                         Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
@@ -176,6 +180,7 @@ fn reply(stream: &mut TcpStream, value: &str) -> Result<()> {
 }
 
 fn serve(mut stream: TcpStream, state: Arc<State>) -> Result<()> {
+    stream.set_nodelay(true)?;
     stream.set_read_timeout(Some(Duration::from_millis(100)))?;
     stream.set_write_timeout(Some(Duration::from_secs(2)))?;
     let mut selected = false;
@@ -299,7 +304,11 @@ fn forward(state: &Arc<State>, specification: &str) -> Result<u16> {
                         let (state, target) = (state.clone(), target.clone());
                         workers.push(thread::spawn(move || {
                             let _permit = ConnectionPermit(state.clone());
-                            let _ = relay(stream, state, &target, false);
+                            if let Err(error) = relay(stream, state.clone(), &target, false)
+                                && !state.is_stopped()
+                            {
+                                tracing::warn!(%error, "LAN scrcpy socket relay failed");
+                            }
                         }));
                     }
                     Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
@@ -318,6 +327,7 @@ fn forward(state: &Arc<State>, specification: &str) -> Result<u16> {
 }
 
 fn relay(mut stream: TcpStream, state: Arc<State>, service: &str, acknowledge: bool) -> Result<()> {
+    stream.set_nodelay(true)?;
     stream.set_read_timeout(Some(Duration::from_millis(50)))?;
     stream.set_write_timeout(Some(Duration::from_secs(1)))?;
     let mut reader = stream.try_clone()?;
@@ -409,6 +419,7 @@ mod tests {
         file: Mutex<Vec<u8>>,
         apk: Mutex<Vec<u8>>,
         install_fails: AtomicBool,
+        mirror_protocol: AtomicBool,
     }
     impl Executor for Backend {
         fn hosts(&self) -> Vec<SharedHost> {
@@ -503,7 +514,18 @@ mod tests {
                 return Ok(());
             }
             if service.starts_with("localabstract:") {
-                events.blocking_send(DeviceEvent::Output(b"video-header".to_vec()))?;
+                if self.mirror_protocol.load(Ordering::Acquire) {
+                    let mut header = vec![0];
+                    let mut name = [0; 64];
+                    name[..12].copy_from_slice(b"ShellLF test");
+                    header.extend_from_slice(&name);
+                    header.extend_from_slice(b"h264");
+                    header.extend_from_slice(&64u32.to_be_bytes());
+                    header.extend_from_slice(&64u32.to_be_bytes());
+                    events.blocking_send(DeviceEvent::Output(header))?;
+                } else {
+                    events.blocking_send(DeviceEvent::Output(b"video-header".to_vec()))?;
+                }
             }
             while !cancel.load(Ordering::Acquire) {
                 match commands.try_recv() {
@@ -559,7 +581,12 @@ mod tests {
                             response
                         }
                         b"SEND" => {
-                            ensure!(value.starts_with(b"/sdcard/"), "wrong fake path");
+                            ensure!(
+                                value.starts_with(b"/sdcard/")
+                                    || self.mirror_protocol.load(Ordering::Acquire)
+                                        && value.starts_with(b"/data/local/tmp/scrcpy-server.jar,"),
+                                "wrong fake path"
+                            );
                             file.clear();
                             Vec::new()
                         }
@@ -752,6 +779,33 @@ mod tests {
     }
 
     #[test]
+    fn large_binary_streams_exceed_the_channel_event_queue_without_stalling() {
+        let fixture = fixture();
+        let mut stream = socket(&fixture);
+        stream
+            .set_read_timeout(Some(Duration::from_secs(15)))
+            .unwrap();
+        stream
+            .set_write_timeout(Some(Duration::from_secs(15)))
+            .unwrap();
+        send(&mut stream, "host:transport:board");
+        assert_eq!(status(&mut stream), *b"OKAY");
+        send(&mut stream, "sync:");
+        assert_eq!(status(&mut stream), *b"OKAY");
+        let payload: Vec<_> = (0..3 * 1024 * 1024)
+            .map(|offset| (offset % 251) as u8)
+            .collect();
+        let mut writer = stream.try_clone().unwrap();
+        thread::scope(|scope| {
+            let sending = scope.spawn(|| writer.write_all(&payload));
+            let mut received = vec![0; payload.len()];
+            stream.read_exact(&mut received).unwrap();
+            sending.join().unwrap().unwrap();
+            assert_eq!(received, payload);
+        });
+    }
+
+    #[test]
     fn scrcpy_forward_is_local_and_existing_connections_survive_forward_removal() {
         let fixture = fixture();
         let mut control = socket(&fixture);
@@ -819,6 +873,110 @@ mod tests {
         }
         assert!(fixture.owner.active_devices().is_empty());
         assert!(TcpListener::bind(address).is_ok());
+    }
+
+    #[test]
+    #[ignore = "requires bundled native scrcpy and ADB; isolated fake LAN devices only"]
+    fn native_scrcpy_reaches_the_remote_video_socket() {
+        let fixture = fixture();
+        fixture.backend.file_protocol.store(true, Ordering::Release);
+        fixture
+            .backend
+            .mirror_protocol
+            .store(true, Ordering::Release);
+        let connection = super::super::AdbConnection::remote(
+            "board".into(),
+            "LAN test".into(),
+            fixture.proxy.clone(),
+        )
+        .unwrap();
+        let executable =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("dist/scrcpy/scrcpy.exe");
+        let temporary = tempfile::tempdir().unwrap();
+        let log = std::fs::File::create(temporary.path().join("scrcpy.log")).unwrap();
+        let mut command = super::super::mirror::mirror_command(
+            &connection,
+            &executable,
+            &connection.program().unwrap(),
+            false,
+        );
+        command
+            .args([
+                "--no-control",
+                "--no-video-playback",
+                "--time-limit=1",
+                "--record-format=mkv",
+            ])
+            .arg(format!(
+                "--record={}",
+                temporary.path().join("test.mkv").display()
+            ))
+            .stdout(std::process::Stdio::from(log.try_clone().unwrap()))
+            .stderr(std::process::Stdio::from(log));
+        let (mut process, group) =
+            super::super::process::CommandGroup::spawn(&mut command).unwrap();
+        group.terminate_on_close().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(12);
+        let reached = loop {
+            if fixture
+                .backend
+                .services
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|service| service.starts_with("localabstract:scrcpy_"))
+            {
+                break true;
+            }
+            if process.try_wait().unwrap().is_some() || Instant::now() >= deadline {
+                break false;
+            }
+            thread::sleep(Duration::from_millis(20));
+        };
+        group.terminate();
+        let _ = process.kill();
+        let _ = process.wait();
+        let output = std::fs::read_to_string(temporary.path().join("scrcpy.log")).unwrap();
+        assert!(
+            reached,
+            "scrcpy did not reach video socket: {output}; services: {:?}",
+            fixture.backend.services.lock().unwrap()
+        );
+    }
+
+    #[test]
+    #[ignore = "requires an installed ADB client; only connects to isolated fake LAN devices"]
+    fn installed_adb_accepts_fixed_port_forwarding_used_by_scrcpy() {
+        let fixture = fixture();
+        let connection = super::super::AdbConnection::remote(
+            "board".into(),
+            "LAN test".into(),
+            fixture.proxy.clone(),
+        )
+        .unwrap();
+        let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        let local = format!("tcp:{port}");
+        let output = connection
+            .run(
+                &[
+                    "forward".as_ref(),
+                    local.as_ref(),
+                    "localabstract:scrcpy_1234abcd".as_ref(),
+                ],
+                Duration::from_secs(5),
+                &mut || false,
+            )
+            .unwrap();
+        assert!(output.is_empty());
+        let mut video = TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, port)).unwrap();
+        video
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let mut bytes = [0; 12];
+        video.read_exact(&mut bytes).unwrap();
+        assert_eq!(&bytes, b"video-header");
     }
 
     #[test]

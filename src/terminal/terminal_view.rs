@@ -300,6 +300,14 @@ struct HoveredLink {
 }
 
 pub struct TerminalView {
+    timestamp_subscription: Option<Subscription>,
+    timestamp_target: Option<(
+        Entity<crate::host::HostStore>,
+        String,
+        Option<crate::host::HostId>,
+    )>,
+    timestamp_marks: [Option<super::LineTimestamp>; 2],
+    timestamp_generation: u64,
     engine: Entity<TerminalEngine>,
     tab_active: bool,
     tab_activated: bool,
@@ -348,6 +356,128 @@ pub struct TerminalView {
 }
 
 impl TerminalView {
+    pub fn bind_timestamps(
+        &mut self,
+        store: Entity<crate::host::HostStore>,
+        key: String,
+        host: Option<crate::host::HostId>,
+        cx: &mut Context<Self>,
+    ) {
+        let enabled = store.read(cx).timestamps_enabled(&key);
+        self.engine
+            .update(cx, |engine, cx| engine.set_timestamps_enabled(enabled, cx));
+        let observed_key = key.clone();
+        self.timestamp_subscription = Some(cx.observe(&store, move |this, store, cx| {
+            let enabled = store.read(cx).timestamps_enabled(&observed_key);
+            if this.engine.read(cx).timestamps_enabled() != enabled {
+                this.engine
+                    .update(cx, |engine, cx| engine.set_timestamps_enabled(enabled, cx));
+                cx.notify();
+            }
+        }));
+        self.timestamp_target = Some((store, key, host));
+        cx.notify();
+    }
+
+    pub fn timestamp_command(
+        &mut self,
+        command: &crate::utilities::UtilityCommand,
+        cx: &mut Context<Self>,
+    ) {
+        use crate::utilities::UtilityCommand;
+        match command {
+            UtilityCommand::SetBoundary(end) => {
+                let generation = self.engine.read(cx).generation();
+                if let Some(stamp) = self.engine.read(cx).selected_timestamp(*end) {
+                    if self.timestamp_generation != generation {
+                        self.timestamp_marks = [None, None];
+                    }
+                    self.timestamp_generation = generation;
+                    self.timestamp_marks[usize::from(*end)] = Some(stamp);
+                }
+            }
+            UtilityCommand::Toggle(enabled) => {
+                if let Some((store, key, host)) = &self.timestamp_target {
+                    store.update(cx, |store, cx| {
+                        store.set_timestamps_enabled(key.clone(), *host, *enabled, cx)
+                    });
+                }
+            }
+            UtilityCommand::Pick(_, stamp)
+                if self.engine.read(cx).timestamp_is_retained(*stamp) =>
+            {
+                let generation = self.engine.read(cx).generation();
+                if self.timestamp_generation != generation || self.timestamp_marks[1].is_some() {
+                    self.timestamp_marks = [None, None];
+                }
+                self.timestamp_generation = generation;
+                if self.timestamp_marks[0].is_none() {
+                    self.timestamp_marks[0] = Some(*stamp);
+                } else {
+                    self.timestamp_marks[1] = Some(*stamp);
+                }
+            }
+            UtilityCommand::Clear => self.timestamp_marks = [None, None],
+            UtilityCommand::Copy => {
+                if let Some(text) = self.engine.read(cx).timestamped_selection() {
+                    cx.write_to_clipboard(ClipboardItem::new_string(text));
+                }
+            }
+            UtilityCommand::CopyDifference => {
+                if let Some(text) = self.timestamp_difference(cx) {
+                    cx.write_to_clipboard(ClipboardItem::new_string(text));
+                }
+            }
+            _ => {}
+        }
+        cx.notify();
+    }
+
+    pub fn timestamp_marks(&self, cx: &App) -> [Option<super::LineTimestamp>; 2] {
+        if self.engine.read(cx).generation() == self.timestamp_generation {
+            self.timestamp_marks
+        } else {
+            [None, None]
+        }
+    }
+    pub fn timestamp_difference(&self, cx: &App) -> Option<String> {
+        let [Some(first), Some(last)] = self.timestamp_marks(cx) else {
+            return None;
+        };
+        let millis = first.elapsed_ns.abs_diff(last.elapsed_ns) as f64 / 1_000_000.;
+        Some(
+            t!(
+                "utilities.difference",
+                seconds = format!("{:.3}", millis / 1000.),
+                millis = format!("{millis:.3}")
+            )
+            .to_string(),
+        )
+    }
+    pub fn timestamp_enabled(&self, cx: &App) -> bool {
+        self.engine.read(cx).timestamps_enabled()
+    }
+    pub fn has_timestamp_target(&self, cx: &App) -> bool {
+        self.timestamp_target
+            .as_ref()
+            .is_some_and(|(store, _, host)| {
+                host.is_none_or(|host| store.read(cx).host(host).is_some())
+            })
+    }
+
+    pub fn visible_timestamps(&self, cx: &App) -> Vec<super::LineTimestamp> {
+        self.engine.read(cx).visible_timestamps()
+    }
+
+    pub fn timestamp_selection_available(&self, end: bool, cx: &App) -> bool {
+        !self.find.as_ref().is_some_and(|find| find.matching_lines)
+            && self.engine.read(cx).selected_timestamp(end).is_some()
+    }
+
+    pub fn timestamp_copy_available(&self, cx: &App) -> bool {
+        !self.find.as_ref().is_some_and(|find| find.matching_lines)
+            && self.engine.read(cx).has_selection()
+    }
     pub fn new(
         element_id: impl Into<ElementId>,
         label: impl Fn(&App) -> SharedString + 'static,
@@ -474,6 +604,10 @@ impl TerminalView {
 
         Self {
             engine,
+            timestamp_target: None,
+            timestamp_subscription: None,
+            timestamp_marks: [None, None],
+            timestamp_generation: 0,
             tab_active: false,
             tab_activated: false,
             unread_output: false,
@@ -615,6 +749,75 @@ impl TerminalView {
 
     pub fn serial_modes(&self, cx: &App) -> super::SerialDataModes {
         self.engine.read(cx).serial_modes()
+    }
+
+    pub(crate) fn serial_tool_encoding(&self, cx: &App) -> crate::host::TerminalEncoding {
+        self.engine.read(cx).serial_tool_encoding()
+    }
+
+    pub(crate) fn serial_tool_snapshot(&self, cx: &App) -> super::serial_tools::SerialToolSnapshot {
+        self.engine.read(cx).serial_tool_snapshot()
+    }
+
+    pub(crate) fn serial_tool_capture(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        self.engine.read(cx).serial_tool_capture(enabled);
+        cx.notify();
+    }
+
+    pub(crate) fn serial_tool_clear(&mut self, cx: &mut Context<Self>) {
+        self.engine.read(cx).serial_tool_clear();
+        cx.notify();
+    }
+
+    pub(crate) fn serial_tool_message(
+        &self,
+        text: &str,
+        hex: bool,
+        ending: crate::serial::SerialLineEnding,
+        crc: bool,
+        cx: &App,
+    ) -> Result<Vec<u8>, SharedString> {
+        let engine = self.engine.read(cx);
+        Ok(crate::serial::prepare_message(
+            engine.serial_tool_encode(text, hex)?,
+            ending,
+            crc,
+        ))
+    }
+
+    pub(crate) fn serial_tool_send_bytes(
+        &self,
+        bytes: Vec<u8>,
+        cx: &App,
+    ) -> Result<(), SharedString> {
+        self.engine.read(cx).serial_tool_send(bytes)
+    }
+
+    pub(crate) fn serial_tool_rule(
+        &mut self,
+        rule: Option<(&str, &str, bool)>,
+        cx: &mut Context<Self>,
+    ) -> Result<(), SharedString> {
+        let engine = self.engine.read(cx);
+        let rule = rule
+            .map(|(pattern, reply, hex)| {
+                Ok::<_, SharedString>((
+                    engine.serial_tool_encode(pattern, hex)?,
+                    engine.serial_tool_encode(reply, hex)?,
+                ))
+            })
+            .transpose()?;
+        engine.serial_tool_rule(rule)?;
+        cx.notify();
+        Ok(())
+    }
+
+    pub(crate) fn serial_tool_baud(
+        &self,
+        baud: u32,
+        cx: &App,
+    ) -> Result<std::sync::mpsc::Receiver<Result<(), String>>, SharedString> {
+        self.engine.read(cx).serial_tool_baud(baud)
     }
 
     pub(super) fn set_serial_modes(&self, modes: super::SerialDataModes, cx: &mut Context<Self>) {
@@ -1670,6 +1873,86 @@ impl Render for TerminalView {
             requested_size: self.requested_size,
         };
 
+        let stamps = element.snapshot.timestamps.clone();
+        let row_height = font.row_height(window);
+        let marks = self.timestamp_marks(cx);
+        let owner = cx.entity_id();
+        let has_stamps = self.engine.read(cx).timestamps_enabled();
+        let timestamp_width = if has_stamps {
+            window
+                .text_system()
+                .shape_line(
+                    "[ 00:00:00:000 ]".into(),
+                    font.size,
+                    &[TextRun {
+                        len: "[ 00:00:00:000 ]".len(),
+                        font: gpui_kit::font(font.family(cx)),
+                        color: cx.theme().foreground,
+                        background_color: None,
+                        underline: None,
+                        strikethrough: None,
+                    }],
+                    None,
+                )
+                .width()
+        } else {
+            Pixels::ZERO
+        };
+        let gutter = v_flex()
+            .id("terminal-timestamps")
+            .test_support()
+            .flex_shrink_0()
+            .w(timestamp_width)
+            .overflow_hidden()
+            .on_scroll_wheel(
+                cx.listener(move |this, event: &ScrollWheelEvent, window, cx| {
+                    if !this.zoom_with_wheel(event, row_height, window, cx)
+                        && !this.engine.read(cx).mode().contains(TermMode::ALT_SCREEN)
+                    {
+                        let lines = this.scroll_accumulator.consume(
+                            event.delta,
+                            row_height,
+                            ScrollTarget::History,
+                        );
+                        this.engine
+                            .update(cx, |engine, cx| engine.scroll(lines, cx));
+                    }
+                    cx.stop_propagation();
+                }),
+            )
+            .on_key_down(|_, _, cx| cx.stop_propagation())
+            .children(stamps.into_iter().map(|stamp| {
+                div().h(row_height).children(stamp.map(|stamp| {
+                    Button::new(("timestamp-row", stamp.id))
+                        .ghost()
+                        .w_full()
+                        .h(row_height)
+                        .p_0()
+                        .child(
+                            div()
+                                .id(("timestamp-text", stamp.id))
+                                .test_support()
+                                .w_full()
+                                .font_family(font.family(cx))
+                                .text_size(font.size)
+                                .line_height(row_height)
+                                .whitespace_nowrap()
+                                .aria_label(stamp.display())
+                                .child(stamp.display()),
+                        )
+                        .accessibility_label(stamp.full())
+                        .selected(marks.contains(&Some(stamp)))
+                        .on_click(move |_, window, cx| {
+                            window.dispatch_action(
+                                Box::new(crate::app::UtilityAction(
+                                    crate::utilities::UtilityCommand::Pick(owner, stamp),
+                                )),
+                                cx,
+                            )
+                        })
+                }))
+            }));
+
         let terminal = div()
             .id(self.element_id.clone())
             .test_support()
@@ -1692,7 +1975,21 @@ impl Render for TerminalView {
                     cx.emit(TerminalEvent::FilesDropped(paths.paths().to_vec()));
                 }))
             })
-            .child(element)
+            .child(
+                h_flex()
+                    .size_full()
+                    .items_start()
+                    .when(has_stamps, |row| row.child(gutter))
+                    .child(
+                        div()
+                            .id("terminal-grid")
+                            .test_support()
+                            .flex_1()
+                            .min_w_0()
+                            .h_full()
+                            .child(element),
+                    ),
+            )
             .when_some(context_menu, |terminal, (menu, position)| {
                 terminal.child(
                     deferred(

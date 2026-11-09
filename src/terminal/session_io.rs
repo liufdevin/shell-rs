@@ -105,6 +105,7 @@ impl DailyLog {
 
 #[derive(Default)]
 pub(super) struct TerminalOptions {
+    pub timestamps: bool,
     pub encoding: crate::host::TerminalEncoding,
     pub remote: bool,
     pub shared_shell: bool,
@@ -218,6 +219,8 @@ impl Recording {
 
 #[derive(Default)]
 pub(super) struct SessionIo {
+    pub serial: AtomicBool,
+    pub timestamps_enabled: AtomicBool,
     pub receive_hex: AtomicBool,
     pub send_hex: AtomicBool,
     recording: Mutex<Option<Recording>>,

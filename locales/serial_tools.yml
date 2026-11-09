@@ -1,0 +1,133 @@
+_version: 2
+serial.tool.scope:
+  zh-CN: 复用当前主机的串口连接，不会另开端口。采集和自动应答仅对当前标签生效，重连后关闭；隐藏工具不停止应答。
+  en: Uses this host’s existing serial connection without opening another port. Capture and auto-reply apply to this tab and stop on reconnect. Hiding the tool does not stop replies.
+serial.tool.baud:
+  zh-CN: 波特率
+  en: Baud rate
+serial.tool.apply_baud:
+  zh-CN: 应用波特率
+  en: Apply baud rate
+serial.tool.baud_help:
+  zh-CN: 例如 9600、115200、921600。收发共用此速率，仅修改当前连接；重新连接时恢复主机保存的参数。
+  en: For example 9600, 115200 or 921600. Sending and receiving share this rate. Applies to the current connection only; reconnecting restores the saved host settings.
+serial.tool.invalid_baud:
+  zh-CN: 请输入大于 0 的整数波特率，具体速率需设备驱动支持。
+  en: Enter a positive integer baud rate supported by your device driver.
+serial.tool.applying_baud:
+  zh-CN: 正在应用波特率…
+  en: Applying baud rate…
+serial.tool.baud_applied:
+  zh-CN: 当前连接波特率已改为 %{baud}。
+  en: Current connection baud rate changed to %{baud}.
+serial.tool.baud_failed:
+  zh-CN: 无法修改波特率：%{error}
+  en: "Could not change baud rate: %{error}"
+serial.tool.baud_unsupported:
+  zh-CN: 当前连接不支持修改波特率。局域网设备请在被控电脑修改串口参数。
+  en: This connection does not support baud changes. For LAN devices, change serial settings on the device’s computer.
+serial.tool.baud_timeout:
+  zh-CN: 修改波特率超时，请检查连接状态及实际速率后重试。
+  en: Baud change timed out. Check the connection and actual baud rate before retrying.
+serial.tool.hex:
+  zh-CN: 规则 HEX
+  en: Rule HEX
+serial.tool.capture:
+  zh-CN: 采集
+  en: Capture
+serial.tool.count:
+  zh-CN: "采集 %{received} B · 应答 %{replies} 次"
+  en: "%{received} B captured · %{replies} replies"
+serial.tool.copy:
+  zh-CN: 复制
+  en: Copy
+serial.tool.use_capture:
+  zh-CN: 用作条件
+  en: Use as match
+serial.tool.clear:
+  zh-CN: 清空
+  en: Clear
+serial.tool.message:
+  zh-CN: 发送内容
+  en: Send content
+serial.tool.pattern:
+  zh-CN: 收到包含以下内容时
+  en: When received data contains
+serial.tool.reply:
+  zh-CN: 自动发送以下内容
+  en: Reply with
+serial.tool.automatic:
+  zh-CN: 开启自动应答
+  en: Enable auto-reply
+serial.tool.rule_help:
+  zh-CN: 文本使用终端编码；HEX 可发送 0D 0A 等字节，不自动附加回车。每项最多 4 KiB；支持跨数据包匹配，每批最多应答一次，间隔至少 500 ms，60 秒内超过 60 次将暂停。文件传输期间暂停应答。
+  en: Text uses the terminal encoding; HEX accepts bytes such as 0D 0A. No newline is added. Each field is limited to 4 KiB. Matches span packets; replies are limited to one per batch and one per 500 ms, pausing after 60 replies within 60 seconds. Replies pause during file transfers.
+serial.tool.invalid_data:
+  zh-CN: 内容不能为空，且每项最多 4 KiB。HEX 请输入成对的十六进制字符。
+  en: Content must not be empty and each field is limited to 4 KiB. Use paired hexadecimal digits for HEX.
+serial.tool.unavailable:
+  zh-CN: 请先连接串口主机，并等待文件传输或后台查询结束。
+  en: Connect a serial host first and wait for file transfers or background queries to finish.
+serial.tool.queued:
+  zh-CN: 数据已交给当前主机连接发送。
+  en: Data queued on the current host connection.
+serial.tool.circuit_breaker:
+  zh-CN: 自动应答过于频繁，已暂停。请排除设备回显循环后重新开启。
+  en: Auto-reply paused due to excessive activity. Check for device echo loops before enabling it again.
+serial.tool.tab_transfer:
+  zh-CN: 收发
+  en: I/O
+serial.tool.tab_reply:
+  zh-CN: 自动应答
+  en: Auto-reply
+serial.tool.tab_connection:
+  zh-CN: 连接
+  en: Connection
+serial.tool.receive:
+  zh-CN: 接收采集
+  en: Receive capture
+serial.tool.capture_empty:
+  zh-CN: 开启采集后显示新收到的数据
+  en: Enable capture to preview new incoming data
+serial.tool.capture_help:
+  zh-CN: 仅缓存最近 8 KiB，预览最近 256 字节。复制包含缓存内容；用作条件取最近最多 1 KiB，并使用当前接收格式。
+  en: Retains the latest 8 KiB and previews the last 256 bytes. Copy includes the retained data; Use as match takes up to the last 1 KiB in the receive format.
+serial.tool.no_newline:
+  zh-CN: 不加换行
+  en: No newline
+serial.tool.crc:
+  zh-CN: 附加 CRC-16/MODBUS
+  en: Append CRC-16/MODBUS
+serial.tool.crc_help:
+  zh-CN: 默认关闭。按实际发送字节计算 CRC，低字节在前，校验码之后再附加所选换行符。
+  en: Off by default. Computes CRC on the wire bytes, appends it low byte first, then appends the selected line ending.
+serial.tool.send_hex_hint:
+  zh-CN: HEX 字节，例如 01 03 00 00
+  en: HEX bytes, e.g. 01 03 00 00
+serial.tool.send_text_hint:
+  zh-CN: 文本使用终端编码，支持多行
+  en: Multiline text uses the terminal encoding
+serial.tool.repeat:
+  zh-CN: 定时发送
+  en: Repeat send
+serial.tool.stop_repeat:
+  zh-CN: 停止定时发送
+  en: Stop repeat
+serial.tool.repeat_help:
+  zh-CN: 间隔 500–60000 ms，启动后固定发送内容，每轮最多 60 次。切换主机、重连、断开或传输文件时停止。
+  en: Interval 500–60000 ms. Uses a fixed payload for up to 60 sends. Stops on host switch, reconnect, disconnect or file transfer.
+serial.tool.invalid_interval:
+  zh-CN: 发送间隔必须是 500–60000 ms 的整数。
+  en: Send interval must be an integer from 500 to 60000 ms.
+serial.tool.repeating:
+  zh-CN: 正在每 %{interval} ms 发送；可随时关闭。
+  en: Sending every %{interval} ms; turn off to stop.
+serial.tool.repeat_stopped:
+  zh-CN: 定时发送已停止
+  en: Repeat sending stopped
+serial.tool.repeat_complete:
+  zh-CN: 已完成 60 次定时发送
+  en: Completed 60 repeat sends
+serial.tool.rule_brief:
+  zh-CN: 匹配新收到的数据后发送应答。内容最多 4 KiB，规则 HEX 与顶部 HEX 收发独立。
+  en: Replies when new incoming data matches. Up to 4 KiB per field. Rule HEX is independent of the HEX receive/send controls above.

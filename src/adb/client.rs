@@ -149,6 +149,7 @@ impl AdbConnection {
             &std::net::SocketAddr::from(([127, 0, 0, 1], 5037)),
             Duration::from_secs(3),
         )?;
+        stream.set_nodelay(true)?;
         stream.set_read_timeout(Some(Duration::from_secs(3)))?;
         stream.set_write_timeout(Some(Duration::from_secs(3)))?;
         let transport = self

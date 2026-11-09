@@ -41,7 +41,7 @@ fn from_sql(id: i64) -> u64 {
 /// command snippets, 15 the serial hosts, 16 the Telnet hosts, 17 each
 /// host's right sidebar, 18 the saved local terminals, 19 their titles, 20
 /// what sync needs, 21 each host's local connection log.
-const SCHEMA_VERSION: i64 = 26;
+const SCHEMA_VERSION: i64 = 27;
 
 /// The whole schema, as a new database gets it.
 ///
@@ -112,6 +112,10 @@ const SCHEMA_VERSION: i64 = 26;
 /// the same place (`a_column_added_later_matches_the_schema`). A CHECK
 /// cannot be changed that way: the table is made again (see `add_telnet`).
 const SCHEMA: &str = "\
+CREATE TABLE terminal_timestamp_preferences (
+    target TEXT PRIMARY KEY NOT NULL,
+    host_id INTEGER REFERENCES hosts(id) ON DELETE CASCADE
+) STRICT;
 CREATE TABLE groups (
     id         INTEGER PRIMARY KEY,
     parent_id  INTEGER REFERENCES groups(id) ON DELETE CASCADE,
@@ -298,7 +302,7 @@ enum Step {
 ///
 /// A step is history: it says what that version's change was, and stays as
 /// written when `SCHEMA` changes again.
-const STEPS: [(i64, Step); 13] = [
+const STEPS: [(i64, Step); 14] = [
     (
     13,
     // The command snippets.
@@ -414,6 +418,7 @@ COMMIT;",
     (23, Step::Sql("BEGIN; ALTER TABLE hosts ADD COLUMN serial_linux_shell INTEGER NOT NULL DEFAULT 0 CHECK (serial_linux_shell IN (0, 1)); PRAGMA user_version = 24; COMMIT;")),
     (24, Step::Sql("BEGIN; ALTER TABLE hosts ADD COLUMN monitor_settings TEXT NOT NULL DEFAULT '{}'; PRAGMA user_version = 25; COMMIT;")),
     (25, Step::Sql("BEGIN; ALTER TABLE hosts ADD COLUMN device_log_settings TEXT NOT NULL DEFAULT '{}'; PRAGMA user_version = 26; COMMIT;")),
+    (26, Step::Sql("BEGIN; CREATE TABLE IF NOT EXISTS terminal_timestamp_preferences (target TEXT PRIMARY KEY NOT NULL, host_id INTEGER REFERENCES hosts(id) ON DELETE CASCADE) STRICT; PRAGMA user_version = 27; COMMIT;")),
 ];
 
 fn add_daily_logs(connection: &Connection) -> rusqlite::Result<()> {
@@ -728,6 +733,30 @@ impl std::error::Error for OpenError {
 }
 
 impl HostDatabase {
+    pub fn timestamp_targets(&self) -> rusqlite::Result<HashSet<String>> {
+        self.connection
+            .prepare("SELECT target FROM terminal_timestamp_preferences")?
+            .query_map([], |row| row.get(0))?
+            .collect()
+    }
+
+    pub fn set_timestamp_target(
+        &self,
+        target: &str,
+        host: Option<HostId>,
+        enabled: bool,
+    ) -> rusqlite::Result<()> {
+        if enabled {
+            self.connection.execute("INSERT INTO terminal_timestamp_preferences(target, host_id) VALUES (?1, ?2) ON CONFLICT(target) DO UPDATE SET host_id = excluded.host_id", params![target, host.map(|host| to_sql(host.0))])?;
+        } else {
+            self.connection.execute(
+                "DELETE FROM terminal_timestamp_preferences WHERE target = ?1",
+                params![target],
+            )?;
+        }
+        Ok(())
+    }
+
     /// Open the database at `path`, creating it if it is not there yet.
     pub fn open(path: &Path) -> Result<Self, OpenError> {
         Self::prepare(Connection::open(path)?)
@@ -2149,6 +2178,28 @@ mod tests {
         assert!(data.hosts.is_empty());
         assert!(data.recent.is_empty());
         assert!(data.forwards.is_empty());
+    }
+
+    #[test]
+    fn version_26_adds_empty_timestamp_preferences_without_changing_hosts() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("timestamps.db");
+        let database = HostDatabase::open(&path).unwrap();
+        database
+            .connection
+            .execute_batch("DROP TABLE terminal_timestamp_preferences; PRAGMA user_version = 26;")
+            .unwrap();
+        drop(database);
+        let database = HostDatabase::open(&path).unwrap();
+        assert!(database.timestamp_targets().unwrap().is_empty());
+        assert!(database.load().unwrap().hosts.is_empty());
+        assert_eq!(
+            database
+                .connection
+                .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+                .unwrap(),
+            SCHEMA_VERSION
+        );
     }
 
     #[test]

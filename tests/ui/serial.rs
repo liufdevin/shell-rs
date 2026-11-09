@@ -960,6 +960,7 @@ async fn serial_hex_sends_actual_bytes_and_rejects_invalid_input_without_sending
     })
     .await;
     assert_eq!(line.writes.lock().unwrap()[1], vec![0x41, 0]);
+    in_frame(cx, handle, |window, cx| window.clear_notifications(cx));
     in_frame(cx, handle, |window, cx| {
         window.click(("serial-hex-transmit", 1_u64), cx)
     });

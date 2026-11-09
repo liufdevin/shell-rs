@@ -1,4 +1,7 @@
 _version: 2
+services.panel.unreadable:
+  zh-CN: "%{count} 项服务读取失败"
+  en: "%{count} services could not be read"
 
 # 系统服务: a Linux host's systemd services. systemd's states keep the
 # words systemd uses.

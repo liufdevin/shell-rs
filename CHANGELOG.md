@@ -8,6 +8,21 @@ One section per version, titled `## [version]`, optionally followed by a date. E
 
 ### Added
 
+- Removed New local terminal from keyboard shortcut settings while retaining its toolbar button. Added customizable Duplicate current terminal, defaulting to Ctrl+Shift+D (Command+Shift+D on macOS), using the existing tab duplication behavior for the current remote terminal.
+
+- Added `shelllf-cli connect <host-id>` to open, reuse or reconnect a desktop terminal. Serial hosts with Linux shell mode now support `exec --terminal`, with HEX-mode guards. The desktop retains ownership of the port; the CLI does not bypass device login or port-busy restrictions.
+- Service discovery now retries units individually when a bulk query fails, preventing older systemd versions from silently hiding Bluetooth and custom services after one broken unit. Remaining unreadable units are reported in the summary.
+
+- Reorganized Serial tools into I/O, Auto-reply and Connection tabs, with HEX receive/send on one row. Added multiline sending, explicit LF/CR/CRLF endings, opt-in CRC-16/MODBUS and bounded repeat sending through the existing host connection. Auto-reply retains an independent Rule HEX setting.
+
+- Receive timestamps now use `[ 13:50:47:016 ]`, match the terminal font and size, and sit directly beside output with no excess gutter padding. Measurement details and timestamped copying retain the full date and time zone.
+
+- Fixed LAN ADB mirroring stalling while uploading the server: unused SSH channel receivers no longer block sustained input or large transfers, and forwarding uses low-latency TCP. On Windows, mirroring is reported as running only after a visible window appears; startup timeouts stop the process and log diagnostics. Shared USB devices do not require Wi-Fi debugging. Update both computers.
+
+- Expanded the serial sidebar into Serial tools: capture incoming data, send text or HEX, automatically reply to matching content, and apply a custom baud rate to the existing port (shared by sending and receiving, current connection only). Capture is bounded; matching spans chunks with echo suppression, throttling and a circuit breaker. Replies stop on disconnect or reconnect without opening another serial port.
+
+- Added Utilities in the right sidebar with per-host receive timestamps, millisecond display, two-line monotonic interval measurement and timestamped copying. Metadata stays separate from terminal bytes and is bounded by retained history. Wrapping, scrolling and normal resizing retain timestamps; full-screen applications have no timestamp overlay. LAN terminal preferences are scoped by peer identity and shared resource ID without modifying remote devices or raw log files.
+
 - LAN pairing passwords now require at least six characters, with a shared UI/core minimum and updated Chinese/English guidance. Matching confirmation, password hashing, failed-attempt limits and existing longer passwords remain unchanged.
 
 - LAN-shared SSH hosts now open continuous interactive terminals with multiple tabs, keyboard input, Ctrl+C, resizing, exit codes and reconnecting. Credentials, jump/proxy routes and host-key checks stay on the sharing computer. Independent SSH grants support live revocation, including silent streams, with bounded metadata auditing. Shared SSH SFTP, monitoring sidebars, port forwarding, virtual COM ports and external ADB forwarding are not included.

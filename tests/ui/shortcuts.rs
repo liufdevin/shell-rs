@@ -60,6 +60,99 @@ fn overrides(workspace: &Entity<Workspace>, cx: &mut TestAppContext) -> serde_js
 }
 
 #[gpui_kit::test]
+fn shortcut_settings_replace_new_local_terminal_with_duplicate_current(cx: &mut TestAppContext) {
+    let (handle, _) = open_workspace(cx);
+    assert!(Shortcut::find("new-local-terminal").is_none());
+    open_shortcuts(cx, handle);
+    scroll_to_tab_shortcuts(cx, handle);
+    in_frame(cx, handle, |window, _| {
+        assert!(
+            window
+                .try_find("shortcut-keys-new-local-terminal")
+                .is_none()
+        );
+        assert!(
+            window
+                .find("shortcut-keys-duplicate-active-terminal")
+                .visible()
+        );
+    });
+}
+
+#[gpui_kit::test]
+async fn duplicate_current_shortcut_follows_the_active_terminal_and_custom_keys(
+    cx: &mut TestAppContext,
+) {
+    let factory = Arc::new(FakeTerminalFactory::default());
+    let (handle, workspace) = open_workspace_with_remote_factory(cx, HostStore::seed(), factory);
+    let duplicate = Shortcut::find("duplicate-active-terminal").unwrap();
+    in_frame(cx, handle, |window, cx| {
+        window.click(("terminal-tab", INITIAL_WEB_TERMINAL), cx)
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.press(duplicate.default_keys(), cx)
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(5), |_, cx| {
+        workspace
+            .read(cx)
+            .remote_terminal(RemoteTerminalId(3))
+            .is_some()
+    })
+    .await;
+    cx.update(|cx| {
+        let copy = workspace
+            .read(cx)
+            .remote_terminal(RemoteTerminalId(3))
+            .unwrap()
+            .read(cx);
+        assert_eq!(copy.host_id(), HostId(WEB_01));
+    });
+    let custom = primary("alt-d");
+    cx.update(|cx| {
+        let settings = workspace.read(cx).settings().clone();
+        settings.update(cx, |settings, cx| {
+            settings.update(
+                |settings| settings.shortcuts.set(duplicate, custom.clone()),
+                cx,
+            )
+        });
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.click(("terminal-tab", INITIAL_WEB_TERMINAL), cx)
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.press(duplicate.default_keys(), cx)
+    });
+    cx.run_until_parked();
+    cx.update(|cx| {
+        assert!(
+            workspace
+                .read(cx)
+                .remote_terminal(RemoteTerminalId(4))
+                .is_none()
+        )
+    });
+    in_frame(cx, handle, |window, cx| window.press(&custom, cx));
+    cx.wait_for(handle.into(), Duration::from_secs(5), |_, cx| {
+        workspace
+            .read(cx)
+            .remote_terminal(RemoteTerminalId(4))
+            .is_some()
+    })
+    .await;
+    in_frame(cx, handle, |window, cx| window.click("open-settings", cx));
+    in_frame(cx, handle, |window, cx| window.press(&custom, cx));
+    cx.update(|cx| {
+        assert!(
+            workspace
+                .read(cx)
+                .remote_terminal(RemoteTerminalId(5))
+                .is_none()
+        )
+    });
+}
+
+#[gpui_kit::test]
 fn tabs_are_switched_from_the_keyboard(cx: &mut TestAppContext) {
     let (handle, workspace) = open_workspace(cx);
     in_frame(cx, handle, |window, cx| {

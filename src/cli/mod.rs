@@ -105,7 +105,7 @@ Reads one JSON object from stdin. Every field may be left out; `update` changes 
   passphrase   The key's passphrase, saved to the keychain; null deletes it.
 What `shelllf-cli credentials show <ID> --json` prints can be edited and passed back as it is.";
 
-/// Run commands, move files and manage the SSH hosts saved in ShellLF.
+/// Run commands, move files and manage the hosts saved in ShellLF.
 ///
 /// ShellLF holds the passwords and keys and makes the connections; this
 /// command never reads them. One given to it to save goes to the keychain
@@ -119,6 +119,13 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Open or reuse a saved host's terminal in ShellLF, including serial ports.
+    /// Waits until the transport connects; a serial console may still need login.
+    Connect {
+        id: String,
+        #[arg(long)]
+        json: bool,
+    },
     Lan {
         #[command(subcommand)]
         command: LanCommand,
@@ -161,7 +168,7 @@ enum Command {
         /// login. It sends Ctrl-C first, which interrupts whatever runs
         /// there. Its stderr comes as stdout; with --json, the result also
         /// has "context": the user, host, folder and shell it ran in. Bash,
-        /// dash and busybox ash only.
+        /// dash and busybox ash only. Serial hosts require Linux shell mode.
         #[arg(long)]
         terminal: bool,
     },
@@ -367,6 +374,10 @@ pub fn main(args: Vec<OsString>) -> i32 {
 /// cannot be sent.
 fn request(command: Command, console: &mut Console) -> Result<Request, i32> {
     Ok(match command {
+        Command::Connect { id, json } => {
+            console.json |= json;
+            Request::Connect { host: id }
+        }
         Command::Lan { command } => {
             let request = match command {
                 LanCommand::Peers => shellrs_lan::ClientRequest::Peers,

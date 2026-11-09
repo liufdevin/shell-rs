@@ -183,6 +183,7 @@ impl SshTerminalTransport {
                         side_queue.push_back(Box::pin(answer_sftp(&handle, fingerprint.clone(), request)));
                     }
                     Some(TerminalTransportCommand::PromptReply { .. })
+                    | Some(TerminalTransportCommand::SetSerialBaud { .. })
                     | Some(TerminalTransportCommand::SerialTransfer(_))
                     | Some(TerminalTransportCommand::SendBreak) => {}
                 },

@@ -1,7 +1,7 @@
 _version: 2
 tools.kind.serial:
-  zh-CN: 串口配置
-  en: Serial settings
+  zh-CN: 串口工具
+  en: Serial tools
 
 # The right sidebar: its ten tools, the words they share, and the
 # workspace's confirmations and notifications for what they run.

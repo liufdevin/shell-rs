@@ -104,18 +104,9 @@ impl Workspace {
     /// while it is on screen, else another that is.
     pub(super) fn tool_target(&self, cx: &App) -> Option<ToolTarget> {
         let visible = self.visible_center_tabs(cx);
-        let target = self
-            .tool_target_choice
+        self.tool_target_choice
             .filter(|target| visible.contains(&target.tab()))
-            .or_else(|| visible.iter().copied().find_map(ToolTarget::of));
-        target.filter(|target| match target {
-            ToolTarget::Local(id) => !self.lan_local_factories.contains_key(id),
-            ToolTarget::Remote(id) => self.terminals.get(id).is_none_or(|terminal| {
-                !self
-                    .lan_serial_transports
-                    .contains_key(&terminal.read(cx).host_id())
-            }),
-        })
+            .or_else(|| visible.iter().copied().find_map(ToolTarget::of))
     }
 
     /// The SSH terminal the right sidebar works on: none while it goes with
@@ -182,9 +173,16 @@ impl Workspace {
         let shown = self.settings().read(cx).settings().sidebar_tools;
         match self.sidebar_target(cx) {
             None => Vec::new(),
-            Some(SidebarTarget::Local(_)) => ToolKind::ALL
+            Some(SidebarTarget::Local(id)) => ToolKind::ALL
                 .into_iter()
-                .filter(|tool| tool.is_local() && shown.shows(*tool))
+                .filter(|tool| {
+                    shown.shows(*tool)
+                        && if self.lan_local_factories.contains_key(&id) {
+                            *tool == ToolKind::Utilities
+                        } else {
+                            *tool == ToolKind::Projects
+                        }
+                })
                 .collect(),
             Some(SidebarTarget::Remote(terminal)) => {
                 let (os, shell_only) = (terminal.os, terminal.shell_only);
@@ -196,7 +194,9 @@ impl Workspace {
                 ToolKind::ALL
                     .into_iter()
                     .filter(|tool| {
-                        !tool.is_local()
+                        (!tool.is_local() || *tool == ToolKind::Utilities)
+                            && (!self.lan_serial_transports.contains_key(&terminal.host)
+                                || *tool == ToolKind::Utilities)
                             && (*tool != ToolKind::Serial || terminal.serial)
                             && shown.shows(*tool)
                             && tool.works_on(os)
@@ -204,7 +204,8 @@ impl Workspace {
                             && (!telnet
                                 || matches!(
                                     tool,
-                                    ToolKind::Snippets
+                                    ToolKind::Utilities
+                                        | ToolKind::Snippets
                                         | ToolKind::Monitor
                                         | ToolKind::Services
                                         | ToolKind::Processes
@@ -213,7 +214,8 @@ impl Workspace {
                             && (!terminal.serial
                                 || matches!(
                                     tool,
-                                    ToolKind::Snippets
+                                    ToolKind::Utilities
+                                        | ToolKind::Snippets
                                         | ToolKind::Serial
                                         | ToolKind::Files
                                         | ToolKind::Services
@@ -925,6 +927,16 @@ impl Workspace {
     /// turns out to run something else.
     pub(super) fn sync_tool_sidebar(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let target = self.sidebar_target(cx);
+        let utility_view = match &target {
+            Some(SidebarTarget::Remote(terminal)) => Some(terminal.view.clone()),
+            Some(SidebarTarget::Local(id)) => self
+                .local_terminals
+                .get(id)
+                .map(|panel| panel.read(cx).terminal().downgrade()),
+            None => None,
+        };
+        self.tools
+            .update(cx, |tools, cx| tools.set_utilities_target(utility_view, cx));
         let tool = target
             .as_ref()
             .and_then(|target| self.target_tool(target, cx))
@@ -974,7 +986,7 @@ impl Workspace {
         };
         self.tools.update(cx, |tools, cx| {
             tools.set_files(files, window, cx);
-            tools.set_target(target, open, cx);
+            tools.set_target(target, open, window, cx);
         });
         if self.dock_area.read(cx).is_dock_open(DockPlacement::Right) != open {
             // A focus inside the sidebar would go off screen with it.

@@ -203,6 +203,7 @@ impl Network {
                         _ = tokio::time::sleep(Duration::from_millis(100)) => continue
                     };
                     let Ok((stream, address)) = accepted else { continue };
+                    if stream.set_nodelay(true).is_err() { continue; }
                     let address = crate::address::normalize_endpoint(address);
                     if !is_lan(address.ip()) { continue; }
                     let Ok(permit) = connections.clone().try_acquire_owned() else { continue };
@@ -245,7 +246,7 @@ struct PeerHandler {
     address: SocketAddr,
     key: Option<russh::keys::PublicKey>,
     peer: Option<String>,
-    channel: Option<russh::Channel<server::Msg>>,
+    channel: Option<ChannelId>,
     used: bool,
     cancel: Arc<AtomicBool>,
     device_input: Option<tokio::sync::mpsc::Sender<DeviceInput>>,
@@ -335,7 +336,7 @@ impl server::Handler for PeerHandler {
         _: &mut server::Session,
     ) -> Result<(), Self::Error> {
         if self.channel.is_none() && self.peer.is_some() {
-            self.channel = Some(channel);
+            self.channel = Some(channel.id());
             reply.accept().await;
         }
         Ok(())
@@ -743,6 +744,7 @@ pub(super) async fn connect(
     );
     let seen = Arc::new(Mutex::new(Seen::default()));
     let configuration = Arc::new(russh::client::Config {
+        nodelay: true,
         inactivity_timeout: Some(Duration::from_secs(150)),
         keepalive_interval: Some(Duration::from_secs(30)),
         ..Default::default()

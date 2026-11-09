@@ -38,13 +38,13 @@ impl ToolKind {
     pub fn runs_commands(self) -> bool {
         !matches!(
             self,
-            ToolKind::Snippets | ToolKind::Projects | ToolKind::Serial
+            ToolKind::Snippets | ToolKind::Projects | ToolKind::Serial | ToolKind::Utilities
         )
     }
 
     /// Whether the tool goes with local terminals rather than remote ones.
     pub fn is_local(self) -> bool {
-        matches!(self, ToolKind::Projects)
+        matches!(self, ToolKind::Projects | ToolKind::Utilities)
     }
 
     /// Whether the tool works on a host running `os`. A host not identified
@@ -57,7 +57,11 @@ impl ToolKind {
             | ToolKind::Monitor
             | ToolKind::Logs
             | ToolKind::Gpu => os.is_none_or(HostOs::is_linux),
-            ToolKind::Snippets | ToolKind::Files | ToolKind::Projects | ToolKind::Serial => true,
+            ToolKind::Snippets
+            | ToolKind::Files
+            | ToolKind::Projects
+            | ToolKind::Serial
+            | ToolKind::Utilities => true,
             // Wherever `sh` runs `docker`, `kubectl` or `tmux`: Linux, and a
             // Mac with Docker Desktop, kubectl or tmux; and bash's history
             // file wherever `sh` reads it.
@@ -70,6 +74,7 @@ impl ToolKind {
     /// The id of the tool's button in the switch.
     fn button_id(self) -> &'static str {
         match self {
+            ToolKind::Utilities => "tool-utilities",
             ToolKind::Snippets => "tool-snippets",
             ToolKind::History => "tool-history",
             ToolKind::Files => "tool-files",
@@ -130,6 +135,8 @@ pub enum SidebarTarget {
 /// it keeps its state, told which terminal is in front and whether it is on
 /// screen.
 pub struct ToolSidebar {
+    serial_tools: Option<Entity<crate::serial::SerialToolsPanel>>,
+    utilities: Entity<crate::utilities::UtilitiesPanel>,
     tool: ToolKind,
     /// The terminal in front; `None` while the sidebar is hidden for
     /// another kind of tab.
@@ -171,6 +178,8 @@ impl ToolSidebar {
         cx: &mut Context<Self>,
     ) -> Self {
         Self {
+            serial_tools: None,
+            utilities: cx.new(|_| crate::utilities::UtilitiesPanel::new()),
             tool: ToolKind::default(),
             target: None,
             shown: false,
@@ -200,6 +209,18 @@ impl ToolSidebar {
 
     pub fn tool(&self) -> ToolKind {
         self.tool
+    }
+
+    pub fn set_utilities_target(
+        &mut self,
+        view: Option<WeakEntity<TerminalView>>,
+        cx: &mut Context<Self>,
+    ) {
+        self.utilities
+            .update(cx, |utilities, cx| utilities.set_target(view, cx));
+    }
+    pub fn utilities_target(&self, cx: &App) -> Option<Entity<TerminalView>> {
+        self.utilities.read(cx).target()
     }
 
     pub fn set_monitor_connector(
@@ -251,6 +272,7 @@ impl ToolSidebar {
         &mut self,
         target: Option<SidebarTarget>,
         shown: bool,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         if self.target != target || self.shown != shown {
@@ -263,7 +285,7 @@ impl ToolSidebar {
             };
             self.target = target;
             self.shown = shown;
-            self.sync_tools(cx);
+            self.sync_tools(window, cx);
             cx.notify();
         }
     }
@@ -449,7 +471,14 @@ impl ToolSidebar {
 
     /// Point each tool at the SSH terminal, running only the one on screen;
     /// at none beside a local terminal.
-    fn sync_tools(&mut self, cx: &mut Context<Self>) {
+    fn sync_tools(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let serial_target = self
+            .remote()
+            .filter(|terminal| terminal.serial)
+            .map(|terminal| terminal.view.clone());
+        if let Some(tools) = &self.serial_tools {
+            tools.update(cx, |tools, cx| tools.set_target(serial_target, window, cx));
+        }
         let target = self.remote().map(|terminal| ExecTarget {
             terminal: terminal.id,
             view: terminal.view.clone(),
@@ -540,18 +569,27 @@ impl ToolSidebar {
     /// sidebar itself: left on an element no longer drawn, it would take
     /// every window-level shortcut's dispatch path with it.
     pub fn show(&mut self, tool: ToolKind, window: &mut Window, cx: &mut Context<Self>) {
-        if self.tool == tool && (tool != ToolKind::Kubernetes || self.kubernetes.is_some()) {
+        if self.tool == tool
+            && (tool != ToolKind::Kubernetes || self.kubernetes.is_some())
+            && (tool != ToolKind::Serial || self.serial_tools.is_some())
+        {
             return;
         }
         if self.focus_handle.contains_focused(window, cx) {
             window.focus(&self.focus_handle, cx);
         }
         self.tool = tool;
+        if tool == ToolKind::Serial && self.serial_tools.is_none() {
+            self.serial_tools =
+                Some(cx.new(|cx| {
+                    crate::serial::SerialToolsPanel::new(self.dispatch.clone(), window, cx)
+                }));
+        }
         if tool == ToolKind::Kubernetes && self.kubernetes.is_none() {
             self.kubernetes =
                 Some(cx.new(|cx| KubernetesPanel::new(self.dispatch.clone(), window, cx)));
         }
-        self.sync_tools(cx);
+        self.sync_tools(window, cx);
         cx.notify();
     }
 }
@@ -663,6 +701,7 @@ impl Render for ToolSidebar {
             .text_color(cx.theme().sidebar_foreground)
             .when(self.target.is_some(), |sidebar| {
                 let panel = match self.tool {
+                    ToolKind::Utilities => self.utilities.clone().into_any_element(),
                     ToolKind::Snippets => self.snippets.clone().into_any_element(),
                     ToolKind::History => self.history.clone().into_any_element(),
                     ToolKind::Files if serial_controls => v_flex()
@@ -701,6 +740,16 @@ fn serial_transfer_controls_visible(serial: bool, state: Option<ConnectionState>
 }
 
 impl ToolSidebar {
+    pub fn serial_tool_command(
+        &mut self,
+        command: &crate::serial::SerialToolCommand,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(tools) = &self.serial_tools {
+            tools.update(cx, |tools, cx| tools.command(command, window, cx));
+        }
+    }
     pub fn serial_probe_needed(&self, id: RemoteTerminalId, generation: u64) -> bool {
         !self.serial_checks.contains(&(id, generation))
             && self
@@ -814,41 +863,57 @@ impl ToolSidebar {
             Some((terminal.id, view.read(cx).serial_modes(cx)))
         });
         v_flex()
-            .p_3()
+            .size_full()
+            .min_h_0()
             .gap_3()
             .when_some(target, |view, (id, modes)| {
                 view.child(
-                    Checkbox::new(("serial-hex-receive", id.0))
-                        .small()
-                        .label(t!("serial.mode.receive_hex"))
-                        .checked(modes.receive_hex)
-                        .tooltip(t!("serial.mode.scope"))
-                        .on_click({
-                            let dispatch = self.dispatch.clone();
-                            move |_, window, cx| {
-                                dispatch.dispatch_action(&ToggleSerialReceiveHex(id), window, cx)
-                            }
-                        }),
+                    h_flex()
+                        .p_3()
+                        .gap_4()
+                        .flex_shrink_0()
+                        .child(
+                            Checkbox::new(("serial-hex-receive", id.0))
+                                .small()
+                                .w_auto()
+                                .flex_shrink_0()
+                                .label(t!("serial.mode.receive_hex"))
+                                .checked(modes.receive_hex)
+                                .tooltip(t!("serial.mode.scope"))
+                                .on_click({
+                                    let dispatch = self.dispatch.clone();
+                                    move |_, window, cx| {
+                                        dispatch.dispatch_action(
+                                            &ToggleSerialReceiveHex(id),
+                                            window,
+                                            cx,
+                                        )
+                                    }
+                                }),
+                        )
+                        .child(
+                            Checkbox::new(("serial-hex-transmit", id.0))
+                                .small()
+                                .w_auto()
+                                .flex_shrink_0()
+                                .label(t!("serial.mode.send_hex"))
+                                .checked(modes.send_hex)
+                                .tooltip(t!("serial.mode.scope"))
+                                .on_click({
+                                    let dispatch = self.dispatch.clone();
+                                    move |_, window, cx| {
+                                        dispatch.dispatch_action(
+                                            &ToggleSerialSendHex(id),
+                                            window,
+                                            cx,
+                                        )
+                                    }
+                                }),
+                        ),
                 )
-                .child(
-                    Checkbox::new(("serial-hex-transmit", id.0))
-                        .small()
-                        .label(t!("serial.mode.send_hex"))
-                        .checked(modes.send_hex)
-                        .tooltip(t!("serial.mode.scope"))
-                        .on_click({
-                            let dispatch = self.dispatch.clone();
-                            move |_, window, cx| {
-                                dispatch.dispatch_action(&ToggleSerialSendHex(id), window, cx)
-                            }
-                        }),
-                )
-                .child(
-                    div()
-                        .text_sm()
-                        .text_color(cx.theme().muted_foreground)
-                        .child(t!("serial.mode.scope")),
-                )
+            })
+            .when_some(self.serial_tools.clone(), |view, tools| {
+                view.child(div().flex_1().min_h_0().child(tools))
             })
     }
 }

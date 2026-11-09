@@ -173,6 +173,9 @@ impl TerminalPanel {
                 move |_| t!("terminal.remote.label", host = name),
                 transports.factory_for(&connection),
                 TerminalOptions {
+                    timestamps: store
+                        .read(cx)
+                        .timestamps_enabled(&format!("host:{}", host.public_id)),
                     encoding: host.terminal_encoding,
                     remote: true,
                     shared_shell: protocol != ProtocolKind::Ssh,

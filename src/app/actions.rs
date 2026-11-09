@@ -168,6 +168,7 @@ gpui_kit::actions!(
         CollapseAllGroups,
         /// Close the center tab displayed most recently (the one ⌘W acts on).
         CloseActiveTab,
+        DuplicateActiveTerminal,
         /// Show the tab after the current one in its group, the first after
         /// the last.
         NextTab,
@@ -364,6 +365,8 @@ id_actions! {
     /// Show a tool in the right sidebar, or hide the sidebar if it is
     /// already showing that tool.
     ToggleTool(ToolKind);
+    UtilityAction(crate::utilities::UtilityCommand);
+    SerialToolAction(crate::serial::SerialToolCommand);
     /// Browse Kubernetes resources and logs on the SSH host.
     KubernetesAction(KubernetesCommand);
     /// 目录跟随 in a terminal's 文件: follow the terminal's folder, or stop.
@@ -577,6 +580,7 @@ impl SetBroadcastTarget {
 /// A tool of the right sidebar, in the order of the switch beside it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum ToolKind {
+    Utilities,
     #[default]
     Snippets,
     History,
@@ -596,7 +600,7 @@ pub enum ToolKind {
 }
 
 impl ToolKind {
-    pub const ALL: [ToolKind; 14] = [
+    pub const ALL: [ToolKind; 15] = [
         ToolKind::Snippets,
         ToolKind::History,
         ToolKind::Files,
@@ -611,6 +615,7 @@ impl ToolKind {
         ToolKind::Gpu,
         ToolKind::Projects,
         ToolKind::Serial,
+        ToolKind::Utilities,
     ];
 
     /// What `settings.json` calls the tool in 侧栏功能, and the database
@@ -618,6 +623,7 @@ impl ToolKind {
     /// key would bring a hidden tool back, and lose the tool a host keeps.
     pub fn key(self) -> &'static str {
         match self {
+            ToolKind::Utilities => "utilities",
             ToolKind::Snippets => "snippets",
             ToolKind::History => "history",
             ToolKind::Files => "files",
@@ -649,6 +655,7 @@ impl ToolKind {
 
     pub fn label(self) -> SharedString {
         match self {
+            ToolKind::Utilities => t!("utilities.title"),
             ToolKind::Snippets => t!("tools.kind.snippets"),
             ToolKind::History => t!("tools.kind.history"),
             ToolKind::Files => t!("tools.kind.files"),
@@ -670,6 +677,7 @@ impl ToolKind {
     /// nothing about Docker.
     pub fn icon(self) -> Icon {
         Icon::new(match self {
+            ToolKind::Utilities => CatalogIcon::Settings,
             ToolKind::Snippets => CatalogIcon::CodeXml,
             ToolKind::History => CatalogIcon::RotateCcwClock,
             // Not the SFTP button's folder tree, which opens a tab.

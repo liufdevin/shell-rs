@@ -174,7 +174,7 @@ fn serve_shell(
     commands: mpsc::Receiver<TerminalTransportCommand>,
     events: &Sender<TerminalTransportEvent>,
     mut shell: crate::terminal::ShellQuery,
-    baud: u32,
+    mut baud: u32,
 ) -> Result<()> {
     // Set by the reader when the port is gone, and by the command loop when
     // the terminal shuts down.
@@ -241,6 +241,32 @@ fn serve_shell(
                     );
             }
             match commands.recv_timeout(Duration::from_millis(20)) {
+                Ok(TerminalTransportCommand::SetSerialBaud {
+                    baud: requested,
+                    reply,
+                }) => {
+                    let result = (|| -> io::Result<()> {
+                        if requested == 0 || shell.busy() {
+                            return Err(io::Error::other(
+                                t!("serial.tool.unavailable").to_string(),
+                            ));
+                        }
+                        let previous = port.get_configuration()?;
+                        let mut settings = previous.clone();
+                        settings.set_baud_rate(requested)?;
+                        let mut handle = port.try_clone()?;
+                        handle.set_configuration(&settings)?;
+                        if handle.get_configuration()?.get_baud_rate()? != requested {
+                            handle.set_configuration(&previous)?;
+                            return Err(io::Error::other(
+                                t!("serial.tool.invalid_baud").to_string(),
+                            ));
+                        }
+                        baud = requested;
+                        Ok(())
+                    })();
+                    let _ = reply.send(result.map_err(|error| error.to_string()));
+                }
                 Ok(TerminalTransportCommand::WriteData(bytes)) => {
                     port.write_all(&bytes)?;
                 }

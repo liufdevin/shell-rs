@@ -47,6 +47,99 @@ fn store(workspace: &Entity<Workspace>, cx: &mut TestAppContext) -> Entity<HostS
 }
 
 #[gpui_kit::test]
+async fn cli_connect_reuses_and_reconnects_a_serial_terminal_and_executes_on_it(
+    cx: &mut TestAppContext,
+) {
+    let mut hosts = HostStore::empty();
+    let settings = shellrs::host::SerialSettings {
+        linux_shell: true,
+        ..Default::default()
+    };
+    let id = hosts.insert_unnotified(HostDraft::serial("console", "TEST-COM", settings, None));
+    let public_id = hosts.host(id).unwrap().public_id.to_string();
+    let serial = Arc::new(FakeTerminalFactory {
+        behavior: FakeBehavior::Shell {
+            exe: "/bin/bash",
+            ends: true,
+        },
+        ..FakeTerminalFactory::default()
+    });
+    let (handle, workspace) = open_workspace_with_terminals(
+        cx,
+        hosts,
+        Arc::new(FakeTerminalFactory::default()),
+        Arc::new(FixedSerialTerminalTransportProvider::new(serial.clone())),
+    );
+    let open = || CliChange::ConnectHost {
+        host: public_id.clone(),
+    };
+    for _ in 0..2 {
+        let task = in_frame(cx, handle, |window, cx| {
+            workspace.update(cx, |workspace, cx| {
+                workspace.apply_cli_change(open(), window, cx)
+            })
+        });
+        cx.wait_for(handle.into(), Duration::from_secs(5), |_, cx| {
+            workspace
+                .read(cx)
+                .remote_terminal(RemoteTerminalId(1))
+                .is_some_and(|panel| panel.read(cx).lifecycle(cx) == TerminalLifecycle::Running)
+        })
+        .await;
+        assert!(matches!(
+            cx.foreground_executor.block_test(task),
+            Ok(Reply::Connected { terminal: 1, .. })
+        ));
+    }
+    assert_eq!(serial.starts.load(Ordering::SeqCst), 1);
+    let (run, events) = TerminalRun::new("systemctl is-active bluetooth.service".into());
+    assert_eq!(start_run(&workspace, &public_id, &run, cx), Ok(()));
+    assert_eq!(events.recv().unwrap(), RunEvent::Accepted);
+    assert_eq!(run.drive(&events, QUICK, &mut |_| Ok(())), Ok(0));
+    assert!(
+        serial
+            .written_text()
+            .contains("systemctl is-active bluetooth.service")
+    );
+    in_frame(cx, handle, |window, cx| {
+        window.dispatch_action(
+            Box::new(shellrs::app::ToggleSerialSendHex(RemoteTerminalId(1))),
+            cx,
+        )
+    });
+    let (blocked, _) = TerminalRun::new("must-not-send".into());
+    let before = serial.written_text();
+    assert!(matches!(
+        start_run(&workspace, &public_id, &blocked, cx),
+        Err(RunFailure::Encoding(_))
+    ));
+    assert_eq!(serial.written_text(), before);
+    in_frame(cx, handle, |window, cx| {
+        window.dispatch_action(Box::new(DisconnectTerminal(RemoteTerminalId(1))), cx)
+    });
+    let task = in_frame(cx, handle, |window, cx| {
+        workspace.update(cx, |workspace, cx| {
+            workspace.apply_cli_change(open(), window, cx)
+        })
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(5), |_, cx| {
+        serial.starts.load(Ordering::SeqCst) == 2
+            && workspace
+                .read(cx)
+                .remote_terminal(RemoteTerminalId(1))
+                .unwrap()
+                .read(cx)
+                .lifecycle(cx)
+                == TerminalLifecycle::Running
+    })
+    .await;
+    assert!(matches!(
+        cx.foreground_executor.block_test(task),
+        Ok(Reply::Connected { terminal: 1, .. })
+    ));
+}
+
+#[gpui_kit::test]
 fn a_host_from_the_cli_lands_in_the_tree_with_its_group_and_password(cx: &mut TestAppContext) {
     let secrets = Arc::new(InMemorySecretStore::default());
     let (handle, workspace) =

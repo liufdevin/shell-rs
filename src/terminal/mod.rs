@@ -25,11 +25,13 @@ mod notices;
 mod run;
 mod scrollbar;
 mod search;
+mod serial_tools;
 mod session_io;
 mod shell_query;
 mod terminal_panel;
 mod terminal_view;
 mod theme;
+mod timestamps;
 mod transport;
 mod zmodem;
 
@@ -83,6 +85,7 @@ pub use terminal_view::{
     TerminalView,
 };
 pub use theme::{TerminalColors, TerminalTheme, import_xshell_schemes};
+pub use timestamps::LineTimestamp;
 pub(crate) use transport::MONITOR_PAUSED;
 pub(crate) use transport::send_event;
 pub use transport::{

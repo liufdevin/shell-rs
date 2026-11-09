@@ -307,7 +307,8 @@ impl TerminalTransport for FakeTerminalTransport {
                 TerminalTransportCommand::SendBreak => {
                     self.breaks.fetch_add(1, Ordering::SeqCst);
                 }
-                TerminalTransportCommand::PromptReply { .. } => {}
+                TerminalTransportCommand::PromptReply { .. }
+                | TerminalTransportCommand::SetSerialBaud { .. } => {}
                 TerminalTransportCommand::Shutdown => break,
             }
         }

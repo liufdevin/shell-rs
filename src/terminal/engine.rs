@@ -58,6 +58,21 @@ const AI_CITATION_PATTERN: &str = r"\x{e200}cite\x{e202}turn[0-9]+(?:view|search
 
 const OUTPUT_QUEUE_CAPACITY: usize = 64;
 
+fn observe_serial_output(
+    io: &SessionIo,
+    state: &Mutex<Option<super::serial_tools::SerialToolState>>,
+    commands: &mpsc::Sender<TerminalTransportCommand>,
+    bytes: &[u8],
+    suspended: bool,
+) {
+    if io.serial.load(Ordering::Acquire)
+        && let Some(state) = state.lock().unwrap().as_mut()
+        && let Some(reply) = state.receive(bytes, Instant::now(), suspended)
+    {
+        let _ = commands.send(TerminalTransportCommand::Write(reply));
+    }
+}
+
 #[derive(Clone, Default)]
 struct DisplaySearches {
     links: Rc<RefCell<Option<RegexSearch>>>,
@@ -130,6 +145,7 @@ pub struct TerminalCell {
 
 #[derive(Clone, Debug)]
 pub struct TerminalSnapshot {
+    pub timestamps: Vec<Option<super::LineTimestamp>>,
     pub columns: usize,
     pub rows: usize,
     pub cells: Vec<TerminalCell>,
@@ -213,6 +229,195 @@ pub struct TerminalEngine {
 }
 
 impl TerminalEngine {
+    pub(crate) fn serial_tool_encoding(&self) -> TerminalEncoding {
+        self.encoding
+    }
+    pub(crate) fn serial_tool_snapshot(&self) -> super::serial_tools::SerialToolSnapshot {
+        self.runtime
+            .serial_tool
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|state| state.snapshot())
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn serial_tool_capture(&self, enabled: bool) {
+        if self.serial_name.is_some() {
+            self.runtime
+                .serial_tool
+                .lock()
+                .unwrap()
+                .get_or_insert_with(Default::default)
+                .capturing = enabled;
+        }
+    }
+
+    pub(crate) fn serial_tool_clear(&self) {
+        if let Some(state) = self.runtime.serial_tool.lock().unwrap().as_mut() {
+            state.clear();
+        }
+    }
+
+    pub(crate) fn serial_tool_rule(
+        &self,
+        rule: Option<(Vec<u8>, Vec<u8>)>,
+    ) -> Result<(), SharedString> {
+        if rule.is_some() {
+            self.serial_tool_ready()?;
+        }
+        self.runtime
+            .serial_tool
+            .lock()
+            .unwrap()
+            .get_or_insert_with(Default::default)
+            .configure(rule);
+        Ok(())
+    }
+
+    pub(crate) fn serial_tool_encode(
+        &self,
+        text: &str,
+        hex: bool,
+    ) -> Result<Vec<u8>, SharedString> {
+        if text.len() > super::serial_tools::MESSAGE_LIMIT {
+            return Err(t!("serial.tool.invalid_data"));
+        }
+        let bytes = if hex {
+            super::session_io::decode_hex(text)?
+        } else {
+            encode_input(self.encoding, text.as_bytes().to_vec())?
+        };
+        if bytes.is_empty() || bytes.len() > super::serial_tools::MESSAGE_LIMIT {
+            return Err(t!("serial.tool.invalid_data"));
+        }
+        Ok(bytes)
+    }
+
+    fn serial_tool_ready(&self) -> Result<(), SharedString> {
+        if self.serial_name.is_none()
+            || !matches!(self.lifecycle, TerminalLifecycle::Running)
+            || self.runtime.transferring()
+            || lock_run(&self.runtime.run)
+                .as_ref()
+                .is_some_and(RunHandle::is_active)
+        {
+            return Err(t!("serial.tool.unavailable"));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn serial_tool_send(&self, bytes: Vec<u8>) -> Result<(), SharedString> {
+        self.serial_tool_ready()?;
+        self.runtime
+            .commands
+            .send(TerminalTransportCommand::Write(bytes))
+            .map_err(|_| t!("serial.tool.unavailable"))
+    }
+
+    pub(crate) fn serial_tool_baud(
+        &self,
+        baud: u32,
+    ) -> Result<mpsc::Receiver<Result<(), String>>, SharedString> {
+        self.serial_tool_ready()?;
+        let (reply, answer) = mpsc::channel();
+        self.runtime
+            .commands
+            .send(TerminalTransportCommand::SetSerialBaud { baud, reply })
+            .map_err(|_| t!("serial.tool.unavailable"))?;
+        Ok(answer)
+    }
+
+    pub fn set_timestamps_enabled(&mut self, enabled: bool, cx: &mut gpui_kit::Context<Self>) {
+        self.io.timestamps_enabled.store(enabled, Ordering::Release);
+        self.runtime.timestamps.lock().unwrap().enabled = enabled;
+        cx.notify();
+    }
+
+    pub fn timestamps_enabled(&self) -> bool {
+        self.io.timestamps_enabled.load(Ordering::Acquire)
+    }
+
+    pub fn selected_timestamp(&self, end: bool) -> Option<super::LineTimestamp> {
+        let term = self.runtime.term.lock();
+        let selection = term.selection.as_ref()?.to_range(&*term)?;
+        self.runtime.timestamps.lock().unwrap().at(
+            &*term,
+            if end {
+                selection.end.line
+            } else {
+                selection.start.line
+            },
+        )
+    }
+
+    pub fn timestamp_is_retained(&self, stamp: super::LineTimestamp) -> bool {
+        self.runtime.timestamps.lock().unwrap().contains(stamp)
+    }
+
+    pub fn visible_timestamps(&self) -> Vec<super::LineTimestamp> {
+        let term = self.runtime.term.lock();
+        self.runtime
+            .timestamps
+            .lock()
+            .unwrap()
+            .visible(&*term)
+            .into_iter()
+            .flatten()
+            .collect()
+    }
+
+    pub fn timestamped_selection(&self) -> Option<String> {
+        let term = self.runtime.term.lock();
+        let times = self.runtime.timestamps.lock().unwrap();
+        let range = term.selection.as_ref()?.to_range(&*term)?;
+        let mut output = String::new();
+        for line in range.start.line.0..=range.end.line.0 {
+            let row = &term.grid()[Line(line)];
+            let first = if range.is_block || line == range.start.line.0 {
+                range.start.column.0
+            } else {
+                0
+            };
+            let last = if range.is_block || line == range.end.line.0 {
+                range.end.column.0 + 1
+            } else {
+                row.len()
+            };
+            if range.is_block
+                || line == range.start.line.0
+                || line > -(term.history_size() as i32)
+                    && !term.grid()[Line(line - 1)][Column(term.columns() - 1)]
+                        .flags
+                        .contains(Flags::WRAPLINE)
+            {
+                if !output.is_empty() {
+                    output.push('\n');
+                }
+                let prefix = times
+                    .at(&*term, Line(line))
+                    .map(|stamp| stamp.full())
+                    .unwrap_or_else(|| "--".into());
+                output.push_str(&format!("[{prefix}] "));
+            }
+            let mut text = String::new();
+            for column in first..last.min(row.len()) {
+                let cell = &row[Column(column)];
+                if !cell
+                    .flags
+                    .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER)
+                {
+                    if cell.flags.contains(Flags::HIDDEN) {
+                        text.push(' ');
+                    } else {
+                        text.push_str(&cell_text(cell));
+                    }
+                }
+            }
+            output.push_str(text.trim_end());
+        }
+        Some(output)
+    }
     pub fn new(factory: SharedTerminalTransportFactory, cx: &mut gpui_kit::Context<Self>) -> Self {
         Self::new_connection(factory, TerminalOptions::default(), cx)
     }
@@ -233,6 +438,7 @@ impl TerminalEngine {
         let theme = Arc::new(Mutex::new(TerminalColors::current(cx).clone()));
         let io = Arc::new(SessionIo::default());
         let TerminalOptions {
+            timestamps,
             encoding,
             remote,
             shared_shell,
@@ -240,10 +446,12 @@ impl TerminalEngine {
             log,
             reconnect,
         } = options;
+        io.timestamps_enabled.store(timestamps, Ordering::Release);
         let (serial_name, modes) = serial
             .map(|(name, modes)| (Some(name), modes))
             .unwrap_or_default();
         let shared_shell = shared_shell || serial_name.is_some();
+        io.serial.store(serial_name.is_some(), Ordering::Release);
         io.receive_hex.store(modes.receive_hex, Ordering::Release);
         io.send_hex.store(modes.send_hex, Ordering::Release);
         if let Some(log) = log {
@@ -754,7 +962,14 @@ impl TerminalEngine {
             .size
             .lock()
             .unwrap_or_else(|error| error.into_inner()) = size;
-        self.runtime.term.lock().resize(size);
+        {
+            let mut term = self.runtime.term.lock();
+            self.runtime
+                .timestamps
+                .lock()
+                .unwrap()
+                .resize(&mut *term, size);
+        }
         self.runtime.resize(size);
         cx.notify();
     }
@@ -917,6 +1132,7 @@ impl TerminalEngine {
         if !clear_keeping_cursor_line(&mut term) {
             return;
         }
+        self.runtime.timestamps.lock().unwrap().clear();
         self.output_revision = self.output_revision.wrapping_add(1);
         if let Some(search) = self.search.borrow_mut().as_mut() {
             search.refresh(&mut term);
@@ -1188,6 +1404,7 @@ impl TerminalEngine {
             .collect();
         normalize_wide_character_selection(&mut cells, columns);
         TerminalSnapshot {
+            timestamps: self.runtime.timestamps.lock().unwrap().visible(&*term),
             columns,
             rows: term.grid().screen_lines(),
             cells,
@@ -1310,6 +1527,8 @@ pub enum TerminalEvent {
 }
 
 struct TerminalRuntime {
+    serial_tool: Arc<Mutex<Option<super::serial_tools::SerialToolState>>>,
+    timestamps: Arc<Mutex<super::timestamps::Timestamps>>,
     encoding: TerminalEncoding,
     events: async_channel::Receiver<TerminalTransportEvent>,
     term: Arc<FairMutex<AlacrittyTerm>>,
@@ -1381,6 +1600,7 @@ impl TerminalRuntime {
         let (zmodem, zmodem_controls) = async_channel::unbounded();
         let transferring = Arc::new(AtomicBool::new(false));
         let mut parser = Parser {
+            timestamps: Arc::new(Mutex::new(super::timestamps::Timestamps::default())),
             decoder: TerminalDecoder::new(encoding),
             hex_mode: false,
             term: term.clone(),
@@ -1394,6 +1614,10 @@ impl TerminalRuntime {
             zmodem: Zmodem::default().with_encoding(encoding),
             transferring: transferring.clone(),
         };
+        let timestamps = parser.timestamps.clone();
+        let serial_tool: Arc<Mutex<Option<super::serial_tools::SerialToolState>>> = Arc::default();
+        let parser_serial_tool = serial_tool.clone();
+        timestamps.lock().unwrap().enabled = io.timestamps_enabled.load(Ordering::Acquire);
         thread::Builder::new()
             .name("shellrs-terminal-parser".into())
             .spawn(move || {
@@ -1419,7 +1643,11 @@ impl TerminalRuntime {
                         Received::Overdue => {
                             {
                                 let mut term = parser.term.lock();
-                                if end_overdue_sync(&mut parser.processor, &mut term) {
+                                if end_overdue_sync_timestamps(
+                                    &mut parser.processor,
+                                    &mut term,
+                                    &parser.timestamps,
+                                ) {
                                     parser.proxy.answer(&term);
                                     parser
                                         .proxy
@@ -1449,6 +1677,13 @@ impl TerminalRuntime {
                                 parser.hex_mode = hex_mode;
                             }
                             if io.displays_hex() {
+                                observe_serial_output(
+                                    &io,
+                                    &parser_serial_tool,
+                                    &parser.proxy.commands,
+                                    &bytes,
+                                    parser.transferring.load(Ordering::Acquire),
+                                );
                                 let text = format!("{}\r\n", format_hex(&bytes));
                                 parser
                                     .processor
@@ -1475,8 +1710,18 @@ impl TerminalRuntime {
                             let detect = !lock_run(&parser.run)
                                 .as_ref()
                                 .is_some_and(RunHandle::is_active);
+                            let transferring = parser.transferring.load(Ordering::Acquire);
                             let fed = parser.zmodem.feed(&bytes, Instant::now(), detect);
                             parser.transfer(fed);
+                            observe_serial_output(
+                                &io,
+                                &parser_serial_tool,
+                                &parser.proxy.commands,
+                                &bytes,
+                                transferring
+                                    || parser.transferring.load(Ordering::Acquire)
+                                    || !detect,
+                            );
                             parser.proxy.wakeup();
                         }
                         TerminalTransportEvent::HostOsDetected(os) => {
@@ -1498,6 +1743,9 @@ impl TerminalRuntime {
                             parser.proxy.send(TerminalUiEventKind::Prompt(prompt));
                         }
                         TerminalTransportEvent::Exited { code, signal } => {
+                            if let Some(state) = parser_serial_tool.lock().unwrap().as_mut() {
+                                state.stop();
+                            }
                             let fed = parser.zmodem.disconnected();
                             parser.transfer(fed);
                             parser.finish_output();
@@ -1528,6 +1776,9 @@ impl TerminalRuntime {
                             break;
                         }
                         TerminalTransportEvent::Failed(error) => {
+                            if let Some(state) = parser_serial_tool.lock().unwrap().as_mut() {
+                                state.stop();
+                            }
                             tracing::warn!(%error, "Terminal connection failed");
                             let fed = parser.zmodem.disconnected();
                             parser.transfer(fed);
@@ -1566,6 +1817,8 @@ impl TerminalRuntime {
             .expect("terminal transport thread");
 
         Self {
+            serial_tool,
+            timestamps,
             term,
             encoding,
             events,
@@ -1601,6 +1854,7 @@ impl TerminalRuntime {
     }
 
     fn shutdown(&self) {
+        *self.serial_tool.lock().unwrap() = None;
         self.events.close();
         let _ = self.commands.send(TerminalTransportCommand::Shutdown);
     }
@@ -1871,6 +2125,7 @@ fn earliest(one: Option<Instant>, other: Option<Instant>) -> Option<Instant> {
 /// What the parser thread keeps: the emulator it feeds, and what reads
 /// the output beside it.
 struct Parser {
+    timestamps: Arc<Mutex<super::timestamps::Timestamps>>,
     decoder: TerminalDecoder,
     hex_mode: bool,
     term: Arc<FairMutex<AlacrittyTerm>>,
@@ -1940,13 +2195,38 @@ impl Parser {
             let mut term = self.term.lock();
             // Output that never pauses gives the wait no chance to see the
             // time is up.
-            end_overdue_sync(&mut self.processor, &mut term);
-            let lines = advance_watching(
-                &mut self.processor,
-                &mut term,
-                bytes,
-                self.watcher.is_watching(),
-            );
+            end_overdue_sync_timestamps(&mut self.processor, &mut term, &self.timestamps);
+            let mut times = self.timestamps.lock().unwrap();
+            let lines = if times.is_tracking() {
+                let mut handler = super::timestamps::TimestampHandler::new(&mut *term, &mut times);
+                let mut finished = Vec::new();
+                if self.watcher.is_watching() {
+                    let mut rest = bytes;
+                    while let Some(newline) = rest.iter().position(|byte| *byte == b'\n') {
+                        self.processor.advance(&mut handler, &rest[..newline]);
+                        if !handler.term.mode().contains(TermMode::ALT_SCREEN)
+                            && !self.processor.sync_timeout().pending_timeout()
+                        {
+                            finished.push(super::highlight::cursor_line(handler.term));
+                        }
+                        self.processor
+                            .advance(&mut handler, &rest[newline..newline + 1]);
+                        rest = &rest[newline + 1..];
+                    }
+                    self.processor.advance(&mut handler, rest);
+                } else {
+                    self.processor.advance(&mut handler, bytes);
+                }
+                times.prune(&*term);
+                finished
+            } else {
+                advance_watching(
+                    &mut self.processor,
+                    &mut term,
+                    bytes,
+                    self.watcher.is_watching(),
+                )
+            };
             self.proxy.answer(&term);
             self.proxy.synchronized_output.store(
                 self.processor.sync_timeout().pending_timeout(),
@@ -2089,6 +2369,28 @@ fn end_overdue_sync(processor: &mut Processor, term: &mut AlacrittyTerm) -> bool
         .is_some_and(|deadline| deadline <= Instant::now());
     if overdue {
         processor.stop_sync(term);
+    }
+    overdue
+}
+
+fn end_overdue_sync_timestamps(
+    processor: &mut Processor,
+    term: &mut AlacrittyTerm,
+    shared: &Mutex<super::timestamps::Timestamps>,
+) -> bool {
+    let mut times = shared.lock().unwrap();
+    if !times.is_tracking() {
+        return end_overdue_sync(processor, term);
+    }
+    let overdue = processor
+        .sync_timeout()
+        .sync_timeout()
+        .is_some_and(|deadline| deadline <= Instant::now());
+    if overdue {
+        processor.stop_sync(&mut super::timestamps::TimestampHandler::new(
+            term, &mut times,
+        ));
+        times.prune(term);
     }
     overdue
 }

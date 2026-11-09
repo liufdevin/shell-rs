@@ -220,13 +220,13 @@ pub static SHORTCUTS: [Shortcut; 31] = [
         Quit
     ),
     shortcut!(
-        "new-local-terminal",
-        "app.shortcut.new_local_terminal",
+        "duplicate-active-terminal",
+        "app.shortcut.duplicate_active_terminal",
         Tabs,
         &[],
-        "",
-        "",
-        NewLocalTerminal
+        "cmd-shift-d",
+        "ctrl-shift-d",
+        DuplicateActiveTerminal
     ),
     shortcut!(
         "new-command-terminal",
@@ -857,10 +857,7 @@ fn key_bindings(overrides: &ShortcutOverrides) -> Vec<KeyBinding> {
 fn shell_keys_in_terminal(anywhere: &[KeyBinding]) -> Vec<KeyBinding> {
     anywhere
         .iter()
-        .filter(|binding| {
-            !binding.action().as_any().is::<NewLocalTerminal>()
-                && !binding.action().as_any().is::<NewCommandTerminal>()
-        })
+        .filter(|binding| !binding.action().as_any().is::<NewCommandTerminal>())
         .filter_map(|binding| {
             let [keystroke] = binding.keystrokes() else {
                 return None;
@@ -1344,8 +1341,6 @@ mod tests {
     #[test]
     fn ctrl_with_a_letter_stays_the_shells_in_a_terminal() {
         let mut overrides = ShortcutOverrides::default();
-        overrides.set(shortcut("new-local-terminal"), "ctrl-t".into());
-        overrides.disable(shortcut("new-command-terminal"));
         overrides.set(shortcut("toggle-sidebar"), "ctrl-shift-b".into());
         overrides.set(shortcut("terminal-copy"), "ctrl-c".into());
         let bindings = described(&key_bindings(&overrides));
@@ -1364,7 +1359,35 @@ mod tests {
         assert!(
             bindings
                 .iter()
-                .any(|(keys, name, _)| keys == "ctrl-t" && name == "shellrs::NewLocalTerminal")
+                .any(|(keys, name, _)| keys == "ctrl-t" && name == "shellrs::NewCommandTerminal")
+        );
+    }
+
+    #[test]
+    fn retired_local_terminal_keys_are_ignored_and_duplicate_has_a_default() {
+        assert!(Shortcut::find("new-local-terminal").is_none());
+        let overrides: ShortcutOverrides =
+            serde_json::from_str(r#"{"new-local-terminal":"ctrl-j"}"#).unwrap();
+        let bindings = described(&key_bindings(&overrides));
+        assert!(
+            !bindings
+                .iter()
+                .any(|(_, action, _)| action == "shellrs::NewLocalTerminal")
+        );
+        let duplicate = shortcut("duplicate-active-terminal");
+        assert_eq!(
+            duplicate.default_keys(),
+            if cfg!(target_os = "macos") {
+                "cmd-shift-d"
+            } else {
+                "ctrl-shift-d"
+            }
+        );
+        assert!(
+            bindings
+                .iter()
+                .any(|(keys, action, _)| keys == duplicate.default_keys()
+                    && action == "shellrs::DuplicateActiveTerminal")
         );
     }
 
