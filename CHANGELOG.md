@@ -8,6 +8,8 @@ One section per version, titled `## [version]`, optionally followed by a date. E
 
 ### Added
 
+- Enabling Serial assistant from Auto-reply or Connection now opens the assistant page at the top. Detached serial terminals gain a collapsible tools sidebar, reusing the existing connection and the host’s assistant settings and command groups.
+
 - Added an opt-in, per-host Serial assistant layout with persistent command groups, per-command HEX/line ending/CRC/delay, sequential sending, stop and undo deletion, reusing the existing serial connection. HEX receive/send moved to the footer, and Serial tools now has its own port icon.
 - Split LAN settings into connection, password, discovery/pairing, paired devices, local sharing, access permissions, blacklist and activity groups, with a separate Windows firewall group. Password pairing and request approval now show a named success notification instead of only returning to Ready.
 

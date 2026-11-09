@@ -3840,10 +3840,14 @@ impl Workspace {
 
     pub(super) fn render_window(
         &mut self,
-        detached: Option<(CenterTab, AnyView)>,
+        detached: Option<super::detached::DetachedContent>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let serial_tools = detached.as_ref().and_then(|content| content.serial.clone());
+        let serial_commands = serial_tools.clone();
+        let serial_toggle = serial_tools.clone();
+        let serial_sidebar_toggle = serial_tools;
         let status = match self.active_tab {
             // A terminal tells its own connection, to the host as it took it.
             Some(CenterTab::Terminal(id)) => match self.terminals.get(&id) {
@@ -3915,7 +3919,17 @@ impl Workspace {
             .on_action(cx.listener(Self::on_new_host))
             .on_action(cx.listener(Self::on_lan_action))
             .on_action(cx.listener(Self::on_utility_action))
-            .on_action(cx.listener(Self::on_serial_tool_action))
+            .on_action(cx.listener(
+                move |this, action: &crate::app::SerialToolAction, window, cx| {
+                    if let Some(tools) = &serial_commands {
+                        tools
+                            .panel
+                            .update(cx, |panel, cx| panel.command(&action.0, window, cx));
+                    } else {
+                        this.on_serial_tool_action(action, window, cx);
+                    }
+                },
+            ))
             .on_action(cx.listener(Self::on_new_temporary_connection))
             .on_action(cx.listener(Self::on_quick_connect))
             .on_action(cx.listener(Self::on_new_local_terminal))
@@ -4025,8 +4039,26 @@ impl Workspace {
             .on_action(cx.listener(Self::on_maximize_window))
             .on_action(cx.listener(Self::on_restore_window))
             .on_action(cx.listener(Self::on_show_or_hide_app))
-            .on_action(cx.listener(Self::on_toggle_tool_sidebar))
-            .on_action(cx.listener(Self::on_toggle_tool))
+            .on_action(cx.listener(
+                move |this, action: &crate::app::ToggleToolSidebar, window, cx| {
+                    if let Some(tools) = &serial_sidebar_toggle {
+                        tools.toggle(window, cx);
+                    } else {
+                        this.on_toggle_tool_sidebar(action, window, cx);
+                    }
+                },
+            ))
+            .on_action(
+                cx.listener(move |this, action: &crate::app::ToggleTool, window, cx| {
+                    if let Some(tools) = &serial_toggle
+                        && action.0 == crate::app::ToolKind::Serial
+                    {
+                        tools.toggle(window, cx);
+                    } else {
+                        this.on_toggle_tool(action, window, cx);
+                    }
+                }),
+            )
             .on_action(cx.listener(Self::on_auto_serial_files))
             .on_action(cx.listener(Self::on_upload_serial_file))
             .on_action(cx.listener(Self::on_download_serial_file))
@@ -4112,7 +4144,13 @@ impl Workspace {
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
             .map(|root| {
-                if let Some((tab, content)) = detached {
+                if let Some(detached) = detached {
+                    let tab = detached.tab;
+                    let content = if let Some(serial) = detached.serial {
+                        serial.render(detached.view, &self.focus_handle, cx)
+                    } else {
+                        detached.view.into_any_element()
+                    };
                     root.child(
                         TitleBar::new().child(crate::app::APP_NAME).child(
                             div()

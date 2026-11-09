@@ -1,5 +1,8 @@
 _version: 2
 
+serial.assistant.title:
+  zh-CN: 串口助手
+  en: Serial assistant
 serial.assistant.enable:
   zh-CN: 增加串口助手
   en: Enable serial assistant

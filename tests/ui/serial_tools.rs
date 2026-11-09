@@ -508,3 +508,110 @@ async fn serial_assistant_defaults_off_saves_groups_runs_in_order_and_stops_when
     });
     assert_eq!(factory.starts.load(Ordering::SeqCst), 1);
 }
+
+#[gpui_kit::test]
+async fn enabling_assistant_from_connection_opens_its_layout_and_detached_windows_keep_the_tools(
+    cx: &mut TestAppContext,
+) {
+    use shellrs::app::{CenterTab, DetachTab};
+    let mut store = HostStore::empty();
+    let host = store.insert_unnotified(HostDraft::serial(
+        "console",
+        "TEST-NOT-A-PORT",
+        SerialSettings::default(),
+        None,
+    ));
+    let factory = Arc::new(SerialToolFactory::default());
+    let (main, workspace) = open_workspace_with_terminals(
+        cx,
+        store,
+        Arc::new(FakeTerminalFactory::default()),
+        Arc::new(FixedSerialTerminalTransportProvider::new(factory.clone())),
+    );
+    cx.simulate_window_resize(main.into(), size(px(1280.), px(800.)));
+    connect(cx, main, host, "console").await;
+    in_frame(cx, main, |window, cx| window.click("tool-serial", cx));
+    page(cx, main, SerialToolPage::Connection);
+    in_frame(cx, main, |window, cx| {
+        assert!(window.find("serial-tool-baud").visible());
+        window.click("serial-assistant-enable", cx);
+    });
+    in_frame(cx, main, |window, _| {
+        assert!(window.find("serial-assistant-group-name").visible());
+        assert!(window.try_find("serial-tool-baud").is_none());
+    });
+    in_frame(cx, main, |window, cx| {
+        window.click(("terminal", 1u64), cx);
+        window.dispatch_action(
+            Box::new(DetachTab(CenterTab::Terminal(RemoteTerminalId(1)))),
+            cx,
+        );
+    });
+    let detached = cx.update(|cx| {
+        cx.windows()
+            .into_iter()
+            .find(|window| window.window_id() != main.window_id())
+            .unwrap()
+            .downcast::<Root>()
+            .unwrap()
+    });
+    cx.simulate_window_resize(detached.into(), size(px(1100.), px(800.)));
+    in_frame(cx, detached, |window, cx| {
+        assert!(window.find("detached-serial-tools").visible());
+        assert_eq!(window.find("serial-assistant-enable").checked(), Some(true));
+        assert!(window.find("serial-assistant-group-name").visible());
+        let terminal = window.find(("terminal", 1u64)).bounds();
+        let tools = window.find("detached-serial-tools").bounds();
+        assert!(terminal.right() <= tools.left());
+        window.click("serial-assistant-group-name", cx);
+        window.input("from detached", cx);
+    });
+    in_frame(cx, detached, |window, cx| {
+        window.click("serial-assistant-create-group", cx)
+    });
+    cx.read(|cx| {
+        let store = workspace.read(cx).store().read(cx);
+        let key = format!("host:{}", store.host(host).unwrap().public_id);
+        assert_eq!(
+            store.serial_assistant(&key).unwrap().groups[0].name,
+            "from detached"
+        );
+    });
+    in_frame(cx, detached, |window, cx| {
+        window.click(("serial-hex-transmit", 1u64), cx)
+    });
+    in_frame(cx, detached, |window, cx| {
+        assert_eq!(
+            window.find(("serial-hex-transmit", 1u64)).checked(),
+            Some(true)
+        );
+        window.click("tool-serial", cx);
+    });
+    in_frame(cx, detached, |window, cx| {
+        assert!(window.try_find("detached-serial-tools").is_none());
+        window.click("tool-serial", cx);
+    });
+    page(cx, detached, SerialToolPage::Reply);
+    in_frame(cx, detached, |window, cx| {
+        window.click("serial-assistant-enable", cx)
+    });
+    in_frame(cx, detached, |window, _| {
+        assert_eq!(
+            window.find("serial-assistant-enable").checked(),
+            Some(false)
+        );
+        assert!(window.find("serial-tool-preview").visible());
+    });
+    in_frame(cx, detached, |window, cx| {
+        window.click("return-detached-tab", cx)
+    });
+    in_frame(cx, main, |window, _| {
+        assert!(window.find(("terminal", 1u64)).visible());
+        assert_eq!(
+            window.find("serial-assistant-enable").checked(),
+            Some(false)
+        );
+        assert!(window.find("serial-tool-preview").visible());
+    });
+    assert_eq!(factory.starts.load(Ordering::SeqCst), 1);
+}

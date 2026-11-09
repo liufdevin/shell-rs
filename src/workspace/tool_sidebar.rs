@@ -870,52 +870,50 @@ impl ToolSidebar {
                 view.child(div().flex_1().min_h_0().child(tools))
             })
             .when_some(target, |view, (id, modes)| {
-                view.child(
-                    h_flex()
-                        .p_3()
-                        .gap_4()
-                        .flex_shrink_0()
-                        .child(
-                            Checkbox::new(("serial-hex-receive", id.0))
-                                .small()
-                                .w_auto()
-                                .flex_shrink_0()
-                                .label(t!("serial.mode.receive_hex"))
-                                .checked(modes.receive_hex)
-                                .tooltip(t!("serial.mode.scope"))
-                                .on_click({
-                                    let dispatch = self.dispatch.clone();
-                                    move |_, window, cx| {
-                                        dispatch.dispatch_action(
-                                            &ToggleSerialReceiveHex(id),
-                                            window,
-                                            cx,
-                                        )
-                                    }
-                                }),
-                        )
-                        .child(
-                            Checkbox::new(("serial-hex-transmit", id.0))
-                                .small()
-                                .w_auto()
-                                .flex_shrink_0()
-                                .label(t!("serial.mode.send_hex"))
-                                .checked(modes.send_hex)
-                                .tooltip(t!("serial.mode.scope"))
-                                .on_click({
-                                    let dispatch = self.dispatch.clone();
-                                    move |_, window, cx| {
-                                        dispatch.dispatch_action(
-                                            &ToggleSerialSendHex(id),
-                                            window,
-                                            cx,
-                                        )
-                                    }
-                                }),
-                        ),
-                )
+                view.child(serial_mode_controls(id, modes, &self.dispatch))
             })
     }
+}
+
+pub(super) fn serial_mode_controls(
+    id: RemoteTerminalId,
+    modes: crate::terminal::SerialDataModes,
+    dispatch: &FocusHandle,
+) -> impl IntoElement + use<> {
+    h_flex()
+        .p_3()
+        .gap_4()
+        .flex_shrink_0()
+        .child(
+            Checkbox::new(("serial-hex-receive", id.0))
+                .small()
+                .w_auto()
+                .flex_shrink_0()
+                .label(t!("serial.mode.receive_hex"))
+                .checked(modes.receive_hex)
+                .tooltip(t!("serial.mode.scope"))
+                .on_click({
+                    let dispatch = dispatch.clone();
+                    move |_, window, cx| {
+                        dispatch.dispatch_action(&ToggleSerialReceiveHex(id), window, cx)
+                    }
+                }),
+        )
+        .child(
+            Checkbox::new(("serial-hex-transmit", id.0))
+                .small()
+                .w_auto()
+                .flex_shrink_0()
+                .label(t!("serial.mode.send_hex"))
+                .checked(modes.send_hex)
+                .tooltip(t!("serial.mode.scope"))
+                .on_click({
+                    let dispatch = dispatch.clone();
+                    move |_, window, cx| {
+                        dispatch.dispatch_action(&ToggleSerialSendHex(id), window, cx)
+                    }
+                }),
+        )
 }
 
 /// The switch at the window's right edge: a button per tool `offered` for

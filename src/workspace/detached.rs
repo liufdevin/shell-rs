@@ -1,14 +1,94 @@
 use gpui_kit::component::{
-    Root, TitleBar, WindowExt as _,
+    ActiveTheme as _, Root, TitleBar, WindowExt as _,
     dock::{BasePanel, DockPlacement, DragPanel, Panel, PanelId, panel_handle},
+    h_flex,
     notification::Notification,
+    v_flex,
 };
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use super::{AppShell, Workspace};
 use crate::app::{CenterTab, CloseDetachedTab, DetachTab, ReturnDetachedTab};
 use crate::i18n::t;
+use crate::serial::SerialToolsPanel;
 use crate::shared::during_panel_transfer;
+use crate::terminal::{RemoteTerminalId, TerminalView};
+
+#[non_exhaustive]
+pub(super) struct DetachedContent {
+    pub tab: CenterTab,
+    pub view: AnyView,
+    pub serial: Option<DetachedSerialTools>,
+}
+
+#[derive(Clone)]
+#[non_exhaustive]
+pub(super) struct DetachedSerialTools {
+    pub panel: Entity<SerialToolsPanel>,
+    terminal: RemoteTerminalId,
+    view: WeakEntity<TerminalView>,
+    shown: Entity<bool>,
+}
+
+impl DetachedSerialTools {
+    pub fn toggle(&self, window: &mut Window, cx: &mut App) {
+        let shown = self.shown.update(cx, |shown, cx| {
+            *shown = !*shown;
+            cx.notify();
+            *shown
+        });
+        self.panel.update(cx, |panel, cx| {
+            panel.set_target(shown.then(|| self.view.clone()), window, cx)
+        });
+        if let Some(view) = self.view.upgrade() {
+            let focus = view.read(cx).focus_handle();
+            window.focus(&focus, cx);
+        }
+    }
+
+    pub fn render(&self, content: AnyView, dispatch: &FocusHandle, cx: &App) -> AnyElement {
+        let shown = *self.shown.read(cx);
+        let modes = self
+            .view
+            .upgrade()
+            .map(|view| view.read(cx).serial_modes(cx));
+        h_flex()
+            .items_stretch()
+            .size_full()
+            .min_h_0()
+            .min_w_0()
+            .child(div().flex_1().min_w_0().h_full().child(content))
+            .when(shown, |body| {
+                body.child(
+                    v_flex()
+                        .id("detached-serial-tools")
+                        .test_support()
+                        .w(super::tools::TOOL_SIDEBAR_WIDTH)
+                        .flex_shrink_0()
+                        .h_full()
+                        .min_h_0()
+                        .border_l_1()
+                        .border_color(cx.theme().border)
+                        .child(div().flex_1().min_h_0().child(self.panel.clone()))
+                        .when_some(modes, |body, modes| {
+                            body.child(super::tool_sidebar::serial_mode_controls(
+                                self.terminal,
+                                modes,
+                                dispatch,
+                            ))
+                        }),
+                )
+            })
+            .child(super::tool_sidebar::render_tool_switch(
+                shown.then_some(crate::app::ToolKind::Serial),
+                &[crate::app::ToolKind::Serial],
+                dispatch,
+                cx,
+            ))
+            .into_any_element()
+    }
+}
 
 #[non_exhaustive]
 pub(super) struct DetachedWindow {
@@ -21,6 +101,7 @@ struct DetachedView {
     workspace: Entity<Workspace>,
     tab: CenterTab,
     content: AnyView,
+    serial: Option<DetachedSerialTools>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -60,6 +141,33 @@ impl DetachedView {
                 _ => None,
             }
         };
+        let serial = match tab {
+            CenterTab::Terminal(id)
+                if workspace
+                    .read(cx)
+                    .terminals
+                    .get(&id)
+                    .is_some_and(|panel| panel.read(cx).host().protocol.serial().is_some()) =>
+            {
+                terminal.as_ref().map(|terminal| {
+                    let dispatch = workspace.read(cx).focus_handle.clone();
+                    let panel = cx.new(|cx| SerialToolsPanel::new(dispatch, window, cx));
+                    panel.update(cx, |panel, cx| {
+                        panel.set_target(Some(terminal.downgrade()), window, cx)
+                    });
+                    let shown = cx.new(|_| true);
+                    subscriptions.push(cx.observe(&shown, |_, _, cx| cx.notify()));
+                    subscriptions.push(cx.observe(terminal, |_, _, cx| cx.notify()));
+                    DetachedSerialTools {
+                        panel,
+                        terminal: id,
+                        view: terminal.downgrade(),
+                        shown,
+                    }
+                })
+            }
+            _ => None,
+        };
         if let Some(terminal) = terminal {
             subscriptions.extend(terminal.update(cx, |terminal, cx| {
                 terminal.observe_detached_focus(window, cx)
@@ -70,6 +178,7 @@ impl DetachedView {
             workspace,
             tab,
             content,
+            serial,
             _subscriptions: subscriptions,
         }
     }
@@ -88,7 +197,15 @@ impl DetachedView {
 impl Render for DetachedView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.workspace.update(cx, |workspace, cx| {
-            workspace.render_window(Some((self.tab, self.content.clone())), window, cx)
+            workspace.render_window(
+                Some(DetachedContent {
+                    tab: self.tab,
+                    view: self.content.clone(),
+                    serial: self.serial.clone(),
+                }),
+                window,
+                cx,
+            )
         })
     }
 }

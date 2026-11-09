@@ -60,6 +60,8 @@ pub enum SerialToolCommand {
 
 pub struct SerialToolsPanel {
     assistant: Option<assistant::AssistantEditor>,
+    assistant_layout_enabled: bool,
+    body_scroll: ScrollHandle,
     group_task: Option<Task<()>>,
     drafts: HashMap<EntityId, SerialToolDraft>,
     target: Option<WeakEntity<TerminalView>>,
@@ -98,6 +100,8 @@ impl SerialToolsPanel {
     pub fn new(dispatch: FocusHandle, window: &mut Window, cx: &mut Context<Self>) -> Self {
         Self {
             assistant: None,
+            assistant_layout_enabled: false,
+            body_scroll: ScrollHandle::new(),
             group_task: None,
             drafts: HashMap::new(),
             target: None,
@@ -139,6 +143,8 @@ impl SerialToolsPanel {
         self.repeat_task = None;
         self.group_task = None;
         self.assistant = None;
+        self.assistant_layout_enabled = false;
+        self.body_scroll.set_offset(Point::default());
         self.status = SharedString::default();
         self.drafts
             .retain(|_, draft| draft.target.upgrade().is_some());
@@ -225,9 +231,7 @@ impl SerialToolsPanel {
             .and_then(WeakEntity::upgrade)
             .map(|view| view.read(cx).generation(cx));
         self.target = target;
-        if self.assistant_enabled(cx) {
-            self.assistant = Some(assistant::AssistantEditor::new(window, cx));
-        }
+        self.apply_assistant_layout(self.assistant_enabled(cx), window, cx);
         self.assistant_observer = self
             .target
             .as_ref()
@@ -239,12 +243,7 @@ impl SerialToolsPanel {
                         .read(cx)
                         .serial_assistant(&key)
                         .is_some_and(|value| value.enabled);
-                    if enabled && owner.assistant.is_none() {
-                        owner.assistant = Some(assistant::AssistantEditor::new(window, cx));
-                    }
-                    if !enabled {
-                        owner.group_task = None;
-                    }
+                    owner.apply_assistant_layout(enabled, window, cx);
                     cx.notify();
                 })
             });
@@ -398,6 +397,7 @@ impl SerialToolsPanel {
                             window.focus(&self.focus_handle, cx);
                         }
                         self.page = *page;
+                        self.body_scroll.set_offset(Point::default());
                     }
                 }
                 SerialToolCommand::Ending(ending) => self.ending = *ending,
@@ -871,18 +871,23 @@ impl Render for SerialToolsPanel {
                             cx,
                         )
                     })
-                    .children(
-                        SerialToolPage::ALL
-                            .into_iter()
-                            .map(|page| Tab::new().label(page.label())),
-                    ),
+                    .children(SerialToolPage::ALL.into_iter().map(|page| {
+                        Tab::new().label(if assistant && page == SerialToolPage::Transfer {
+                            t!("serial.assistant.title")
+                        } else {
+                            page.label()
+                        })
+                    })),
             )
             .child(
                 div()
                     .id("serial-tool-body")
+                    .test_support()
                     .flex_1()
                     .min_h_0()
-                    .overflow_y_scrollbar()
+                    .overflow_y_scroll()
+                    .track_scroll(&self.body_scroll)
+                    .vertical_scrollbar(&self.body_scroll)
                     .child(
                         v_flex()
                             .p_3()

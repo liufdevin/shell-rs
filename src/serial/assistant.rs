@@ -51,6 +51,25 @@ impl AssistantEditor {
 }
 
 impl SerialToolsPanel {
+    pub(super) fn apply_assistant_layout(
+        &mut self,
+        enabled: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.assistant_layout_enabled == enabled {
+            return;
+        }
+        self.assistant_layout_enabled = enabled;
+        self.group_task = None;
+        self.repeat_task = None;
+        self.page = SerialToolPage::Transfer;
+        self.body_scroll.set_offset(Point::default());
+        if enabled && self.assistant.is_none() {
+            self.assistant = Some(AssistantEditor::new(window, cx));
+        }
+    }
+
     fn assistant_value(&self, cx: &App) -> SerialAssistant {
         self.target
             .as_ref()
@@ -109,9 +128,7 @@ impl SerialToolsPanel {
             self.group_task = None;
             self.repeat_task = None;
             value.enabled = *enabled;
-            if *enabled && self.assistant.is_none() {
-                self.assistant = Some(AssistantEditor::new(window, cx));
-            }
+            self.apply_assistant_layout(*enabled, window, cx);
             window.focus(&self.focus_handle, cx);
             return self.save_assistant(value, cx);
         }
