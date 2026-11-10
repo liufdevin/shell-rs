@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use gpui_kit::component::{
-    ActiveTheme as _, Disableable as _, Selectable as _, Sizable as _,
+    ActiveTheme as _, Disableable as _, Icon, IconName, Selectable as _, Sizable as _,
     button::{Button, ButtonVariants as _},
     checkbox::Checkbox,
     h_flex,
@@ -15,7 +15,11 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use super::SerialLineEnding;
-use crate::{app::SerialToolAction, i18n::t, terminal::TerminalView};
+use crate::{
+    app::{CatalogIcon, SerialToolAction},
+    i18n::t,
+    terminal::TerminalView,
+};
 
 #[path = "assistant.rs"]
 mod assistant;
@@ -62,6 +66,7 @@ pub struct SerialToolsPanel {
     assistant: Option<assistant::AssistantEditor>,
     assistant_layout_enabled: bool,
     body_scroll: ScrollHandle,
+    preview_scroll: ScrollHandle,
     group_task: Option<Task<()>>,
     drafts: HashMap<EntityId, SerialToolDraft>,
     target: Option<WeakEntity<TerminalView>>,
@@ -102,6 +107,7 @@ impl SerialToolsPanel {
             assistant: None,
             assistant_layout_enabled: false,
             body_scroll: ScrollHandle::new(),
+            preview_scroll: ScrollHandle::new(),
             group_task: None,
             drafts: HashMap::new(),
             target: None,
@@ -145,6 +151,7 @@ impl SerialToolsPanel {
         self.assistant = None;
         self.assistant_layout_enabled = false;
         self.body_scroll.set_offset(Point::default());
+        self.preview_scroll.set_offset(Point::default());
         self.status = SharedString::default();
         self.drafts
             .retain(|_, draft| draft.target.upgrade().is_some());
@@ -567,9 +574,15 @@ impl Render for SerialToolsPanel {
         let body = match self.page {
             SerialToolPage::Transfer if assistant => self.render_assistant(running, cx),
             SerialToolPage::Transfer => v_flex()
+                .id("serial-default-transfer")
+                .test_support()
+                .size_full()
+                .min_h_0()
                 .gap_4()
                 .child(
                     v_flex()
+                        .flex_1()
+                        .min_h_0()
                         .gap_2()
                         .child(
                             h_flex()
@@ -591,15 +604,17 @@ impl Render for SerialToolsPanel {
                                 .test_support()
                                 .role(Role::Status)
                                 .aria_label(preview.clone())
+                                .flex_1()
                                 .min_h_16()
-                                .max_h_32()
                                 .p_2()
                                 .border_1()
                                 .border_color(cx.theme().border)
                                 .rounded(cx.theme().radius)
                                 .font_family(cx.theme().mono_font_family.clone())
                                 .text_sm()
-                                .overflow_hidden()
+                                .overflow_y_scroll()
+                                .track_scroll(&self.preview_scroll)
+                                .vertical_scrollbar(&self.preview_scroll)
                                 .child(if preview.is_empty() {
                                     t!("serial.tool.capture_empty").to_string()
                                 } else {
@@ -648,6 +663,12 @@ impl Render for SerialToolsPanel {
                 )
                 .child(
                     v_flex()
+                        .id("serial-default-sender")
+                        .test_support()
+                        .flex_shrink_0()
+                        .pt_3()
+                        .border_t_1()
+                        .border_color(cx.theme().border)
                         .gap_2()
                         .child(div().text_sm().child(t!("serial.tool.message")))
                         .child(
@@ -655,8 +676,10 @@ impl Render for SerialToolsPanel {
                                 .id("serial-tool-message")
                                 .test_support()
                                 .w_full()
+                                .h(rems(6.))
                                 .child(
                                     Textarea::new(&self.message)
+                                        .h(relative(1.))
                                         .text_sm()
                                         .disabled(repeating)
                                         .aria_label(t!("serial.tool.message"))
@@ -691,29 +714,19 @@ impl Render for SerialToolsPanel {
                             .tooltip(t!("serial.tool.crc_help")),
                         )
                         .child(
-                            h_flex()
-                                .gap_2()
-                                .child(
-                                    action(
-                                        "serial-tool-send",
-                                        t!("serial.hex.send"),
-                                        SerialToolCommand::Send,
-                                    )
-                                    .primary()
-                                    .disabled(!running || repeating),
-                                )
-                                .child(
-                                    div()
-                                        .flex_1()
-                                        .min_w_0()
-                                        .text_xs()
-                                        .text_color(cx.theme().muted_foreground)
-                                        .child(if modes.send_hex {
-                                            t!("serial.tool.send_hex_hint")
-                                        } else {
-                                            t!("serial.tool.send_text_hint")
-                                        }),
-                                ),
+                            action(
+                                "serial-tool-send",
+                                t!("serial.hex.send"),
+                                SerialToolCommand::Send,
+                            )
+                            .primary()
+                            .w_full()
+                            .tooltip(if modes.send_hex {
+                                t!("serial.tool.send_hex_hint")
+                            } else {
+                                t!("serial.tool.send_text_hint")
+                            })
+                            .disabled(!running || repeating),
                         )
                         .child(
                             h_flex()
@@ -725,30 +738,28 @@ impl Render for SerialToolsPanel {
                                         repeating,
                                         SerialToolCommand::Repeat,
                                     )
-                                    .disabled(!running),
+                                    .disabled(!running)
+                                    .tooltip(t!("serial.tool.repeat_help")),
                                 )
                                 .child(
                                     div().flex_1().min_w_0().child(
                                         Input::new(&self.interval)
                                             .id("serial-tool-interval")
                                             .small()
+                                            .aria_label(t!("serial.tool.repeat"))
                                             .disabled(repeating),
                                     ),
                                 )
                                 .child(div().text_xs().child("ms")),
-                        )
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(cx.theme().muted_foreground)
-                                .child(t!("serial.tool.repeat_help")),
                         ),
                 )
                 .into_any_element(),
             SerialToolPage::Reply => v_flex()
-                .gap_3()
+                .id("serial-default-reply")
+                .test_support()
+                .gap_4()
                 .child(
-                    h_flex()
+                    v_flex()
                         .gap_3()
                         .child(
                             check(
@@ -770,19 +781,27 @@ impl Render for SerialToolsPanel {
                             .disabled(snapshot.automatic),
                         ),
                 )
-                .child(div().text_sm().child(t!("serial.tool.pattern")))
                 .child(
-                    Input::new(&self.pattern)
-                        .id("serial-tool-pattern")
-                        .small()
-                        .disabled(snapshot.automatic),
+                    v_flex()
+                        .gap_2()
+                        .child(div().text_sm().child(t!("serial.tool.pattern")))
+                        .child(
+                            Input::new(&self.pattern)
+                                .id("serial-tool-pattern")
+                                .aria_label(t!("serial.tool.pattern"))
+                                .disabled(snapshot.automatic),
+                        ),
                 )
-                .child(div().text_sm().child(t!("serial.tool.reply")))
                 .child(
-                    Input::new(&self.reply)
-                        .id("serial-tool-reply")
-                        .small()
-                        .disabled(snapshot.automatic),
+                    v_flex()
+                        .gap_2()
+                        .child(div().text_sm().child(t!("serial.tool.reply")))
+                        .child(
+                            Input::new(&self.reply)
+                                .id("serial-tool-reply")
+                                .aria_label(t!("serial.tool.reply"))
+                                .disabled(snapshot.automatic),
+                        ),
                 )
                 .child(
                     div()
@@ -792,29 +811,17 @@ impl Render for SerialToolsPanel {
                 )
                 .into_any_element(),
             SerialToolPage::Connection => v_flex()
-                .gap_3()
-                .child(div().text_sm().child(t!("serial.tool.baud")))
+                .id("serial-default-connection")
+                .test_support()
+                .gap_4()
                 .child(
-                    h_flex()
+                    v_flex()
                         .gap_2()
+                        .child(div().text_sm().child(t!("serial.tool.baud")))
                         .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .child(Input::new(&self.baud).id("serial-tool-baud").small()),
-                        )
-                        .child(
-                            action(
-                                "serial-tool-apply-baud",
-                                t!("serial.tool.apply_baud"),
-                                SerialToolCommand::Baud,
-                            )
-                            .disabled(
-                                !running
-                                    || repeating
-                                    || snapshot.automatic
-                                    || self.baud_task.is_some(),
-                            ),
+                            Input::new(&self.baud)
+                                .id("serial-tool-baud")
+                                .aria_label(t!("serial.tool.baud")),
                         ),
                 )
                 .child(h_flex().flex_wrap().gap_2().children(
@@ -833,6 +840,17 @@ impl Render for SerialToolsPanel {
                     }),
                 ))
                 .child(
+                    action(
+                        "serial-tool-apply-baud",
+                        t!("serial.tool.apply_baud"),
+                        SerialToolCommand::Baud,
+                    )
+                    .w_full()
+                    .disabled(
+                        !running || repeating || snapshot.automatic || self.baud_task.is_some(),
+                    ),
+                )
+                .child(
                     div()
                         .text_xs()
                         .text_color(cx.theme().muted_foreground)
@@ -847,6 +865,65 @@ impl Render for SerialToolsPanel {
                 .into_any_element(),
         };
         let dispatch = self.dispatch.clone();
+        let status_line = |status: SharedString| {
+            div()
+                .id("serial-tool-status")
+                .test_support()
+                .role(Role::Status)
+                .aria_label(status.clone())
+                .text_sm()
+                .child(status)
+        };
+        let body_area = if self.page == SerialToolPage::Transfer {
+            div()
+                .id("serial-tool-body")
+                .test_support()
+                .flex_1()
+                .min_h_0()
+                .overflow_y_scroll()
+                .when(!assistant, |body| {
+                    body.track_scroll(&self.body_scroll)
+                        .vertical_scrollbar(&self.body_scroll)
+                })
+                .child(
+                    v_flex()
+                        .p_3()
+                        .size_full()
+                        .min_h_0()
+                        .when(!assistant, |body| body.min_h(rems(34.)))
+                        .gap_2()
+                        .child(body)
+                        .child(status_line(status.clone())),
+                )
+                .into_any_element()
+        } else {
+            div()
+                .id("serial-tool-body")
+                .test_support()
+                .flex_1()
+                .min_h_0()
+                .overflow_y_scroll()
+                .track_scroll(&self.body_scroll)
+                .vertical_scrollbar(&self.body_scroll)
+                .child(
+                    v_flex()
+                        .p_3()
+                        .gap_3()
+                        .child(body)
+                        .child(status_line(status.clone()))
+                        .when(
+                            self.repeat_task.is_some() && self.page != SerialToolPage::Transfer,
+                            |body| {
+                                body.child(action(
+                                    "serial-tool-stop-repeat",
+                                    t!("serial.tool.stop_repeat"),
+                                    SerialToolCommand::Repeat(false),
+                                ))
+                            },
+                        ),
+                )
+                .into_any_element()
+        };
         v_flex()
             .id("serial-tools")
             .test_support()
@@ -879,40 +956,6 @@ impl Render for SerialToolsPanel {
                         })
                     })),
             )
-            .child(
-                div()
-                    .id("serial-tool-body")
-                    .test_support()
-                    .flex_1()
-                    .min_h_0()
-                    .overflow_y_scroll()
-                    .track_scroll(&self.body_scroll)
-                    .vertical_scrollbar(&self.body_scroll)
-                    .child(
-                        v_flex()
-                            .p_3()
-                            .gap_3()
-                            .child(body)
-                            .child(
-                                div()
-                                    .id("serial-tool-status")
-                                    .test_support()
-                                    .role(Role::Status)
-                                    .aria_label(status.clone())
-                                    .text_sm()
-                                    .child(status),
-                            )
-                            .when(
-                                self.repeat_task.is_some() && self.page != SerialToolPage::Transfer,
-                                |body| {
-                                    body.child(action(
-                                        "serial-tool-stop-repeat",
-                                        t!("serial.tool.stop_repeat"),
-                                        SerialToolCommand::Repeat(false),
-                                    ))
-                                },
-                            ),
-                    ),
-            )
+            .child(body_area)
     }
 }

@@ -35,9 +35,11 @@ pub struct AppSettings {
     pub serial_preferences: crate::terminal::SerialPreferences,
     /// 终端 → 侧栏功能: which tools the right sidebar offers.
     pub sidebar_tools: SidebarTools,
+    pub device_logs: DeviceLogAppearance,
     /// The left sidebar's visibility, restored on the next launch.
     pub sidebar_collapsed: bool,
     pub sidebar_width: Option<f32>,
+    pub sidebar_download_directory: Option<std::path::PathBuf>,
     /// The right sidebar beside local terminals, switched from its tool
     /// buttons: the tool it shows, `None` while hidden. One for every local
     /// terminal, as a host keeps its own for its terminals.
@@ -86,6 +88,19 @@ pub const INTERFACE_FONT_SIZE_RANGE: std::ops::RangeInclusive<f32> = 12.0..=20.0
 /// gpui-kit's own base font, which the interface had before it could change;
 /// on Windows 14, where its body text then is the system's own 9 points.
 pub const DEFAULT_INTERFACE_FONT_SIZE: f32 = if cfg!(windows) { 14.0 } else { 16.0 };
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+#[non_exhaustive]
+pub struct DeviceLogAppearance {
+    pub font_size: u8,
+}
+
+impl Default for DeviceLogAppearance {
+    fn default() -> Self {
+        Self { font_size: 14 }
+    }
+}
 
 /// 外观 → 常规.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -585,6 +600,10 @@ impl AppSettings {
             .sidebar_width
             .filter(|width| width.is_finite() && *width > 0.);
         self.terminal_font = self.terminal_font.normalized();
+        self.sidebar_download_directory = self
+            .sidebar_download_directory
+            .filter(|directory| directory.is_absolute());
+        self.device_logs.font_size = self.device_logs.font_size.clamp(12, 24);
         // Whole pixels in range; what is not a number gives the default.
         let size = self.interface.font_size;
         self.interface.font_size = if size.is_finite() {

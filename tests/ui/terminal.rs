@@ -547,6 +547,44 @@ async fn command_terminal_ssh_opens_a_temporary_host_with_remote_tools(cx: &mut 
 }
 
 #[gpui_kit::test]
+async fn command_terminal_edits_at_the_cursor_with_arrows_home_end_and_delete(
+    cx: &mut TestAppContext,
+) {
+    let (handle, workspace) = open_workspace_with_store(cx, HostStore::empty());
+    in_frame(cx, handle, |window, cx| {
+        window.dispatch_action(Box::new(shellrs::app::NewCommandTerminal), cx)
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, cx| {
+        window.render_frame(cx);
+        window
+            .try_find("status-connection")
+            .is_some_and(|status| status.label() == Some("ShellLF 命令终端"))
+    })
+    .await;
+    in_frame(cx, handle, |window, cx| {
+        window.click(("local-terminal", 1_u64), cx);
+        window.input("abcd", cx);
+        window.press("left", cx);
+        window.press("left", cx);
+        window.press("backspace", cx);
+        window.input("X", cx);
+        window.press("right", cx);
+        window.press("backspace", cx);
+        window.press("home", cx);
+        window.press("delete", cx);
+        window.press("end", cx);
+        window.input("!", cx);
+        window.press("enter", cx);
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
+        local_screen(&workspace, cx)
+            .lines()
+            .any(|line| line.trim_end() == "ShellLF> Xd!")
+    })
+    .await;
+}
+
+#[gpui_kit::test]
 async fn tab_keys_are_sent_to_the_focused_terminal(cx: &mut TestAppContext) {
     let factory = Arc::new(FakeTerminalFactory::default());
     let (handle, _) = open_workspace_with_factory(cx, factory.clone());

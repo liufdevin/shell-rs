@@ -129,5 +129,5 @@ serial.tool.repeat_complete:
   zh-CN: 已完成 60 次定时发送
   en: Completed 60 repeat sends
 serial.tool.rule_brief:
-  zh-CN: 匹配新收到的数据后发送应答。内容最多 4 KiB，规则 HEX 与顶部 HEX 收发独立。
-  en: Replies when new incoming data matches. Up to 4 KiB per field. Rule HEX is independent of the HEX receive/send controls above.
+  zh-CN: 匹配新收到的数据后发送应答。内容最多 4 KiB，规则 HEX 与底部 HEX 收发独立。
+  en: Replies when new incoming data matches. Up to 4 KiB per field. Rule HEX is independent of the HEX receive/send controls in the footer.

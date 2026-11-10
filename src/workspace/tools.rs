@@ -75,7 +75,43 @@ impl ToolTarget {
 /// the monitor's and the connections' cards are laid out for this width.
 pub(super) const TOOL_SIDEBAR_WIDTH: Pixels = px(320.);
 
+#[derive(Clone, Copy)]
+pub(super) struct LogSplit {
+    pub terminal: RemoteTerminalId,
+    pub previous_width: Pixels,
+    pub area_width: Pixels,
+}
+
 impl Workspace {
+    pub(super) fn log_split_measure(&self, cx: &Context<Self>) -> Option<AnyElement> {
+        let previous = self.log_split?;
+        let workspace = cx.weak_entity();
+        Some(
+            canvas(
+                move |bounds, window, cx| {
+                    if (bounds.size.width - previous.area_width).abs() > px(0.5) {
+                        let workspace = workspace.clone();
+                        window.defer(cx, move |window, cx| {
+                            let _ = workspace.update(cx, |this, cx| {
+                                if let Some(split) = &mut this.log_split
+                                    && split.terminal == previous.terminal
+                                {
+                                    split.area_width = bounds.size.width;
+                                    this.hold_tool_sidebar_width(window, cx);
+                                    cx.notify();
+                                }
+                            });
+                        });
+                    }
+                },
+                |_, _, _, _| {},
+            )
+            .absolute()
+            .inset_0()
+            .into_any_element(),
+        )
+    }
+
     pub(super) fn on_kubernetes_action(
         &mut self,
         action: &crate::app::KubernetesAction,
@@ -247,6 +283,29 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if action.0 == crate::device_logs::DeviceLogCommand::ToggleSplit {
+            if self.tool_showing(cx) != Some(ToolKind::Logs) {
+                return;
+            }
+            if self.log_split.is_some() {
+                self.restore_log_split(window, cx);
+            } else if let Some(terminal) = self.tool_terminal(cx) {
+                let width = self
+                    .dock_area
+                    .read(cx)
+                    .dock_size(DockPlacement::Right)
+                    .unwrap_or(TOOL_SIDEBAR_WIDTH);
+                self.log_split = Some(LogSplit {
+                    terminal: terminal.id,
+                    previous_width: width,
+                    area_width: self.dock_area.read(cx).bounds().size.width,
+                });
+                self.tools
+                    .update(cx, |tools, cx| tools.set_log_split(true, cx));
+                self.hold_tool_sidebar_width(window, cx);
+            }
+            return;
+        }
         if let crate::device_logs::DeviceLogCommand::OpenService(name) = &action.0 {
             if !self.offered_tools(cx).contains(&ToolKind::Logs) {
                 window.push_notification(Notification::info(t!("device_logs.enable_first")), cx);
@@ -404,6 +463,24 @@ impl Workspace {
     /// to set, and its drag callback is not ours to wrap. Set back within
     /// the same update, so no frame shows it narrower.
     pub(super) fn hold_tool_sidebar_width(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(split) = self.log_split {
+            let area = self.dock_area.read(cx);
+            let left = if area.is_dock_open(DockPlacement::Left) {
+                area.dock_size(DockPlacement::Left).unwrap_or_default()
+            } else {
+                px(0.)
+            };
+            let width = ((split.area_width - left) / 2.).max(px(0.));
+            if area
+                .dock_size(DockPlacement::Right)
+                .is_none_or(|current| (current - width).abs() > px(0.5))
+            {
+                self.dock_area.update(cx, |area, cx| {
+                    area.set_dock_size(DockPlacement::Right, width, window, cx)
+                });
+            }
+            return;
+        }
         let narrower = self
             .dock_area
             .read(cx)
@@ -412,6 +489,16 @@ impl Workspace {
         if narrower {
             self.dock_area.update(cx, |area, cx| {
                 area.set_dock_size(DockPlacement::Right, TOOL_SIDEBAR_WIDTH, window, cx);
+            });
+        }
+    }
+
+    fn restore_log_split(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(split) = self.log_split.take() {
+            self.tools
+                .update(cx, |tools, cx| tools.set_log_split(false, cx));
+            self.dock_area.update(cx, |area, cx| {
+                area.set_dock_size(DockPlacement::Right, split.previous_width, window, cx)
             });
         }
     }
@@ -941,6 +1028,12 @@ impl Workspace {
             .as_ref()
             .and_then(|target| self.target_tool(target, cx))
             .filter(|tool| self.offered_tools(cx).contains(tool));
+        if let Some(split) = self.log_split
+            && (tool != Some(ToolKind::Logs)
+                || !matches!(&target, Some(SidebarTarget::Remote(current)) if current.id == split.terminal))
+        {
+            self.restore_log_split(window, cx);
+        }
         if let Some(tool) = tool {
             self.tools
                 .update(cx, |tools, cx| tools.show(tool, window, cx));

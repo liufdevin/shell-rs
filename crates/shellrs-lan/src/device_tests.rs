@@ -161,6 +161,7 @@ fn ipv6_serial_and_adb_streams_keep_binary_data_and_independent_revocation() {
     started(&serial);
     let adb = open_service(&fixture, "adb", Some("sync:"));
     started(&adb);
+    assert_eq!(fixture.b.is_sleep_inhibited(), cfg!(windows));
     serial
         .commands
         .send(DeviceInput::Write(vec![0, 255, 13, 10]))
@@ -182,6 +183,7 @@ fn ipv6_serial_and_adb_streams_keep_binary_data_and_independent_revocation() {
         DeviceEvent::Output(b"still active".to_vec())
     );
     fixture.b.set_locked(true);
+    assert!(!fixture.b.is_sleep_inhibited());
     assert!(adb.worker.join().unwrap().is_err());
     assert!(eventually(|| fixture.b.active_devices().is_empty()));
     assert!(

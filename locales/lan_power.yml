@@ -1,0 +1,48 @@
+_version: 2
+
+lan.power.title:
+  zh-CN: 电源与远程唤醒
+  en: Power and remote wake
+lan.power.guide:
+  zh-CN: 电源与唤醒说明…
+  en: Power and wake guide…
+
+lan.power.help:
+  zh-CN: 远程使用共享终端、串口、ADB 或执行任务时，临时阻止 Windows 自动睡眠，屏幕仍可关闭。最后一个使用连接结束后恢复系统原有睡眠策略；仅开启协作或发现设备不会阻止睡眠。
+  en: While a remote computer uses a shared terminal, serial port, ADB device or command, Windows automatic sleep is temporarily prevented. The screen can turn off. The system’s sleep policy resumes after the last use ends; enabling collaboration or discovering devices alone does not keep this computer awake.
+lan.power.unsupported:
+  zh-CN: 自动防睡眠目前仅支持 Windows。此系统仍遵循自己的睡眠策略；远程访问需要电脑保持唤醒。
+  en: Automatic sleep prevention currently supports Windows only. This system follows its own sleep policy and must stay awake for remote access.
+lan.power.failed:
+  zh-CN: 无法申请保持系统运行，本次共享访问未启动。请检查系统电源策略后重试。
+  en: Could not keep the system awake, so this shared access did not start. Check the system’s power policy and try again.
+lan.power.active:
+  zh-CN: 远程使用中：正在阻止自动睡眠，屏幕可关闭
+  en: Remote access in use. Automatic sleep is prevented; the screen can turn off
+lan.power.idle:
+  zh-CN: 未保持唤醒：遵循系统原有睡眠策略
+  en: Not keeping awake. Following the system’s sleep policy
+lan.wake.help:
+  zh-CN: 查看离线电脑的串口与 ADB、共享主机或重新连接时，会尝试通过 WoL 唤醒并等待最多约 45 秒。需先在对方在线时访问一次以保存网卡信息。请在对方 BIOS/UEFI 和网卡属性中启用 Wake on LAN／魔术包唤醒，并允许网卡唤醒计算机；优先使用同一子网的有线网络。是否支持取决于硬件、驱动、电源和睡眠状态，本程序不会修改这些设置，也不会绕过应用锁定或授权。
+  en: Viewing an offline computer’s serial and ADB devices or shared hosts, or reconnecting, attempts Wake on LAN and waits up to about 45 seconds. Access the computer once while it is online to save its network adapter information. Enable Wake on LAN or Magic Packet wake in its BIOS/UEFI and adapter properties, and allow the adapter to wake the computer. Wired Ethernet on the same subnet is recommended. Support depends on hardware, drivers, power and sleep state. The app does not change these settings or bypass app locking or authorization.
+lan.wake.waiting:
+  zh-CN: 正在尝试唤醒并等待设备上线…
+  en: Attempting to wake the computer and waiting for it to come online…
+lan.wake.cancel:
+  zh-CN: 取消等待
+  en: Cancel wait
+lan.wake.saved:
+  zh-CN: 已保存网卡信息；离线访问时可尝试唤醒，不代表已启用硬件唤醒。
+  en: Network adapter information saved. Offline access can attempt wake; this does not confirm hardware wake is enabled.
+lan.wake.not_saved:
+  zh-CN: 暂无可用的唤醒信息。请在对方更新程序并上线后查看一次共享主机或串口与 ADB。
+  en: No wake information available. Update the remote app, then view its shared hosts or serial and ADB devices while it is online.
+lan.wake.no_info:
+  zh-CN: 设备无法连接，且没有可用的唤醒信息。请先手动唤醒对方，再查看一次共享主机或串口与 ADB。
+  en: The computer is unreachable and no wake information is available. Wake it manually, then view its shared hosts or serial and ADB devices once.
+lan.wake.no_network:
+  zh-CN: 无法在当前网络发送唤醒包。请确认两端有网卡接入同一个有线子网，并在对方在线时刷新唤醒信息。
+  en: Could not send a wake packet on this network. Check that both computers have adapters on the same wired subnet, then refresh wake information while the remote computer is online.
+lan.wake.timed_out:
+  zh-CN: 已尝试发送唤醒包，但设备仍无法连接。请检查对方 BIOS/UEFI、网卡魔术包唤醒设置、电源和网络；对方 IP 变化时需重新发现并核对身份。
+  en: A wake packet was sent, but the computer is still unreachable. Check its BIOS/UEFI, adapter Magic Packet wake settings, power and network. If its IP address changed, rediscover it and verify its identity.

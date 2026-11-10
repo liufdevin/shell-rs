@@ -5,6 +5,50 @@ use std::net::{IpAddr, Ipv4Addr};
 use std::sync::atomic::AtomicBool;
 
 struct NoCommands;
+
+#[gpui_kit::test]
+fn lan_sleep_and_wake_guidance_is_visible_without_changing_system_settings(
+    cx: &mut TestAppContext,
+) {
+    let (handle, _) = open_workspace(cx);
+    in_frame(cx, handle, |window, cx| window.click("open-settings", cx));
+    in_frame(cx, handle, |window, cx| {
+        window.within("settings").click("0-8", cx)
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.within("settings").click("0-8-0", cx)
+    });
+    in_frame(cx, handle, |window, _| {
+        if cfg!(windows) {
+            assert_eq!(
+                window.find("lan-power-status").label(),
+                Some("未保持唤醒：遵循系统原有睡眠策略")
+            );
+        }
+    });
+    in_frame(cx, handle, |window, cx| window.click("lan-power-guide", cx));
+    in_frame(cx, handle, |window, _| {
+        let snapshot = window.find("lan-power-help");
+        let label = snapshot.label().unwrap();
+        assert!(
+            label.contains(if cfg!(windows) {
+                "屏幕仍可关闭"
+            } else {
+                "目前仅支持 Windows"
+            }),
+            "unexpected help: {label}"
+        );
+        let help = window.find("lan-wake-help");
+        let label = help.label().unwrap();
+        assert!(label.contains("BIOS/UEFI") && label.contains("不会修改这些设置"));
+        assert!(window.try_find("lan-cancel-wake").is_none());
+    });
+    in_frame(cx, handle, |window, cx| window.press("escape", cx));
+    in_frame(cx, handle, |window, _| {
+        assert!(window.try_find("lan-wake-help").is_none());
+    });
+}
+
 async fn reveal_lan_control(
     cx: &mut TestAppContext,
     handle: WindowHandle<Root>,
@@ -804,7 +848,7 @@ async fn request_pairing_notifies_the_controller_once_when_approved(cx: &mut Tes
 }
 
 #[gpui_kit::test]
-fn lan_settings_separate_connection_pairing_sharing_and_access_into_named_groups(
+async fn lan_settings_separate_connection_pairing_sharing_and_access_into_named_groups(
     cx: &mut TestAppContext,
 ) {
     let (handle, _) = open_workspace(cx);
@@ -826,6 +870,10 @@ fn lan_settings_separate_connection_pairing_sharing_and_access_into_named_groups
         in_frame(cx, handle, |window, cx| {
             window.within("settings").click(format!("0-8-{index}"), cx)
         });
+        cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+            window.try_find(id).is_some_and(|element| element.visible())
+        })
+        .await;
         in_frame(cx, handle, |window, _| {
             let section = window.find(id);
             assert!(

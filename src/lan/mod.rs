@@ -30,10 +30,12 @@ pub(crate) use error_text as describe_error;
 pub use page::LanPage;
 pub(crate) use page::LanSection;
 pub(crate) use prompt::show_pair_request;
+pub(crate) use prompt::show_power_help;
 pub(crate) use terminal::DeviceTerminalFactory;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LanCommand {
+    ShowPowerHelp,
     SavePassword(Secret),
     Enable,
     Disable,
@@ -57,6 +59,7 @@ pub enum LanCommand {
     SelectHost(String),
     Execute(String),
     Cancel,
+    CancelWake,
     RefreshLocalDevices,
     ShareDevice(String, bool),
     EnableDeviceAccess(bool),
@@ -130,6 +133,7 @@ pub struct LanService {
     pub(super) prompt_seen: BTreeSet<(String, u64)>,
     pub(super) prompt_active: Option<(String, u64)>,
     cancel: Arc<AtomicBool>,
+    catalog_cancel: Arc<AtomicBool>,
     stream: Option<mpsc::Receiver<(bool, Vec<u8>)>>,
     task: Option<Task<()>>,
     command_task: Option<Task<()>>,
@@ -138,6 +142,7 @@ pub struct LanService {
     revision: u64,
     ticks: u64,
     known_grants: BTreeSet<String>,
+    sleep_inhibited: bool,
 }
 
 impl EventEmitter<LanEvent> for LanService {}
@@ -170,6 +175,7 @@ impl LanService {
             prompt_seen: BTreeSet::new(),
             prompt_active: None,
             cancel: Arc::new(AtomicBool::new(false)),
+            catalog_cancel: Arc::new(AtomicBool::new(false)),
             stream: None,
             task: None,
             command_task: None,
@@ -178,6 +184,7 @@ impl LanService {
             revision: 0,
             ticks: 0,
             known_grants: BTreeSet::new(),
+            sleep_inhibited: false,
         };
         service.poll = Some(cx.spawn(async move |this, cx| {
             loop {
@@ -423,6 +430,10 @@ impl LanService {
             self.cancel.store(true, Ordering::Release);
             return;
         }
+        if command == LanCommand::CancelWake {
+            self.catalog_cancel.store(true, Ordering::Release);
+            return;
+        }
         let Some(core) = self.core.clone() else {
             self.status = t!("lan.unavailable").to_string();
             cx.notify();
@@ -513,6 +524,7 @@ impl LanService {
         }
         if matches!(command, LanCommand::Disable) {
             self.cancel.store(true, Ordering::Release);
+            self.catalog_cancel.store(true, Ordering::Release);
             self.waiting = None;
             let network = self.network.take();
             self.job(cx, move || {
@@ -541,15 +553,18 @@ impl LanService {
                     Ok(Completion::Done)
                 });
             }
-            LanCommand::RefreshDevices(peer) => self.job(cx, move || {
-                let response = core.request(
-                    &peer,
-                    RemoteRequest::Devices,
-                    &AtomicBool::new(false),
-                    &mut |_, _| Ok(()),
-                )?;
-                Ok(Completion::DeviceList(peer, response.devices))
-            }),
+            LanCommand::RefreshDevices(peer) => {
+                if self.busy {
+                    return;
+                }
+                self.catalog_cancel = Arc::new(AtomicBool::new(false));
+                let cancel = self.catalog_cancel.clone();
+                self.job(cx, move || {
+                    let response =
+                        core.request(&peer, RemoteRequest::Devices, &cancel, &mut |_, _| Ok(()))?;
+                    Ok(Completion::DeviceList(peer, response.devices))
+                });
+            }
             LanCommand::Enable => {
                 if self.busy {
                     return;
@@ -651,6 +666,7 @@ impl LanService {
             }),
             LanCommand::Forget(id) => {
                 self.cancel.store(true, Ordering::Release);
+                self.catalog_cancel.store(true, Ordering::Release);
                 self.job(cx, move || {
                     core.forget(&id)?;
                     Ok(Completion::Done)
@@ -660,15 +676,18 @@ impl LanService {
                 core.unblock(address)?;
                 Ok(Completion::Done)
             }),
-            LanCommand::RefreshHosts(peer) => self.job(cx, move || {
-                let response = core.request(
-                    &peer,
-                    RemoteRequest::Hosts,
-                    &AtomicBool::new(false),
-                    &mut |_, _| Ok(()),
-                )?;
-                Ok(Completion::Hosts(peer, response))
-            }),
+            LanCommand::RefreshHosts(peer) => {
+                if self.busy {
+                    return;
+                }
+                self.catalog_cancel = Arc::new(AtomicBool::new(false));
+                let cancel = self.catalog_cancel.clone();
+                self.job(cx, move || {
+                    let response =
+                        core.request(&peer, RemoteRequest::Hosts, &cancel, &mut |_, _| Ok(()))?;
+                    Ok(Completion::Hosts(peer, response))
+                });
+            }
             LanCommand::SetExecutionPermission(..)
             | LanCommand::Disable
             | LanCommand::SetDiscoverable(_)
@@ -677,7 +696,9 @@ impl LanService {
             | LanCommand::RemoveFirewall
             | LanCommand::SelectHost(_)
             | LanCommand::Execute(_)
-            | LanCommand::Cancel => {}
+            | LanCommand::Cancel
+            | LanCommand::CancelWake => {}
+            LanCommand::ShowPowerHelp => {}
             LanCommand::ShareDevice(..)
             | LanCommand::EnableDeviceAccess(..)
             | LanCommand::GrantDevice { .. }
@@ -755,6 +776,16 @@ impl LanService {
         self.ticks += 1;
         let mut changed = self.drain();
         if let Some(core) = &self.core {
+            let inhibited = core.is_sleep_inhibited();
+            if self.sleep_inhibited != inhibited {
+                self.sleep_inhibited = inhibited;
+                changed = true;
+            }
+            if let Some(error) = core.take_sleep_error() {
+                tracing::error!(%error, "Cannot prevent sleep during LAN access");
+                self.status = t!("lan.power.failed").to_string();
+                changed = true;
+            }
             if let Some(error) = core.take_device_audit_error() {
                 tracing::error!(%error, "Cannot persist LAN device audit log");
                 self.status = t!("lan.devices.audit_failed", reason = error).to_string();
@@ -874,6 +905,7 @@ impl LanService {
 impl Drop for LanService {
     fn drop(&mut self) {
         self.cancel.store(true, Ordering::Release);
+        self.catalog_cancel.store(true, Ordering::Release);
     }
 }
 
@@ -912,7 +944,15 @@ fn test_bind_address(
 pub(super) fn error_text(error: &anyhow::Error) -> String {
     tracing::warn!(error = %format!("{error:#}"), "LAN operation failed");
     let text = error.to_string();
-    if text.contains("shared_host_terminal_unavailable") {
+    if text.contains("wake_info_unavailable") {
+        t!("lan.wake.no_info").to_string()
+    } else if text.contains("wake_network_unavailable") {
+        t!("lan.wake.no_network").to_string()
+    } else if text.contains("wake_timed_out") {
+        t!("lan.wake.timed_out").to_string()
+    } else if text.contains("sleep_prevention_failed") {
+        t!("lan.power.failed").to_string()
+    } else if text.contains("shared_host_terminal_unavailable") {
         t!("lan.ssh_terminal_unavailable").to_string()
     } else if text.contains("shared_host_shell_refused") {
         t!("lan.ssh_shell_refused").to_string()
@@ -981,6 +1021,23 @@ pub(super) fn error_text(error: &anyhow::Error) -> String {
 mod tests {
     use super::*;
     use std::ffi::OsStr;
+
+    #[test]
+    fn power_and_wake_errors_have_localized_recovery_guidance() {
+        crate::i18n::isolate_thread();
+        for locale in ["zh-CN", "en"] {
+            crate::i18n::set_locale(locale);
+            for (error, key) in [
+                ("wake_info_unavailable", "lan.wake.no_info"),
+                ("wake_network_unavailable", "lan.wake.no_network"),
+                ("wake_timed_out", "lan.wake.timed_out"),
+                ("sleep_prevention_failed", "lan.power.failed"),
+            ] {
+                assert!(crate::i18n::has(key));
+                assert_eq!(error_text(&anyhow::anyhow!(error)), t!(key).as_ref());
+            }
+        }
+    }
 
     #[test]
     fn description_does_not_advertise_network_protocol_versions() {

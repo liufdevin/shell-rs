@@ -615,3 +615,138 @@ async fn enabling_assistant_from_connection_opens_its_layout_and_detached_window
     });
     assert_eq!(factory.starts.load(Ordering::SeqCst), 1);
 }
+
+#[gpui_kit::test]
+async fn serial_assistant_uses_the_remaining_sidebar_height_at_normal_window_size(
+    cx: &mut TestAppContext,
+) {
+    let mut store = HostStore::empty();
+    let host = store.insert_unnotified(HostDraft::serial(
+        "console",
+        "TEST-NOT-A-PORT",
+        SerialSettings::default(),
+        None,
+    ));
+    let factory = Arc::new(SerialToolFactory::default());
+    let (handle, _) = open_workspace_with_terminals(
+        cx,
+        store,
+        Arc::new(FakeTerminalFactory::default()),
+        Arc::new(FixedSerialTerminalTransportProvider::new(factory)),
+    );
+    cx.simulate_window_resize(handle.into(), size(px(1280.), px(800.)));
+    connect(cx, handle, host, "console").await;
+    in_frame(cx, handle, |window, cx| window.click("tool-serial", cx));
+    in_frame(cx, handle, |window, cx| {
+        window.click("serial-assistant-enable", cx)
+    });
+    in_frame(cx, handle, |window, _| {
+        let assistant = window.find("serial-assistant").bounds();
+        let commands = window.find("serial-assistant-commands").bounds();
+        let message = window.find("serial-tool-message").bounds();
+        let status = window.find("serial-tool-status").bounds();
+        assert!(assistant.size.height > px(450.));
+        assert!(commands.size.height > px(120.));
+        assert!(message.size.height >= px(60.));
+        assert!(commands.bottom() <= message.top() + px(1.));
+        assert!(message.top() < status.top());
+        assert!(window.find("serial-assistant-create-group").visible());
+        assert!(window.find("serial-assistant-rename-group").visible());
+        assert!(window.find("serial-assistant-delete-group").visible());
+    });
+}
+
+#[gpui_kit::test]
+async fn default_serial_tools_expand_capture_and_keep_sending_controls_separate(
+    cx: &mut TestAppContext,
+) {
+    let mut store = HostStore::empty();
+    let host = store.insert_unnotified(HostDraft::serial(
+        "console",
+        "TEST-NOT-A-PORT",
+        SerialSettings::default(),
+        None,
+    ));
+    let factory = Arc::new(SerialToolFactory::default());
+    let (handle, _) = open_workspace_with_terminals(
+        cx,
+        store,
+        Arc::new(FakeTerminalFactory::default()),
+        Arc::new(FixedSerialTerminalTransportProvider::new(factory.clone())),
+    );
+    cx.simulate_window_resize(handle.into(), size(px(1280.), px(800.)));
+    connect(cx, handle, host, "console").await;
+    in_frame(cx, handle, |window, cx| window.click("tool-serial", cx));
+    let (preview_height, sender_height, sender_bottom) = in_frame(cx, handle, |window, cx| {
+        assert_eq!(
+            window.find("serial-assistant-enable").checked(),
+            Some(false)
+        );
+        let preview = window.find("serial-tool-preview").bounds();
+        let sender = window.find("serial-default-sender").bounds();
+        let message = window.find("serial-tool-message").bounds();
+        let send = window.find("serial-tool-send").bounds();
+        let status = window.find("serial-tool-status").bounds();
+        assert!(preview.size.height > px(100.), "preview: {preview:?}");
+        assert!(message.size.height >= px(60.));
+        assert!(preview.bottom() < sender.top());
+        assert!(sender.bottom() <= status.top());
+        assert!(window.find("serial-tool-repeat").visible());
+        assert!((send.size.width - message.size.width).abs() < px(1.));
+        window.click("serial-tool-message", cx);
+        window.input("still sends normally", cx);
+        (preview.size.height, sender.size.height, sender.bottom())
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.click("serial-tool-send", cx)
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(5), |_, _| {
+        factory.writes.lock().unwrap().as_slice() == [b"still sends normally".to_vec()]
+    })
+    .await;
+    cx.simulate_window_resize(handle.into(), size(px(1280.), px(1100.)));
+    in_frame(cx, handle, |window, _| {
+        let preview = window.find("serial-tool-preview").bounds();
+        let sender = window.find("serial-default-sender").bounds();
+        assert!(preview.size.height > preview_height + px(200.));
+        assert!((sender.size.height - sender_height).abs() < px(1.));
+        assert!(sender.bottom() > sender_bottom + px(200.));
+    });
+    cx.simulate_window_resize(handle.into(), size(px(960.), px(700.)));
+    page(cx, handle, SerialToolPage::Reply);
+    in_frame(cx, handle, |window, _| {
+        let automatic = window.find("serial-tool-auto").bounds();
+        let hex = window.find("serial-tool-hex").bounds();
+        let pattern = window.find("serial-tool-pattern").bounds();
+        let reply = window.find("serial-tool-reply").bounds();
+        assert!(hex.top() > automatic.bottom());
+        assert!(pattern.top() > hex.bottom());
+        assert!(reply.top() > pattern.bottom());
+        assert!(pattern.size.height >= px(28.));
+    });
+    page(cx, handle, SerialToolPage::Connection);
+    in_frame(cx, handle, |window, _| {
+        let baud = window.find("serial-tool-baud").bounds();
+        let apply = window.find("serial-tool-apply-baud").bounds();
+        assert!(apply.top() > baud.bottom());
+        assert!((baud.size.width - apply.size.width).abs() < px(1.));
+        assert!(window.find("serial-tool-apply-baud").visible());
+    });
+    cx.simulate_window_resize(handle.into(), size(px(960.), px(500.)));
+    page(cx, handle, SerialToolPage::Transfer);
+    in_frame(cx, handle, |window, cx| {
+        window.scroll(
+            "serial-tool-body",
+            gpui_kit::ScrollDelta::Pixels(point(px(0.), px(-1000.))),
+            cx,
+        );
+    });
+    in_frame(cx, handle, |window, _| {
+        assert!(window.find("serial-tool-send").visible());
+        assert!(window.find("serial-tool-repeat").visible());
+        let receive = window.find(("serial-hex-receive", 1u64)).bounds();
+        let transmit = window.find(("serial-hex-transmit", 1u64)).bounds();
+        assert_eq!(receive.top(), transmit.top());
+    });
+    assert_eq!(factory.starts.load(Ordering::SeqCst), 1);
+}

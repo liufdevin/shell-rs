@@ -173,6 +173,7 @@ impl ToolSidebar {
     /// dispatch on.
     pub fn new(
         store: Entity<HostStore>,
+        settings: Entity<crate::settings::SettingsStore>,
         dispatch: FocusHandle,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -187,7 +188,13 @@ impl ToolSidebar {
             serial_checks: HashSet::new(),
             monitor: cx.new(|cx| MonitorPanel::new(dispatch.clone(), store.clone(), cx)),
             logs: cx.new(|cx| {
-                crate::device_logs::DeviceLogPanel::new(dispatch.clone(), store.clone(), window, cx)
+                crate::device_logs::DeviceLogPanel::new(
+                    dispatch.clone(),
+                    store.clone(),
+                    settings,
+                    window,
+                    cx,
+                )
             }),
             projects: cx.new(|cx| ProjectPanel::new(store.clone(), dispatch.clone(), cx)),
             snippets: cx.new(|cx| SnippetPanel::new(store, dispatch.clone(), window, cx)),
@@ -249,6 +256,10 @@ impl ToolSidebar {
     ) {
         self.logs
             .update(cx, |logs, cx| logs.command(command, window, cx));
+    }
+
+    pub(super) fn set_log_split(&mut self, split: bool, cx: &mut Context<Self>) {
+        self.logs.update(cx, |logs, cx| logs.set_split(split, cx));
     }
 
     pub fn forget_log_terminal(&mut self, terminal: RemoteTerminalId, cx: &mut Context<Self>) {

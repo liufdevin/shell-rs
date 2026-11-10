@@ -10,6 +10,7 @@ pub(super) struct Interface {
     pub index: u32,
     pub name: String,
     pub addresses: Vec<(IpAddr, u8)>,
+    pub mac: Option<[u8; 6]>,
 }
 
 pub(super) fn interfaces() -> Arc<Vec<Interface>> {
@@ -78,7 +79,12 @@ fn enumerate() -> io::Result<Vec<Interface>> {
         let mut current = first;
         while !current.is_null() && result.len() < 256 {
             let adapter = unsafe { &*current };
-            if adapter.OperStatus == IfOperStatusUp && adapter.Ipv6IfIndex != 0 {
+            let index = if adapter.Ipv6IfIndex != 0 {
+                adapter.Ipv6IfIndex
+            } else {
+                unsafe { adapter.Anonymous1.Anonymous.IfIndex }
+            };
+            if adapter.OperStatus == IfOperStatusUp && index != 0 {
                 let mut name = Vec::new();
                 if !adapter.FriendlyName.is_null() {
                     for offset in 0..1024 {
@@ -90,9 +96,11 @@ fn enumerate() -> io::Result<Vec<Interface>> {
                     }
                 }
                 let mut interface = Interface {
-                    index: adapter.Ipv6IfIndex,
+                    index,
                     name: String::from_utf16_lossy(&name),
                     addresses: Vec::new(),
+                    mac: (adapter.PhysicalAddressLength == 6)
+                        .then(|| adapter.PhysicalAddress[..6].try_into().unwrap()),
                 };
                 let mut unicast = adapter.FirstUnicastAddress;
                 while !unicast.is_null() && interface.addresses.len() < 256 {
@@ -198,6 +206,7 @@ fn enumerate() -> io::Result<Vec<Interface>> {
                         index,
                         name,
                         addresses: vec![value],
+                        mac: None,
                     });
                 }
             }

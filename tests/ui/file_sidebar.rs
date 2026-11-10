@@ -320,6 +320,169 @@ async fn closing_a_terminal_whose_files_download_asks_first(cx: &mut TestAppCont
 }
 
 #[gpui_kit::test]
+async fn sidebar_download_remembers_a_browsed_folder_across_terminals_and_cancel_keeps_it(
+    cx: &mut TestAppContext,
+) {
+    let fixture = open(cx, FakeSftpProvider::default());
+    let directory = tempfile::tempdir().unwrap();
+    let chosen = directory.path().to_path_buf();
+    show_files(cx, &fixture, INITIAL_WEB_TERMINAL, FILES).await;
+    in_frame(cx, fixture.handle, |window, cx| {
+        window
+            .within(("remote-pane", FILES))
+            .click("name:文件 甲.txt", cx);
+    });
+    in_frame(cx, fixture.handle, |window, cx| window.press("f5", cx));
+    in_frame(cx, fixture.handle, |window, cx| {
+        assert_eq!(
+            window.find("download-target").value(),
+            Some("/local/tester/Downloads")
+        );
+        window.click("download-browse", cx);
+    });
+    cx.simulate_path_prompt_response(|_| Some(vec![chosen.clone()]));
+    cx.run_until_parked();
+    in_frame(cx, fixture.handle, |window, cx| {
+        assert_eq!(
+            window.find("download-target").value(),
+            Some(chosen.to_string_lossy().as_ref())
+        );
+        window.press("escape", cx);
+    });
+    cx.update(|cx| {
+        assert_eq!(
+            fixture
+                .workspace
+                .read(cx)
+                .settings()
+                .read(cx)
+                .settings()
+                .sidebar_download_directory,
+            Some(chosen.clone())
+        )
+    });
+    show_files(cx, &fixture, INITIAL_STAGING_TERMINAL, 2).await;
+    in_frame(cx, fixture.handle, |window, cx| {
+        window
+            .within(("remote-pane", 2u64))
+            .click("name:文件 甲.txt", cx);
+    });
+    in_frame(cx, fixture.handle, |window, cx| window.press("f5", cx));
+    in_frame(cx, fixture.handle, |window, cx| {
+        assert_eq!(
+            window.find("download-target").value(),
+            Some(chosen.to_string_lossy().as_ref())
+        );
+        window.click("download-browse", cx);
+    });
+    cx.simulate_path_prompt_response(|_| None);
+    cx.run_until_parked();
+    in_frame(cx, fixture.handle, |window, cx| {
+        assert_eq!(
+            window.find("download-target").value(),
+            Some(chosen.to_string_lossy().as_ref())
+        );
+        window.press("escape", cx);
+    });
+    assert!(fixture.sftp.downloads.lock().unwrap().is_empty());
+}
+
+#[gpui_kit::test]
+async fn sidebar_download_remembers_a_manually_confirmed_destination(cx: &mut TestAppContext) {
+    let fixture = open(cx, FakeSftpProvider::default());
+    let directory = tempfile::tempdir().unwrap();
+    let chosen = directory.path().to_path_buf();
+    show_files(cx, &fixture, INITIAL_WEB_TERMINAL, FILES).await;
+    in_frame(cx, fixture.handle, |window, cx| {
+        window
+            .within(("remote-pane", FILES))
+            .click("name:文件 甲.txt", cx);
+    });
+    in_frame(cx, fixture.handle, |window, cx| window.press("f5", cx));
+    in_frame(cx, fixture.handle, |window, cx| {
+        window.click("download-target", cx);
+        window.press(
+            if cfg!(target_os = "macos") {
+                "cmd-a"
+            } else {
+                "ctrl-a"
+            },
+            cx,
+        );
+        window.input(chosen.to_string_lossy().as_ref(), cx);
+    });
+    in_frame(cx, fixture.handle, |window, cx| {
+        window.click("download-confirm", cx)
+    });
+    cx.wait_for(fixture.handle.into(), Duration::from_secs(3), |_, _| {
+        !fixture.sftp.downloads.lock().unwrap().is_empty()
+    })
+    .await;
+    cx.update(|cx| {
+        assert_eq!(
+            fixture
+                .workspace
+                .read(cx)
+                .settings()
+                .read(cx)
+                .settings()
+                .sidebar_download_directory,
+            Some(chosen.clone())
+        )
+    });
+    assert_eq!(
+        fixture.sftp.downloads.lock().unwrap()[0].destination(),
+        chosen
+    );
+}
+
+#[gpui_kit::test]
+async fn standalone_sftp_download_does_not_use_the_sidebar_directory(cx: &mut TestAppContext) {
+    let fixture = open(cx, FakeSftpProvider::default());
+    let directory = tempfile::tempdir().unwrap();
+    cx.update(|cx| {
+        let settings = fixture.workspace.read(cx).settings().clone();
+        settings.update(cx, |store, cx| {
+            store.update(
+                |settings| {
+                    settings.sidebar_download_directory = Some(directory.path().to_path_buf());
+                },
+                cx,
+            );
+        });
+    });
+    in_frame(cx, fixture.handle, |window, cx| {
+        window.dispatch_action(Box::new(OpenExplorer(HostId(WEB_01))), cx);
+    });
+    wait_for_path(cx, fixture.handle, FILES, "/home/tester").await;
+    in_frame(cx, fixture.handle, |window, cx| {
+        window
+            .within(("remote-pane", FILES))
+            .click("name:文件 甲.txt", cx);
+    });
+    in_frame(cx, fixture.handle, |window, cx| window.press("f5", cx));
+    in_frame(cx, fixture.handle, |window, cx| {
+        assert_eq!(
+            window.find("download-target").value(),
+            Some("/local/tester")
+        );
+        window.press("escape", cx);
+    });
+    cx.update(|cx| {
+        assert_eq!(
+            fixture
+                .workspace
+                .read(cx)
+                .settings()
+                .read(cx)
+                .settings()
+                .sidebar_download_directory,
+            Some(directory.path().to_path_buf())
+        )
+    });
+}
+
+#[gpui_kit::test]
 async fn closing_a_terminal_asks_once_about_files_its_files_left_unsaved(cx: &mut TestAppContext) {
     let fixture = open(
         cx,

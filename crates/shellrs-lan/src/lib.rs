@@ -7,10 +7,12 @@ mod devices;
 mod discovery;
 mod interface;
 mod password;
+mod power;
 mod storage;
 #[cfg(test)]
 mod tests;
 mod transport;
+mod wake;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io;
@@ -36,6 +38,7 @@ pub use devices::{
 };
 pub use discovery::discover;
 pub use transport::{Network, RemoteRequest, Response};
+pub use wake::WakeInterface;
 
 pub const TCP_PORT: u16 = 45838;
 pub const DISCOVERY_PORT: u16 = 45837;
@@ -153,6 +156,7 @@ struct Configuration {
     blocked_ips: BTreeSet<IpAddr>,
     grants: BTreeMap<String, Grant>,
     peers: BTreeMap<String, Device>,
+    wake_peers: BTreeMap<String, Vec<WakeInterface>>,
     device_access_enabled: bool,
     shared_devices: BTreeSet<String>,
     device_grants: BTreeMap<String, BTreeSet<String>>,
@@ -183,6 +187,8 @@ pub struct Core {
     next_device_stream: AtomicU64,
     device_generation: AtomicU64,
     device_audit_error: Mutex<Option<String>>,
+    sleep: Arc<power::SleepInhibitor>,
+    waking: Mutex<BTreeMap<String, usize>>,
 }
 
 impl Core {
@@ -248,6 +254,9 @@ impl Core {
                 "invalid grant identity"
             );
         }
+        configuration.wake_peers.retain(|id, interfaces| {
+            configuration.peers.contains_key(id) && wake::validate(interfaces).is_ok()
+        });
         let id = fingerprint(key.public_key());
         Ok(Arc::new(Self {
             directory: directory.to_owned(),
@@ -272,6 +281,8 @@ impl Core {
             next_device_stream: AtomicU64::new(1),
             device_generation: AtomicU64::new(0),
             device_audit_error: Mutex::new(None),
+            sleep: Arc::new(power::SleepInhibitor::default()),
+            waking: Mutex::new(BTreeMap::new()),
         }))
     }
 
@@ -382,6 +393,9 @@ impl Core {
         self.locked.store(locked, Ordering::Release);
         if locked {
             self.invalidate_device_access();
+            self.sleep.reset();
+        } else if self.is_running() {
+            self.sleep.enable();
         }
     }
     pub fn is_active(&self) -> bool {
@@ -547,6 +561,7 @@ impl Core {
         let mut state = self.state.lock().unwrap();
         let mut configuration = state.configuration.clone();
         configuration.peers.remove(id);
+        configuration.wake_peers.remove(id);
         self.persist(&configuration)?;
         state.configuration = configuration;
         Ok(())
@@ -596,9 +611,13 @@ impl Core {
             "too many devices"
         );
         let mut configuration = state.configuration.clone();
-        configuration.peers.insert(device.id.clone(), device);
+        configuration
+            .peers
+            .insert(device.id.clone(), device.clone());
         self.persist(&configuration)?;
         state.configuration = configuration;
+        drop(state);
+        self.refresh_wake(&device, &AtomicBool::new(false))?;
         Ok(())
     }
     pub fn request(
@@ -617,7 +636,12 @@ impl Core {
             .get(peer)
             .cloned()
             .ok_or_else(|| anyhow::anyhow!("device is not paired"))?;
-        self.request_device(&device, request, cancel, output)
+        let catalog = matches!(request, RemoteRequest::Hosts | RemoteRequest::Devices);
+        let response = self.request_device(&device, request, cancel, output)?;
+        if catalog && !cancel.load(Ordering::Acquire) {
+            self.refresh_wake(&device, cancel)?;
+        }
+        Ok(response)
     }
     fn request_device(
         &self,

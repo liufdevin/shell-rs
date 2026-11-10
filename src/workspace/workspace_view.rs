@@ -248,6 +248,7 @@ pub struct Workspace {
     /// one in front, SSH or local. Another tab in front of the other half
     /// of a split leaves it be.
     pub(super) tool_target_choice: Option<super::tools::ToolTarget>,
+    pub(super) log_split: Option<super::tools::LogSplit>,
     /// The right sidebar's tool for the terminals of a host deleted while
     /// they are open: the store no longer has the host to keep it on.
     pub(super) deleted_host_tools: HashMap<HostId, ToolKind>,
@@ -476,7 +477,15 @@ impl Workspace {
         let credential_panel =
             cx.new(|cx| CredentialPanel::new(store.clone(), focus_handle.clone(), window, cx));
         let sidebar = cx.new(|_| Sidebar::new(host_panel.clone(), forward_panel, credential_panel));
-        let tools = cx.new(|cx| ToolSidebar::new(store.clone(), focus_handle.clone(), window, cx));
+        let tools = cx.new(|cx| {
+            ToolSidebar::new(
+                store.clone(),
+                settings.clone(),
+                focus_handle.clone(),
+                window,
+                cx,
+            )
+        });
         // Start with focus in the host panel so window-level actions have a
         // dispatch path. The workspace's own handle is never focused: the
         // dialog layer is its child, and a focused ancestor would keep the
@@ -831,6 +840,7 @@ impl Workspace {
             compose,
             compose_height: COMPOSE_HEIGHT,
             tool_target_choice: None,
+            log_split: None,
             deleted_host_tools: HashMap::new(),
             prompt_queue: VecDeque::new(),
             active_prompt: None,
@@ -3491,6 +3501,7 @@ fn new_explorer_panel(
             host,
             login,
             workspace.store.clone(),
+            workspace.settings.clone(),
             workspace.sftp_provider.clone(),
             route,
             workspace.local_directory_provider.clone(),
@@ -3654,6 +3665,10 @@ impl Workspace {
             return;
         }
         match &action.0 {
+            crate::lan::LanCommand::ShowPowerHelp => {
+                crate::lan::show_power_help(window, cx);
+                return;
+            }
             crate::lan::LanCommand::OpenHost { peer, host } => {
                 self.open_lan_host(peer, host, window, cx);
                 return;
@@ -4200,10 +4215,12 @@ impl Workspace {
                             .min_h_0()
                             .child(
                                 div()
+                                    .relative()
                                     .flex_1()
                                     .min_w_0()
                                     .h_full()
-                                    .child(self.dock_area.clone()),
+                                    .child(self.dock_area.clone())
+                                    .children(self.log_split_measure(cx)),
                             )
                             // The switch comes and goes with the SSH terminals.
                             .when(!offered_tools.is_empty(), |area| {

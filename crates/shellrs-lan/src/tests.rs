@@ -156,6 +156,8 @@ fn ssh_terminal_streams_support_binary_input_resize_large_output_exit_and_multip
     host_started(&stream);
     let second = open_host(&a, b.id(), "shared");
     host_started(&second);
+    assert_eq!(b.is_sleep_inhibited(), cfg!(windows));
+    assert!(!a.is_sleep_inhibited());
     stream
         .input
         .send(DeviceInput::Write(vec![0, 255, 3, 13, 10]))
@@ -198,6 +200,7 @@ fn ssh_terminal_streams_support_binary_input_resize_large_output_exit_and_multip
         }
     );
     stream.worker.join().unwrap().unwrap();
+    assert_eq!(b.is_sleep_inhibited(), cfg!(windows));
     b.disconnect_device(
         b.active_devices()
             .iter()
@@ -208,6 +211,7 @@ fn ssh_terminal_streams_support_binary_input_resize_large_output_exit_and_multip
     .unwrap();
     assert!(second.worker.join().unwrap().is_err());
     assert!(eventually(|| b.active_devices().is_empty()));
+    assert!(eventually(|| !b.is_sleep_inhibited()));
     assert!(
         b.audit()
             .iter()
@@ -309,6 +313,57 @@ fn eventually(mut condition: impl FnMut() -> bool) -> bool {
         std::thread::sleep(Duration::from_millis(20));
     }
     false
+}
+
+#[test]
+fn wake_information_is_only_shared_after_pairing_and_cached_across_restarts() {
+    let (directory, controller, _, _) = fixture("A");
+    let (_owner_directory, owner, _, _) = fixture("B");
+    let _controller_network = running(&controller);
+    let owner_network = running(&owner);
+    assert!(!owner.is_sleep_inhibited());
+    let device = controller.inspect(owner_network.tcp_address).unwrap();
+    assert!(
+        controller
+            .request_device(
+                &device,
+                RemoteRequest::WakeInfo,
+                &AtomicBool::new(false),
+                &mut |_, _| Ok(())
+            )
+            .is_err()
+    );
+    assert!(!owner.is_sleep_inhibited());
+    controller
+        .pair_password(device, "correct horse battery")
+        .unwrap();
+    let response = controller
+        .request(
+            owner.id(),
+            RemoteRequest::WakeInfo,
+            &AtomicBool::new(false),
+            &mut |_, _| Ok(()),
+        )
+        .unwrap();
+    assert_eq!(response.wake_interfaces, crate::wake::local_interfaces());
+    let reloaded = Core::load(directory.path(), "A", controller.executor.clone()).unwrap();
+    assert_eq!(
+        reloaded.has_wake_info(owner.id()),
+        !response.wake_interfaces.is_empty()
+    );
+    assert!(!owner.is_sleep_inhibited());
+    owner.set_locked(true);
+    assert!(
+        controller
+            .request(
+                owner.id(),
+                RemoteRequest::WakeInfo,
+                &AtomicBool::new(false),
+                &mut |_, _| Ok(())
+            )
+            .is_err()
+    );
+    assert!(!controller.is_waking());
 }
 
 #[test]
@@ -703,6 +758,7 @@ fn stopping_releases_both_ports_before_restarting_and_cancels_silent_commands() 
     assert!(eventually(|| started.load(Ordering::Acquire)));
     drop(b_network);
     assert!(!b.is_running());
+    assert!(!b.is_sleep_inhibited());
     assert!(worker.join().unwrap().is_err());
     assert!(eventually(|| cancelled.load(Ordering::Acquire)));
     let _restarted = Network::start(

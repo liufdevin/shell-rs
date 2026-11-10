@@ -63,6 +63,16 @@ impl ExplorerPanel {
             return;
         }
         let sources = self.transfer_sources(true, paths.iter().cloned(), cx);
+        let target = if self.is_sidebar() {
+            self.settings
+                .read(cx)
+                .settings()
+                .sidebar_download_directory
+                .map(|directory| directory.to_string_lossy().into_owned())
+                .unwrap_or(target)
+        } else {
+            target
+        };
         let job = move |target| TransferJob::Download {
             paths: paths.clone(),
             target,
@@ -98,6 +108,8 @@ impl ExplorerPanel {
             target,
             endpoint: self.endpoint().into(),
             error: None,
+            download_settings: (direction == TransferDirection::Download && self.is_sidebar())
+                .then(|| self.settings.clone()),
         });
         let (title, confirm_id, confirm_label) = match direction {
             TransferDirection::Upload => (
@@ -141,6 +153,17 @@ impl ExplorerPanel {
                                 cx.notify();
                             });
                             return false;
+                        }
+                        if let Some(settings) = form.read(cx).download_settings.clone() {
+                            settings.update(cx, |store, cx| {
+                                store.update(
+                                    |settings| {
+                                        settings.sidebar_download_directory =
+                                            Some(PathBuf::from(&target))
+                                    },
+                                    cx,
+                                );
+                            });
                         }
                         sender.send(ExplorerCommand::Enqueue(job(target)), window, cx);
                         true
@@ -481,6 +504,7 @@ struct TransferForm {
     target: Entity<InputState>,
     endpoint: String,
     error: Option<String>,
+    download_settings: Option<Entity<crate::settings::SettingsStore>>,
 }
 impl TransferForm {
     /// Pick the local directory a download goes to.
@@ -496,6 +520,16 @@ impl TransferForm {
                 && let Some(path) = paths.into_iter().next()
             {
                 let _ = this.update_in(cx, |this, window, cx| {
+                    if let Some(settings) = &this.download_settings
+                        && path.is_absolute()
+                    {
+                        settings.update(cx, |store, cx| {
+                            store.update(
+                                |settings| settings.sidebar_download_directory = Some(path.clone()),
+                                cx,
+                            );
+                        });
+                    }
                     this.target.update(cx, |input, cx| {
                         input.set_value(path.to_string_lossy().into_owned(), window, cx)
                     });

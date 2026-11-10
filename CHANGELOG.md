@@ -8,6 +8,14 @@ One section per version, titled `## [version]`, optionally followed by a date. E
 
 ### Added
 
+- Sidebar Files downloads remember the last local destination across terminals and restarts. Cancelling the picker keeps the saved folder; standalone SFTP tabs still use the current local pane directory.
+
+- Fixed editing in the Ctrl+T ShellLF command terminal: Left/Right, Home/End, Delete and Backspace now work at the cursor, with Ctrl+A/E/K/W shortcuts, while commands still run on the original connection.
+
+- Device logs now support plain, regular-expression and case-sensitive search, optional matching-lines filtering, numbered highlighted results and Enter / Shift+Enter or button navigation. The log font can be set from 12 to 24 and is saved; Split view is off by default and restores the previous sidebar width when closed.
+
+- Improved the default Serial tools layout with an expanding capture preview, a separate bottom sender and a full-width Send button. Auto-reply and Connection now separate toggles, fields, actions and help into clearer groups without enabling Serial assistant.
+
 - Enabling Serial assistant from Auto-reply or Connection now opens the assistant page at the top. Detached serial terminals gain a collapsible tools sidebar, reusing the existing connection and the host’s assistant settings and command groups.
 
 - Added an opt-in, per-host Serial assistant layout with persistent command groups, per-command HEX/line ending/CRC/delay, sequential sending, stop and undo deletion, reusing the existing serial connection. HEX receive/send moved to the footer, and Serial tools now has its own port icon.

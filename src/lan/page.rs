@@ -8,6 +8,7 @@ use gpui_kit::component::{
     switch::Switch,
     v_flex,
 };
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use super::{LanCommand, LanService};
@@ -137,7 +138,9 @@ impl LanPage {
             .core()
             .map(|core| core.id().to_owned())
             .unwrap_or_default();
-        let status = if !available && !busy && service.status.is_empty() {
+        let status = if service.core().is_some_and(|core| core.is_waking()) {
+            t!("lan.wake.waiting").to_string()
+        } else if !available && !busy && service.status.is_empty() {
             t!("lan.unavailable").to_string()
         } else {
             service.status.clone()
@@ -174,18 +177,29 @@ impl LanPage {
                         .child(t!("lan.network_help")),
                 )
                 .child(
-                    Switch::new("lan-enable")
-                        .label(t!("lan.enable"))
-                        .checked(wanted)
-                        .disabled(busy || !available)
-                        .on_change(|enabled, window, cx| {
-                            let command = if *enabled {
-                                LanCommand::Enable
-                            } else {
-                                LanCommand::Disable
-                            };
-                            window.dispatch_action(Box::new(LanAction(command)), cx);
-                        }),
+                    h_flex()
+                        .gap_3()
+                        .flex_wrap()
+                        .child(
+                            Switch::new("lan-enable")
+                                .label(t!("lan.enable"))
+                                .checked(wanted)
+                                .disabled(busy || !available)
+                                .on_change(|enabled, window, cx| {
+                                    let command = if *enabled {
+                                        LanCommand::Enable
+                                    } else {
+                                        LanCommand::Disable
+                                    };
+                                    window.dispatch_action(Box::new(LanAction(command)), cx);
+                                }),
+                        )
+                        .child(button(
+                            "lan-power-guide",
+                            t!("lan.power.guide"),
+                            LanCommand::ShowPowerHelp,
+                            false,
+                        )),
                 )
                 .child(
                     Switch::new("lan-discoverable")
@@ -206,13 +220,38 @@ impl LanPage {
                         .child(t!("lan.discoverable_help")),
                 )
                 .child(
-                    div()
-                        .id("lan-status")
-                        .role(Role::Status)
-                        .test_support()
-                        .aria_label(status.clone())
-                        .text_sm()
-                        .child(status),
+                    h_flex()
+                        .gap_3()
+                        .flex_wrap()
+                        .child(
+                            div()
+                                .id("lan-status")
+                                .role(Role::Status)
+                                .test_support()
+                                .aria_label(status.clone())
+                                .text_sm()
+                                .child(status),
+                        )
+                        .when(cfg!(windows), |view| {
+                            let label = t!(if service
+                                .core()
+                                .is_some_and(|core| core.is_sleep_inhibited())
+                            {
+                                "lan.power.active"
+                            } else {
+                                "lan.power.idle"
+                            });
+                            view.child(
+                                div()
+                                    .id("lan-power-status")
+                                    .test_support()
+                                    .role(Role::Status)
+                                    .aria_label(label.clone())
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(label),
+                            )
+                        }),
                 )
                 .child(
                     div()
@@ -429,7 +468,41 @@ impl LanPage {
                 .into_any_element();
         }
         if section == LanSection::Paired {
-            view = view.child(help(t!("lan.section.paired_help"), cx));
+            view = view
+                .child(
+                    h_flex()
+                        .gap_3()
+                        .items_start()
+                        .child(help(t!("lan.section.paired_help"), cx))
+                        .child(button(
+                            "lan-wake-guide",
+                            t!("lan.power.guide"),
+                            LanCommand::ShowPowerHelp,
+                            false,
+                        )),
+                )
+                .when(available, |view| {
+                    view.child(
+                        div()
+                            .id("lan-wake-status")
+                            .test_support()
+                            .role(Role::Status)
+                            .aria_label(status.clone())
+                            .text_sm()
+                            .child(status.clone()),
+                    )
+                })
+                .when(
+                    busy && service.core().is_some_and(|core| core.is_waking()),
+                    |view| {
+                        view.child(button(
+                            "lan-cancel-wake",
+                            t!("lan.wake.cancel"),
+                            LanCommand::CancelWake,
+                            false,
+                        ))
+                    },
+                );
             if service.peers().is_empty() {
                 view = view.child(empty(t!("lan.empty.paired"), cx));
             }
@@ -444,6 +517,16 @@ impl LanPage {
                         .child(device_identity(
                             &device.name,
                             &device.endpoint.to_string(),
+                            cx,
+                        ))
+                        .child(help(
+                            t!(
+                                if service.core().is_some_and(|core| core.has_wake_info(&id)) {
+                                    "lan.wake.saved"
+                                } else {
+                                    "lan.wake.not_saved"
+                                }
+                            ),
                             cx,
                         ))
                         .child(

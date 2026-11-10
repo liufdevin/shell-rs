@@ -101,6 +101,7 @@ async fn serve(
             "adb_service_unavailable"
         );
     }
+    let _usage = core.keep_awake()?;
     let id = match core.acquire_stream(
         &request.peer,
         &request.device,
@@ -345,7 +346,7 @@ fn stream_request(
         "invalid_device_request"
     );
     crate::transport::runtime()?.block_on(async {
-        let (session, _, accepted) = crate::transport::connect(core, device.endpoint, Some(device.id.clone()), "trusted", None).await?;
+        let (session, _, accepted) = crate::transport::connect(core, device.endpoint, Some(device.id.clone()), "trusted", None, cancelled, true).await?;
         let result: Result<()> = async {
             ensure!(accepted, "device_not_authorized");
             ensure!(!cancelled.load(Ordering::Acquire) && core.is_active(), "device_stream_cancelled");

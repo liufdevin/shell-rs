@@ -1,5 +1,7 @@
+use regex::{Regex, RegexBuilder};
 use std::{
     collections::{HashMap, HashSet},
+    ops::Range,
     rc::Rc,
     sync::{
         Arc,
@@ -15,15 +17,16 @@ use super::{
     report::{self, ReportFile, ReportOptions, ReportResult},
 };
 use crate::{
-    app::DeviceLogAction,
+    app::{CatalogIcon, DeviceLogAction},
     host::{DeviceLogSettings, HostId, HostStore, MonitorSettings},
     i18n::{UiLocale, t},
     monitor::{MonitorConnector, MonitorLink},
+    settings::{DEFAULT_INTERFACE_FONT_SIZE, SettingsStore},
     terminal::{ExecTarget, RemoteTerminalId, TerminalLifecycle, exec_answer},
 };
 use gpui_kit::{
     component::{
-        ActiveTheme as _, Disableable as _, Selectable as _, Sizable as _,
+        ActiveTheme as _, Disableable as _, Icon, Selectable as _, Sizable as _,
         button::{Button, ButtonVariants as _},
         checkbox::Checkbox,
         h_flex,
@@ -40,12 +43,20 @@ use gpui_kit::{
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DeviceLogCommand {
+    ToggleSplit,
+    FontSize(u8),
+    Search,
+    SearchNext,
+    SearchPrevious,
+    ClearSearch,
+    ToggleSearchRegex,
+    ToggleSearchCaseSensitive,
+    ToggleMatchingLines,
     Pause,
     Clear,
     Export,
     Retry,
     CurrentUser,
-    Filter,
     Level(LogLevel),
     Follow(bool),
     Filters,
@@ -141,7 +152,67 @@ impl Drop for Cancel {
     }
 }
 
+#[derive(Default)]
+struct SearchState {
+    query: String,
+    regex: bool,
+    case_sensitive: bool,
+    matching_lines: bool,
+    compiled: Option<Rc<Regex>>,
+    error: Option<String>,
+    matches: Rc<Vec<u64>>,
+    selected: Option<u64>,
+}
+
+impl SearchState {
+    fn has_query(&self) -> bool {
+        !self.query.trim().is_empty()
+    }
+
+    fn compile(&mut self) -> Option<Rc<Regex>> {
+        self.error = None;
+        self.compiled = None;
+        if !self.has_query() {
+            return None;
+        }
+        let pattern = if self.regex {
+            self.query.trim().to_string()
+        } else {
+            regex::escape(self.query.trim())
+        };
+        match RegexBuilder::new(&pattern)
+            .case_insensitive(!self.case_sensitive)
+            .size_limit(2 * 1024 * 1024)
+            .build()
+        {
+            Ok(regex) => {
+                let regex = Rc::new(regex);
+                self.compiled = Some(regex.clone());
+                Some(regex)
+            }
+            Err(error) => {
+                self.error = Some(error.to_string());
+                None
+            }
+        }
+    }
+}
+
+fn spans(regex: &Regex, text: &str) -> Vec<Range<usize>> {
+    regex
+        .find_iter(text)
+        .filter(|found| !found.is_empty())
+        .map(|found| found.range())
+        .collect()
+}
+
+fn has_match(regex: &Regex, text: &str) -> bool {
+    regex.find_iter(text).any(|found| !found.is_empty())
+}
+
 pub struct DeviceLogPanel {
+    settings: Entity<SettingsStore>,
+    split: bool,
     dispatch: FocusHandle,
     store: Entity<HostStore>,
     connector: Option<Arc<dyn MonitorConnector>>,
@@ -151,7 +222,7 @@ pub struct DeviceLogPanel {
     keyword: Entity<InputState>,
     level: Entity<SelectState<Vec<LevelChoice>>>,
     minimum: LogLevel,
-    filter: String,
+    search: SearchState,
     visible: Rc<Vec<LogLine>>,
     follow: bool,
     scroll: UniformListScrollHandle,
@@ -167,6 +238,7 @@ impl DeviceLogPanel {
     pub fn new(
         dispatch: FocusHandle,
         store: Entity<HostStore>,
+        settings: Entity<SettingsStore>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -186,6 +258,7 @@ impl DeviceLogPanel {
         let filter_dispatch = dispatch.clone();
         let level_dispatch = dispatch.clone();
         let subscriptions = vec![
+            cx.observe(&settings, |_, _, cx| cx.notify()),
             cx.observe_global_in::<UiLocale>(window, |this, window, cx| {
                 this.keyword.update(cx, |input, cx| {
                     input.set_placeholder(t!("device_logs.keyword"), window, cx)
@@ -196,16 +269,18 @@ impl DeviceLogPanel {
                 &keyword,
                 window,
                 move |_, _, event: &InputEvent, window, cx| {
-                    if matches!(event, InputEvent::Change) {
-                        let dispatch = filter_dispatch.clone();
-                        window.defer(cx, move |window, cx| {
-                            dispatch.dispatch_action(
-                                &DeviceLogAction(DeviceLogCommand::Filter),
-                                window,
-                                cx,
-                            )
-                        });
-                    }
+                    let command = match event {
+                        InputEvent::Change => DeviceLogCommand::Search,
+                        InputEvent::PressEnter { shift: false, .. } => DeviceLogCommand::SearchNext,
+                        InputEvent::PressEnter { shift: true, .. } => {
+                            DeviceLogCommand::SearchPrevious
+                        }
+                        _ => return,
+                    };
+                    let dispatch = filter_dispatch.clone();
+                    window.defer(cx, move |window, cx| {
+                        dispatch.dispatch_action(&DeviceLogAction(command), window, cx)
+                    });
                 },
             ),
             cx.subscribe_in(&level, window, move |_, _, event, window, cx| {
@@ -223,6 +298,8 @@ impl DeviceLogPanel {
             }),
         ];
         Self {
+            settings,
+            split: false,
             dispatch,
             store,
             connector: None,
@@ -232,7 +309,7 @@ impl DeviceLogPanel {
             keyword,
             level,
             minimum: LogLevel::All,
-            filter: String::new(),
+            search: SearchState::default(),
             visible: Rc::new(Vec::new()),
             follow: true,
             scroll: UniformListScrollHandle::new(),
@@ -248,6 +325,13 @@ impl DeviceLogPanel {
     pub fn set_connector(&mut self, connector: Arc<dyn MonitorConnector>, cx: &mut Context<Self>) {
         self.connector = Some(connector);
         self.restart(cx);
+    }
+
+    pub(crate) fn set_split(&mut self, split: bool, cx: &mut Context<Self>) {
+        if self.split != split {
+            self.split = split;
+            cx.notify();
+        }
     }
 
     pub fn set_target(&mut self, target: Option<LogTarget>, active: bool, cx: &mut Context<Self>) {
@@ -295,7 +379,7 @@ impl DeviceLogPanel {
             .and_then(|target| self.states.get(&target.exec.terminal))
     }
 
-    fn filtered(&self) -> Vec<LogLine> {
+    fn base_lines(&self) -> Vec<LogLine> {
         let Some(state) = self.state() else {
             return Vec::new();
         };
@@ -304,13 +388,145 @@ impl DeviceLogPanel {
             .clone()
             .unwrap_or_else(|| state.buffer.lines())
             .into_iter()
-            .filter(|line| model::matches(line, self.minimum, &self.filter))
+            .filter(|line| model::matches(line, self.minimum, ""))
             .filter(|line| !self.bookmarks_only || state.bookmarks.contains(&line.id))
             .filter(|line| {
                 state.source != Some(Source::Android)
                     || model::matches_options(line, &state.options, state.buffer.clock())
             })
             .collect()
+    }
+
+    fn refresh_search(&mut self) {
+        let lines = self.base_lines();
+        let regex = self.search.compile();
+        self.search.matches = Rc::new(
+            regex
+                .as_ref()
+                .map(|regex| {
+                    lines
+                        .iter()
+                        .filter(|line| has_match(regex, &line.text))
+                        .map(|line| line.id)
+                        .collect()
+                })
+                .unwrap_or_default(),
+        );
+        if self
+            .search
+            .selected
+            .is_some_and(|id| !self.search.matches.contains(&id))
+        {
+            self.search.selected = None;
+        }
+        self.visible = Rc::new(
+            if self.search.matching_lines && self.search.has_query() && regex.is_some() {
+                lines
+                    .into_iter()
+                    .filter(|line| self.search.matches.contains(&line.id))
+                    .collect()
+            } else {
+                lines
+            },
+        );
+    }
+
+    fn select_search_match(&mut self, index: usize) {
+        self.search.selected = self.search.matches.get(index).copied();
+        self.scroll_to_selected();
+    }
+
+    fn step_search(&mut self, forward: bool) {
+        let total = self.search.matches.len();
+        if total == 0 {
+            self.search.selected = None;
+            return;
+        }
+        let current = self.search.selected.and_then(|id| {
+            self.search
+                .matches
+                .iter()
+                .position(|candidate| *candidate == id)
+        });
+        let index = match (current, forward) {
+            (Some(current), true) => (current + 1) % total,
+            (Some(current), false) => (current + total - 1) % total,
+            (None, true) => 0,
+            (None, false) => total - 1,
+        };
+        self.select_search_match(index);
+    }
+
+    fn scroll_to_selected(&self) {
+        if let Some(id) = self.search.selected
+            && let Some(index) = self.visible.iter().position(|line| line.id == id)
+        {
+            self.scroll.scroll_to_item(index, ScrollStrategy::Center);
+        }
+    }
+
+    fn clear_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.keyword
+            .update(cx, |input, cx| input.set_value("", window, cx));
+        self.search.query.clear();
+        self.search.selected = None;
+        self.search.compiled = None;
+        self.search.error = None;
+        self.search.matches = Rc::default();
+        self.refresh_search();
+        self.follow_latest();
+        self.keyword.update(cx, |input, cx| input.focus(window, cx));
+        cx.notify();
+    }
+
+    fn handle_search_command(
+        &mut self,
+        command: &DeviceLogCommand,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        match command {
+            DeviceLogCommand::Search => {
+                let query = self.keyword.read(cx).value().to_string();
+                if self.search.query == query {
+                    return true;
+                }
+                self.search.query = query;
+                self.refresh_search();
+                self.search.selected = self.search.matches.first().copied();
+                if self.search.has_query() {
+                    self.scroll_to_selected();
+                } else {
+                    self.follow_latest();
+                }
+            }
+            DeviceLogCommand::SearchNext => self.step_search(true),
+            DeviceLogCommand::SearchPrevious => self.step_search(false),
+            DeviceLogCommand::ClearSearch => {
+                self.clear_search(window, cx);
+                return true;
+            }
+            DeviceLogCommand::ToggleSearchRegex => {
+                self.search.regex = !self.search.regex;
+                self.refresh_search();
+                self.search.selected = self.search.matches.first().copied();
+                self.scroll_to_selected();
+            }
+            DeviceLogCommand::ToggleSearchCaseSensitive => {
+                self.search.case_sensitive = !self.search.case_sensitive;
+                self.refresh_search();
+                self.search.selected = self.search.matches.first().copied();
+                self.scroll_to_selected();
+            }
+            DeviceLogCommand::ToggleMatchingLines => {
+                self.search.matching_lines = !self.search.matching_lines;
+                self.refresh_search();
+                self.scroll_to_selected();
+            }
+            _ => return false,
+        }
+        cx.notify();
+        true
     }
 
     pub fn command(
@@ -326,7 +542,17 @@ impl DeviceLogPanel {
             return;
         };
         self.status = None;
+        if self.handle_search_command(command, window, cx) {
+            return;
+        }
         match command {
+            DeviceLogCommand::ToggleSplit => return,
+            DeviceLogCommand::FontSize(size) => self.settings.update(cx, |store, cx| {
+                store.update(
+                    |settings| settings.device_logs.font_size = (*size).clamp(12, 24),
+                    cx,
+                )
+            }),
             DeviceLogCommand::Pause => {
                 let state = self.states.entry(id).or_default();
                 state.paused = if state.paused.is_some() {
@@ -349,9 +575,6 @@ impl DeviceLogPanel {
                 state.current_user = *command == DeviceLogCommand::CurrentUser;
                 state.problem = None;
                 self.restart(cx);
-            }
-            DeviceLogCommand::Filter => {
-                self.filter = self.keyword.read(cx).value().trim().to_lowercase()
             }
             DeviceLogCommand::Level(level) => {
                 self.minimum = *level;
@@ -443,6 +666,13 @@ impl DeviceLogPanel {
                 self.status = Some(t!("device_logs.report.cancelled"));
                 self.restart(cx);
             }
+            DeviceLogCommand::Search
+            | DeviceLogCommand::SearchNext
+            | DeviceLogCommand::SearchPrevious
+            | DeviceLogCommand::ClearSearch
+            | DeviceLogCommand::ToggleSearchRegex
+            | DeviceLogCommand::ToggleSearchCaseSensitive
+            | DeviceLogCommand::ToggleMatchingLines => {}
         }
         self.refresh_visible();
         self.follow_latest();
@@ -450,11 +680,14 @@ impl DeviceLogPanel {
     }
 
     fn refresh_visible(&mut self) {
-        self.visible = Rc::new(self.filtered());
+        self.refresh_search();
     }
 
     fn follow_latest(&self) {
-        if self.follow && self.state().is_some_and(|state| state.paused.is_none()) {
+        if self.follow
+            && !self.search.has_query()
+            && self.state().is_some_and(|state| state.paused.is_none())
+        {
             let count = self.visible.len();
             if count > 0 {
                 self.scroll
@@ -1143,7 +1376,10 @@ async fn read(
 }
 
 impl Render for DeviceLogPanel {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let size = self.settings.read(cx).settings().device_logs.font_size;
+        let font_size =
+            rems(f32::from(size) / DEFAULT_INTERFACE_FONT_SIZE).to_pixels(window.rem_size());
         let lines = self.visible.clone();
         let count = lines.len();
         let state = self.state();
@@ -1166,6 +1402,23 @@ impl Render for DeviceLogPanel {
         let loading = source.is_none() && problem.is_none();
         let route = state.map_or("", |state| state.route.as_str()).to_string();
         let elevated = state.is_some_and(|state| state.elevated);
+        let source_label = source.map(|source| {
+            t!(
+                "device_logs.source",
+                source = match source {
+                    Source::Android => "logcat",
+                    Source::Kernel => "dmesg",
+                    Source::Journal => "journalctl",
+                    Source::File => "tail",
+                },
+                route = route,
+                permission = if elevated {
+                    t!("device_logs.admin")
+                } else {
+                    t!("device_logs.user")
+                }
+            )
+        });
         let bookmarks = state
             .map(|state| state.bookmarks.clone())
             .unwrap_or_default();
@@ -1175,27 +1428,134 @@ impl Render for DeviceLogPanel {
             .map(|state| state.options.object.clone())
             .filter(|object| !object.is_empty());
         let app_waiting = state.is_some_and(|state| state.app_waiting);
+        let search_regex = self.search.compiled.clone();
+        let selected_search = self.search.selected;
+        let search_label = if !self.search.has_query() || self.search.error.is_some() {
+            None
+        } else if self.search.matches.is_empty() {
+            Some(t!("device_logs.search.no_results"))
+        } else {
+            Some(
+                match self.search.selected.and_then(|id| {
+                    self.search
+                        .matches
+                        .iter()
+                        .position(|candidate| *candidate == id)
+                }) {
+                    Some(index) => format!("{}/{}", index + 1, self.search.matches.len()),
+                    None => t!(
+                        "device_logs.search.count",
+                        count = self.search.matches.len()
+                    )
+                    .to_string(),
+                }
+                .into(),
+            )
+        };
+        let search_error = self.search.error.clone();
         let action = |id: &'static str, label: SharedString, command: DeviceLogCommand| {
             let dispatch = self.dispatch.clone();
+            let icon = match &command {
+                DeviceLogCommand::Clear => Some(CatalogIcon::Eraser),
+                DeviceLogCommand::Export => Some(CatalogIcon::Download),
+                DeviceLogCommand::Filters => Some(CatalogIcon::ListFilter),
+                DeviceLogCommand::Bookmarks => Some(CatalogIcon::Bookmark),
+                DeviceLogCommand::Diagnostics => Some(CatalogIcon::FileText),
+                _ => None,
+            };
             Button::new(id)
                 .small()
-                .label(label)
+                .when_some(icon, |button, icon| button.ghost().icon(Icon::new(icon)))
+                .when(icon.is_none(), |button| button.label(label.clone()))
+                .tooltip(label.clone())
+                .accessibility_label(label)
                 .on_click(move |_, window, cx| {
                     dispatch.dispatch_action(&DeviceLogAction(command.clone()), window, cx)
                 })
         };
+        let option =
+            |id: &'static str, label: SharedString, command: DeviceLogCommand, selected: bool| {
+                let dispatch = self.dispatch.clone();
+                Button::new(id)
+                    .ghost()
+                    .xsmall()
+                    .label(label.clone())
+                    .selected(selected)
+                    .toggled(selected)
+                    .tooltip(label)
+                    .on_click(move |_, window, cx| {
+                        dispatch.dispatch_action(&DeviceLogAction(command.clone()), window, cx)
+                    })
+            };
         let follow_dispatch = self.dispatch.clone();
         v_flex()
             .id("device-logs")
             .test_support()
             .size_full()
             .min_h_0()
-            .gap_2()
+            .min_w_0()
             .child(
                 v_flex()
                     .px_3()
-                    .pt_3()
-                    .gap_2()
+                    .py_3()
+                    .gap_3()
+                    .border_b_1()
+                    .border_color(cx.theme().border)
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .flex_wrap()
+                            .justify_between()
+                            .child(
+                                action(
+                                    "device-logs-split",
+                                    if self.split {
+                                        t!("device_logs.split_off")
+                                    } else {
+                                        t!("device_logs.split")
+                                    },
+                                    DeviceLogCommand::ToggleSplit,
+                                )
+                                .outline()
+                                .selected(self.split)
+                                .toggled(self.split),
+                            )
+                            .child(
+                                h_flex()
+                                    .gap_1()
+                                    .child(
+                                        action(
+                                            "device-logs-font-smaller",
+                                            "A−".into(),
+                                            DeviceLogCommand::FontSize(size.saturating_sub(1)),
+                                        )
+                                        .ghost()
+                                        .tooltip(t!("device_logs.font_smaller"))
+                                        .accessibility_label(t!("device_logs.font_smaller"))
+                                        .disabled(size <= 12),
+                                    )
+                                    .child(
+                                        div()
+                                            .id("device-logs-font-size")
+                                            .test_support()
+                                            .aria_label(t!("device_logs.font_size", size = size))
+                                            .text_sm()
+                                            .text_color(cx.theme().muted_foreground)
+                                            .child(size.to_string()),
+                                    )
+                                    .child(
+                                        action(
+                                            "device-logs-font-larger",
+                                            "A+".into(),
+                                            DeviceLogCommand::FontSize(size.saturating_add(1)),
+                                        )
+                                        .ghost()
+                                        .tooltip(t!("device_logs.font_larger"))
+                                        .accessibility_label(t!("device_logs.font_larger"))
+                                        .disabled(size >= 24),
+                                    ),
+                            ),
+                    )
                     .child(
                         h_flex()
                             .flex_wrap()
@@ -1213,22 +1573,6 @@ impl Render for DeviceLogPanel {
                                 .disabled(!paused && (loading || problem.is_some())),
                             )
                             .child(
-                                action(
-                                    "device-logs-clear",
-                                    t!("device_logs.clear"),
-                                    DeviceLogCommand::Clear,
-                                )
-                                .tooltip(t!("device_logs.clear_note")),
-                            )
-                            .child(
-                                action(
-                                    "device-logs-export",
-                                    t!("device_logs.export"),
-                                    DeviceLogCommand::Export,
-                                )
-                                .disabled(count == 0),
-                            )
-                            .child(
                                 Checkbox::new("device-logs-follow")
                                     .small()
                                     .checked(self.follow)
@@ -1240,12 +1584,7 @@ impl Render for DeviceLogPanel {
                                             cx,
                                         )
                                     }),
-                            ),
-                    )
-                    .child(
-                        h_flex()
-                            .flex_wrap()
-                            .gap_2()
+                            )
                             .child(
                                 action(
                                     "device-logs-filters",
@@ -1261,7 +1600,8 @@ impl Render for DeviceLogPanel {
                                     t!("device_logs.bookmarks"),
                                     DeviceLogCommand::Bookmarks,
                                 )
-                                .selected(self.bookmarks_only),
+                                .selected(self.bookmarks_only)
+                                .toggled(self.bookmarks_only),
                             )
                             .child(
                                 action(
@@ -1270,10 +1610,107 @@ impl Render for DeviceLogPanel {
                                     DeviceLogCommand::Diagnostics,
                                 )
                                 .disabled(source.is_none() || self.report_task.is_some()),
+                            )
+                            .child(
+                                action(
+                                    "device-logs-export",
+                                    t!("device_logs.export"),
+                                    DeviceLogCommand::Export,
+                                )
+                                .disabled(count == 0),
+                            )
+                            .child(
+                                action(
+                                    "device-logs-clear",
+                                    t!("device_logs.clear"),
+                                    DeviceLogCommand::Clear,
+                                )
+                                .tooltip(t!("device_logs.clear_note")),
                             ),
                     )
                     .child(
                         h_flex()
+                            .gap_2()
+                            .min_w_0()
+                            .child(
+                                Input::new(&self.keyword)
+                                    .id("device-logs-keyword")
+                                    .small()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .prefix(
+                                        Icon::new(gpui_kit::component::IconName::Search).small(),
+                                    )
+                                    .aria_label(t!("device_logs.keyword")),
+                            )
+                            .when(self.search.has_query(), |view| {
+                                let dispatch = self.dispatch.clone();
+                                view.child(
+                                    Button::new("device-logs-search-clear")
+                                        .ghost()
+                                        .xsmall()
+                                        .icon(gpui_kit::component::IconName::Close)
+                                        .tooltip(t!("device_logs.search.clear"))
+                                        .accessibility_label(t!("device_logs.search.clear"))
+                                        .on_click(move |_, window, cx| {
+                                            dispatch.dispatch_action(
+                                                &DeviceLogAction(DeviceLogCommand::ClearSearch),
+                                                window,
+                                                cx,
+                                            )
+                                        }),
+                                )
+                            })
+                            .when_some(search_label, |view, label| {
+                                view.child(
+                                    div()
+                                        .id("device-logs-search-count")
+                                        .test_support()
+                                        .aria_label(label.clone())
+                                        .flex_none()
+                                        .text_xs()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child(label),
+                                )
+                            })
+                            .child({
+                                let dispatch = self.dispatch.clone();
+                                Button::new("device-logs-search-previous")
+                                    .ghost()
+                                    .xsmall()
+                                    .icon(gpui_kit::component::IconName::ChevronUp)
+                                    .tooltip(t!("device_logs.search.previous"))
+                                    .accessibility_label(t!("device_logs.search.previous"))
+                                    .disabled(self.search.matches.is_empty())
+                                    .on_click(move |_, window, cx| {
+                                        dispatch.dispatch_action(
+                                            &DeviceLogAction(DeviceLogCommand::SearchPrevious),
+                                            window,
+                                            cx,
+                                        )
+                                    })
+                            })
+                            .child({
+                                let dispatch = self.dispatch.clone();
+                                Button::new("device-logs-search-next")
+                                    .ghost()
+                                    .xsmall()
+                                    .icon(gpui_kit::component::IconName::ChevronDown)
+                                    .tooltip(t!("device_logs.search.next"))
+                                    .accessibility_label(t!("device_logs.search.next"))
+                                    .disabled(self.search.matches.is_empty())
+                                    .on_click(move |_, window, cx| {
+                                        dispatch.dispatch_action(
+                                            &DeviceLogAction(DeviceLogCommand::SearchNext),
+                                            window,
+                                            cx,
+                                        )
+                                    })
+                            }),
+                    )
+                    .child(
+                        h_flex()
+                            .flex_wrap()
                             .gap_2()
                             .child(
                                 Select::new(&self.level)
@@ -1282,20 +1719,67 @@ impl Render for DeviceLogPanel {
                                     .small()
                                     .placeholder(t!("device_logs.level.all")),
                             )
-                            .child(
-                                Input::new(&self.keyword)
-                                    .id("device-logs-keyword")
-                                    .small()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .aria_label(t!("device_logs.keyword")),
-                            ),
+                            .child(option(
+                                "device-logs-search-regex",
+                                t!("device_logs.search.regex"),
+                                DeviceLogCommand::ToggleSearchRegex,
+                                self.search.regex,
+                            ))
+                            .child(option(
+                                "device-logs-search-case",
+                                t!("device_logs.search.case_sensitive"),
+                                DeviceLogCommand::ToggleSearchCaseSensitive,
+                                self.search.case_sensitive,
+                            ))
+                            .child(option(
+                                "device-logs-search-lines",
+                                t!("device_logs.search.matching_lines"),
+                                DeviceLogCommand::ToggleMatchingLines,
+                                self.search.matching_lines,
+                            )),
                     )
+                    .when_some(search_error, |view, error| {
+                        view.child(
+                            div()
+                                .id("device-logs-search-error")
+                                .test_support()
+                                .text_xs()
+                                .text_color(cx.theme().danger)
+                                .child(t!("device_logs.search.invalid_regex"))
+                                .tooltip(move |window, cx| {
+                                    Tooltip::new(error.clone()).build(window, cx)
+                                }),
+                        )
+                    })
                     .child(
-                        div()
+                        h_flex()
+                            .gap_2()
+                            .min_w_0()
                             .text_xs()
                             .text_color(cx.theme().muted_foreground)
-                            .child(t!("device_logs.scope", count = count)),
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .child(t!("device_logs.count", count = count)),
+                            )
+                            .when_some(source_label, |view, label| {
+                                view.child(
+                                    div()
+                                        .id("device-logs-source")
+                                        .test_support()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .aria_label(label.clone())
+                                        .truncate()
+                                        .tooltip({
+                                            let label = label.clone();
+                                            move |window, cx| {
+                                                Tooltip::new(label.clone()).build(window, cx)
+                                            }
+                                        })
+                                        .child(label),
+                                )
+                            }),
                     )
                     .when_some(filter_object, |view, object| {
                         view.child(
@@ -1314,31 +1798,6 @@ impl Render for DeviceLogPanel {
                                 .text_xs()
                                 .text_color(cx.theme().muted_foreground)
                                 .child(t!("device_logs.app_waiting")),
-                        )
-                    })
-                    .when_some(source, |view, source| {
-                        let label = t!(
-                            "device_logs.source",
-                            source = match source {
-                                Source::Android => "logcat",
-                                Source::Kernel => "dmesg",
-                                Source::Journal => "journalctl",
-                                Source::File => "tail",
-                            },
-                            route = route,
-                            permission = if elevated {
-                                t!("device_logs.admin")
-                            } else {
-                                t!("device_logs.user")
-                            }
-                        );
-                        view.child(
-                            div()
-                                .id("device-logs-source")
-                                .test_support()
-                                .aria_label(label.clone())
-                                .text_xs()
-                                .child(label),
                         )
                     })
                     .when(limited, |view| {
@@ -1445,92 +1904,153 @@ impl Render for DeviceLogPanel {
                     .relative()
                     .flex_1()
                     .min_h_0()
+                    .bg(cx.theme().background)
                     .child(
-                        uniform_list("device-logs-list", count, move |range, _, cx| {
-                            range
-                                .map(|index| {
-                                    let line = &lines[index];
-                                    let text: SharedString = line.text.to_string().into();
-                                    let tooltip: SharedString =
-                                        text.chars().take(2000).collect::<String>().into();
-                                    let mut preview = text
-                                        .chars()
-                                        .take(4096)
-                                        .collect::<String>()
-                                        .replace(['\r', '\n'], " ↵ ");
-                                    if text.chars().nth(4096).is_some() {
-                                        preview.push('…');
-                                    }
-                                    let bookmark_dispatch = dispatch.clone();
-                                    let copy_dispatch = dispatch.clone();
-                                    let id = line.id;
-                                    h_flex()
-                                        .id(("device-log-line", line.id))
-                                        .test_support()
-                                        .aria_label(text.clone())
-                                        .px_3()
-                                        .py_0p5()
-                                        .text_xs()
-                                        .gap_1()
-                                        .child(
-                                            Button::new(("log-bookmark", id))
-                                                .ghost()
-                                                .xsmall()
-                                                .label(if bookmarks.contains(&id) {
-                                                    "★"
-                                                } else {
-                                                    "☆"
-                                                })
-                                                .tooltip(t!("device_logs.bookmark"))
-                                                .accessibility_label(t!("device_logs.bookmark"))
-                                                .on_click(move |_, window, cx| {
-                                                    bookmark_dispatch.dispatch_action(
-                                                        &DeviceLogAction(
-                                                            DeviceLogCommand::Bookmark(id),
-                                                        ),
-                                                        window,
-                                                        cx,
+                        uniform_list(
+                            ("device-logs-list", u64::from(size)),
+                            count,
+                            move |range, _, cx| {
+                                range
+                                    .map(|index| {
+                                        let line = &lines[index];
+                                        let text: SharedString = line.text.to_string().into();
+                                        let tooltip: SharedString =
+                                            text.chars().take(2000).collect::<String>().into();
+                                        let mut preview = text
+                                            .chars()
+                                            .take(4096)
+                                            .collect::<String>()
+                                            .replace(['\r', '\n'], " ↵ ");
+                                        if text.chars().nth(4096).is_some() {
+                                            preview.push('…');
+                                        }
+                                        let bookmark_dispatch = dispatch.clone();
+                                        let copy_dispatch = dispatch.clone();
+                                        let id = line.id;
+                                        let highlights = search_regex
+                                            .as_ref()
+                                            .map(|regex| spans(regex, &preview))
+                                            .unwrap_or_default();
+                                        let text_element = if highlights.is_empty() {
+                                            div().child(preview).into_any_element()
+                                        } else {
+                                            let highlight = HighlightStyle {
+                                                background_color: Some(
+                                                    if selected_search == Some(id) {
+                                                        cx.theme().primary.opacity(0.35)
+                                                    } else {
+                                                        cx.theme().warning.opacity(0.35)
+                                                    },
+                                                ),
+                                                font_weight: Some(FontWeight::BOLD),
+                                                ..HighlightStyle::default()
+                                            };
+                                            StyledText::new(preview.clone())
+                                                .with_highlights(
+                                                    highlights
+                                                        .into_iter()
+                                                        .map(|range| (range, highlight)),
+                                                )
+                                                .into_any_element()
+                                        };
+                                        h_flex()
+                                            .id(("device-log-line", line.id))
+                                            .test_support()
+                                            .aria_label(text.clone())
+                                            .px_3()
+                                            .py_1p5()
+                                            .text_size(font_size)
+                                            .line_height(relative(1.5))
+                                            .gap_2()
+                                            .border_b_1()
+                                            .border_color(cx.theme().border.opacity(0.5))
+                                            .when(selected_search == Some(id), |row| {
+                                                row.bg(cx.theme().list_active)
+                                            })
+                                            .child(
+                                                Button::new(("log-bookmark", id))
+                                                    .ghost()
+                                                    .xsmall()
+                                                    .label(if bookmarks.contains(&id) {
+                                                        "★"
+                                                    } else {
+                                                        "☆"
+                                                    })
+                                                    .tooltip(t!("device_logs.bookmark"))
+                                                    .accessibility_label(t!("device_logs.bookmark"))
+                                                    .on_click(move |_, window, cx| {
+                                                        bookmark_dispatch.dispatch_action(
+                                                            &DeviceLogAction(
+                                                                DeviceLogCommand::Bookmark(id),
+                                                            ),
+                                                            window,
+                                                            cx,
+                                                        )
+                                                    }),
+                                            )
+                                            .child(
+                                                Button::new(("log-copy", id))
+                                                    .ghost()
+                                                    .xsmall()
+                                                    .icon(gpui_kit::component::IconName::Copy)
+                                                    .tooltip(t!("device_logs.copy"))
+                                                    .accessibility_label(t!("device_logs.copy"))
+                                                    .on_click(move |_, window, cx| {
+                                                        copy_dispatch.dispatch_action(
+                                                            &DeviceLogAction(
+                                                                DeviceLogCommand::Copy(id),
+                                                            ),
+                                                            window,
+                                                            cx,
+                                                        )
+                                                    }),
+                                            )
+                                            .child(
+                                                div()
+                                                    .id(("log-text", id))
+                                                    .test_support()
+                                                    .font_family(
+                                                        cx.theme().mono_font_family.clone(),
                                                     )
-                                                }),
-                                        )
-                                        .child(
-                                            div()
-                                                .id(("log-text", id))
-                                                .flex_1()
-                                                .min_w_0()
-                                                .font_family(cx.theme().mono_font_family.clone())
-                                                .whitespace_nowrap()
-                                                .text_ellipsis()
-                                                .overflow_hidden()
-                                                .tooltip(move |window, cx| {
-                                                    Tooltip::new(tooltip.clone()).build(window, cx)
-                                                })
-                                                .child(preview),
-                                        )
-                                        .child(
-                                            Button::new(("log-copy", id))
-                                                .ghost()
-                                                .xsmall()
-                                                .icon(gpui_kit::component::IconName::Copy)
-                                                .tooltip(t!("device_logs.copy"))
-                                                .accessibility_label(t!("device_logs.copy"))
-                                                .on_click(move |_, window, cx| {
-                                                    copy_dispatch.dispatch_action(
-                                                        &DeviceLogAction(DeviceLogCommand::Copy(
-                                                            id,
-                                                        )),
-                                                        window,
-                                                        cx,
-                                                    )
-                                                }),
-                                        )
-                                })
-                                .collect::<Vec<_>>()
-                        })
+                                                    .text_color(match line.level {
+                                                        LogLevel::Error | LogLevel::Fatal => {
+                                                            cx.theme().danger
+                                                        }
+                                                        LogLevel::Warning => cx.theme().warning,
+                                                        LogLevel::Verbose | LogLevel::Debug => {
+                                                            cx.theme().muted_foreground
+                                                        }
+                                                        _ => cx.theme().foreground,
+                                                    })
+                                                    .flex_none()
+                                                    .whitespace_nowrap()
+                                                    .tooltip(move |window, cx| {
+                                                        Tooltip::new(tooltip.clone())
+                                                            .build(window, cx)
+                                                    })
+                                                    .child(text_element),
+                                            )
+                                    })
+                                    .collect::<Vec<_>>()
+                            },
+                        )
+                        .with_horizontal_sizing_behavior(
+                            ListHorizontalSizingBehavior::Unconstrained,
+                        )
+                        .with_width_from_item(
+                            self.visible
+                                .iter()
+                                .enumerate()
+                                .max_by_key(|(_, line)| line.text.len().min(4096))
+                                .map(|(index, _)| index),
+                        )
                         .track_scroll(&self.scroll)
                         .size_full(),
                     )
-                    .vertical_scrollbar(&self.scroll),
+                    .scrollbar(
+                        &self.scroll,
+                        gpui_kit::component::scroll::ScrollbarAxis::Both,
+                    ),
             )
     }
 }

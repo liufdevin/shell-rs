@@ -1,4 +1,22 @@
 _version: 2
+device_logs.split:
+  zh-CN: 左右分屏
+  en: Split view
+device_logs.split_off:
+  zh-CN: 退出分屏
+  en: Exit split
+device_logs.font_smaller:
+  zh-CN: 减小日志字号
+  en: Decrease log font size
+device_logs.font_larger:
+  zh-CN: 增大日志字号
+  en: Increase log font size
+device_logs.font_size:
+  zh-CN: "日志字号：%{size}"
+  en: "Log font size: %{size}"
+device_logs.count:
+  zh-CN: "%{count} 条日志"
+  en: "%{count} log entries"
 device_logs.description:
   zh-CN: 查看设备、系统、服务和文件日志，或导出诊断包；需在主机配置中单独启用。
   en: View device, system, service and file logs, or export a diagnostic bundle. Enable separately in the host configuration.
@@ -45,8 +63,35 @@ device_logs.export_failed:
   zh-CN: "日志导出失败：%{error}"
   en: "Could not export logs: %{error}"
 device_logs.keyword:
-  zh-CN: 关键词过滤
-  en: Filter by keyword
+  zh-CN: 搜索日志
+  en: Search logs
+device_logs.search.regex:
+  zh-CN: 正则
+  en: Regex
+device_logs.search.case_sensitive:
+  zh-CN: 区分大小写
+  en: Match case
+device_logs.search.matching_lines:
+  zh-CN: 仅匹配行
+  en: Matching lines only
+device_logs.search.no_results:
+  zh-CN: 无结果
+  en: No results
+device_logs.search.count:
+  zh-CN: "%{count} 行"
+  en: "%{count} lines"
+device_logs.search.previous:
+  zh-CN: 上一项（⇧↩）
+  en: Previous (⇧↩)
+device_logs.search.next:
+  zh-CN: 下一项（↩）
+  en: Next (↩)
+device_logs.search.clear:
+  zh-CN: 清除搜索
+  en: Clear search
+device_logs.search.invalid_regex:
+  zh-CN: 正则表达式无效，悬停查看原因
+  en: Invalid regular expression. Hover for details
 device_logs.level.all:
   zh-CN: 全部等级
   en: All levels

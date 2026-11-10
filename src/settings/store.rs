@@ -144,6 +144,56 @@ mod tests {
     use crate::settings::{AppSettings, Appearance, InterfaceLanguage};
 
     #[test]
+    fn sidebar_download_directory_is_optional_persistent_and_rejects_relative_paths() {
+        let defaults: AppSettings = serde_json::from_str("{}").unwrap();
+        assert!(defaults.sidebar_download_directory.is_none());
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let target = directory.path().join("downloads");
+        let (mut store, _) = SettingsStore::load(path.clone());
+        store
+            .update_unnotified(|settings| {
+                settings.sidebar_download_directory = Some(target.clone());
+            })
+            .unwrap()
+            .unwrap();
+        let (reloaded, problem) = SettingsStore::load(path.clone());
+        assert!(problem.is_none());
+        assert_eq!(reloaded.settings().sidebar_download_directory, Some(target));
+        fs::write(
+            path.clone(),
+            r#"{"sidebar_download_directory":"relative/folder"}"#,
+        )
+        .unwrap();
+        let (reloaded, problem) = SettingsStore::load(path);
+        assert!(problem.is_none());
+        assert!(reloaded.settings().sidebar_download_directory.is_none());
+    }
+
+    #[test]
+    fn device_log_font_defaults_are_bounded_and_survive_reloading() {
+        let defaults: AppSettings = serde_json::from_str("{}").unwrap();
+        assert_eq!(defaults.device_logs.font_size, 14);
+        for (written, kept) in [(0, 12), (18, 18), (255, 24)] {
+            let settings: AppSettings =
+                serde_json::from_str(&format!(r#"{{"device_logs":{{"font_size":{written}}}}}"#))
+                    .unwrap();
+            assert_eq!(settings.normalized().device_logs.font_size, kept);
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let (mut store, _) = SettingsStore::load(path.clone());
+        store
+            .update_unnotified(|settings| settings.device_logs.font_size = 20)
+            .unwrap()
+            .unwrap();
+        let (reloaded, error) = SettingsStore::load(path.clone());
+        assert!(error.is_none());
+        assert_eq!(reloaded.settings().device_logs.font_size, 20);
+        assert!(!fs::read_to_string(path).unwrap().contains("log_split"));
+    }
+
+    #[test]
     fn a_first_start_has_the_defaults_and_writes_nothing() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("settings.json");

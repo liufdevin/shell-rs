@@ -6,6 +6,7 @@ use gpui_kit::component::{
     button::Button,
     checkbox::Checkbox,
     dialog::{DialogClose, DialogFooter},
+    scroll::ScrollableElement as _,
     v_flex,
 };
 use gpui_kit::*;
@@ -13,6 +14,45 @@ use gpui_kit::*;
 use super::{LanCommand, LanService};
 use crate::app::LanAction;
 use crate::i18n::t;
+
+pub(crate) fn show_power_help(window: &mut Window, cx: &mut App) {
+    window.open_dialog(cx, |dialog, _, _| {
+        let power = t!(if cfg!(windows) {
+            "lan.power.help"
+        } else {
+            "lan.power.unsupported"
+        });
+        let wake = t!("lan.wake.help");
+        dialog
+            .title(t!("lan.power.title"))
+            .w(px(620.))
+            .child(
+                v_flex()
+                    .max_h_96()
+                    .overflow_y_scrollbar()
+                    .gap_3()
+                    .text_sm()
+                    .child(
+                        div()
+                            .id("lan-power-help")
+                            .test_support()
+                            .aria_label(power.clone())
+                            .child(power),
+                    )
+                    .child(
+                        div()
+                            .id("lan-wake-help")
+                            .test_support()
+                            .aria_label(wake.clone())
+                            .child(wake),
+                    ),
+            )
+            .footer(
+                DialogFooter::new()
+                    .child(DialogClose::new().trigger(|button| button.label(t!("common.close")))),
+            )
+    });
+}
 
 pub(crate) fn show_pair_request(
     service: &Entity<LanService>,

@@ -5,6 +5,253 @@ use shellrs::{
 };
 
 #[gpui_kit::test]
+async fn log_split_is_opt_in_equal_width_resizes_and_restores_the_previous_layout(
+    cx: &mut TestAppContext,
+) {
+    let (handle, workspace, _, factory) = open_logs(cx, true, false, &[PROBE_ANDROID, FIRST]).await;
+    line(cx, handle, 2).await;
+    cx.simulate_window_resize(handle.into(), size(px(1400.), px(900.)));
+    in_frame(cx, handle, |window, cx| {
+        window.click(("terminal", 1u64), cx);
+        let area = workspace.read(cx).dock_area().clone();
+        area.update(cx, |area, cx| {
+            area.set_dock_size(
+                gpui_kit::component::dock::DockPlacement::Right,
+                px(384.),
+                window,
+                cx,
+            )
+        });
+    });
+    let original = cx.update(|cx| {
+        workspace
+            .read(cx)
+            .dock_area()
+            .read(cx)
+            .dock_size(gpui_kit::component::dock::DockPlacement::Right)
+            .unwrap()
+    });
+    in_frame(cx, handle, |window, cx| {
+        assert_eq!(window.find("device-logs-split").checked(), Some(false));
+        window.click("device-logs-split", cx);
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        let terminal = window.try_find(("terminal-pane", 1u64));
+        let logs = window.try_find("device-logs");
+        terminal.zip(logs).is_some_and(|(terminal, logs)| {
+            (terminal.bounds().size.width - logs.bounds().size.width).abs() <= px(1.)
+        })
+    })
+    .await;
+    let calls = factory.exec_count();
+    in_frame(cx, handle, |window, _| {
+        assert_eq!(window.find("device-logs-split").checked(), Some(true));
+        assert!(
+            window
+                .find(("device-log-line", 2u64))
+                .label()
+                .unwrap()
+                .contains("broken")
+        );
+    });
+    cx.simulate_window_resize(handle.into(), size(px(1200.), px(800.)));
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        (window.find(("terminal-pane", 1u64)).bounds().size.width
+            - window.find("device-logs").bounds().size.width)
+            .abs()
+            <= px(1.)
+    })
+    .await;
+    in_frame(cx, handle, |window, cx| {
+        window.click("device-logs-split", cx)
+    });
+    cx.update(|cx| {
+        assert_eq!(
+            workspace
+                .read(cx)
+                .dock_area()
+                .read(cx)
+                .dock_size(gpui_kit::component::dock::DockPlacement::Right),
+            Some(original)
+        )
+    });
+    assert_eq!(factory.exec_count(), calls);
+    in_frame(cx, handle, |window, cx| {
+        window.click("device-logs-split", cx)
+    });
+    in_frame(cx, handle, |window, cx| window.click("tool-snippets", cx));
+    cx.update(|cx| {
+        assert_eq!(
+            workspace
+                .read(cx)
+                .dock_area()
+                .read(cx)
+                .dock_size(gpui_kit::component::dock::DockPlacement::Right),
+            Some(original)
+        )
+    });
+    in_frame(cx, handle, |window, cx| window.click("tool-logs", cx));
+    in_frame(cx, handle, |window, _| {
+        assert_eq!(window.find("device-logs-split").checked(), Some(false))
+    });
+}
+
+#[gpui_kit::test]
+async fn log_font_controls_enlarge_rows_keep_logs_and_remember_the_size(cx: &mut TestAppContext) {
+    let (handle, workspace, _, factory) = open_logs(cx, true, false, &[PROBE_ANDROID, FIRST]).await;
+    line(cx, handle, 2).await;
+    let before = in_frame(cx, handle, |window, _| {
+        window.find(("device-log-line", 2u64)).bounds().size.height
+    });
+    let calls = factory.exec_count();
+    for _ in 0..4 {
+        in_frame(cx, handle, |window, cx| {
+            window.click("device-logs-font-larger", cx)
+        });
+    }
+    in_frame(cx, handle, |window, _| {
+        assert!(window.find(("device-log-line", 2u64)).bounds().size.height > before);
+        assert_eq!(
+            window.find("device-logs-font-size").label(),
+            Some("日志字号：18")
+        );
+    });
+    cx.update(|cx| {
+        assert_eq!(
+            workspace
+                .read(cx)
+                .settings()
+                .read(cx)
+                .settings()
+                .device_logs
+                .font_size,
+            18
+        )
+    });
+    assert_eq!(factory.exec_count(), calls);
+    in_frame(cx, handle, |window, cx| window.click("tool-snippets", cx));
+    in_frame(cx, handle, |window, cx| window.click("tool-logs", cx));
+    in_frame(cx, handle, |window, _| {
+        assert_eq!(
+            window.find("device-logs-font-size").label(),
+            Some("日志字号：18")
+        )
+    });
+}
+
+#[gpui_kit::test]
+async fn log_search_supports_regex_case_matching_lines_and_navigation(cx: &mut TestAppContext) {
+    let (handle, _, _, factory) = open_logs(cx, true, false, &[PROBE_ANDROID, FIRST]).await;
+    line(cx, handle, 2).await;
+    let calls = factory.exec_count();
+    in_frame(cx, handle, |window, cx| {
+        assert_eq!(
+            window.find("device-logs-search-lines").checked(),
+            Some(false)
+        );
+        window.click("device-logs-keyword", cx);
+        window.input("BROKEN", cx);
+    });
+    in_frame(cx, handle, |window, _| {
+        assert_eq!(window.find("device-logs-search-count").label(), Some("1/1"));
+        assert!(window.find(("device-log-line", 1u64)).visible());
+        assert!(window.find(("device-log-line", 2u64)).visible());
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.click("device-logs-search-lines", cx)
+    });
+    in_frame(cx, handle, |window, _| {
+        assert_eq!(
+            window.find("device-logs-search-lines").checked(),
+            Some(true)
+        );
+        assert!(window.try_find(("device-log-line", 1u64)).is_none());
+        assert!(window.find(("device-log-line", 2u64)).visible());
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.click("device-logs-search-case", cx)
+    });
+    in_frame(cx, handle, |window, _| {
+        assert_eq!(
+            window.find("device-logs-search-count").label(),
+            Some("无结果")
+        );
+        assert!(window.try_find(("device-log-line", 1u64)).is_none());
+        assert!(window.try_find(("device-log-line", 2u64)).is_none());
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.click("device-logs-search-clear", cx)
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.click("device-logs-search-regex", cx)
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.click("device-logs-keyword", cx);
+        window.input("Demo: (startup|broken)", cx);
+    });
+    in_frame(cx, handle, |window, _| {
+        assert_eq!(window.find("device-logs-search-count").label(), Some("1/2"));
+        assert!(window.find(("device-log-line", 1u64)).visible());
+        assert!(window.find(("device-log-line", 2u64)).visible());
+    });
+    in_frame(cx, handle, |window, cx| window.press("enter", cx));
+    in_frame(cx, handle, |window, _| {
+        assert_eq!(window.find("device-logs-search-count").label(), Some("2/2"));
+    });
+    in_frame(cx, handle, |window, cx| window.press("shift-enter", cx));
+    in_frame(cx, handle, |window, _| {
+        assert_eq!(window.find("device-logs-search-count").label(), Some("1/2"));
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.click("device-logs-search-next", cx)
+    });
+    in_frame(cx, handle, |window, _| {
+        assert_eq!(window.find("device-logs-search-count").label(), Some("2/2"));
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.click("device-logs-search-previous", cx)
+    });
+    in_frame(cx, handle, |window, _| {
+        assert_eq!(window.find("device-logs-search-count").label(), Some("1/2"));
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.click("device-logs-search-clear", cx);
+        window.click("device-logs-keyword", cx);
+        window.input("[", cx);
+    });
+    in_frame(cx, handle, |window, _| {
+        assert!(window.find("device-logs-search-error").visible());
+        assert!(window.find(("device-log-line", 1u64)).visible());
+    });
+    assert_eq!(factory.exec_count(), calls);
+}
+
+#[gpui_kit::test]
+async fn long_log_lines_can_scroll_horizontally_without_ellipsis(cx: &mut TestAppContext) {
+    let output = format!(
+        "__SHELLLF_LOG_OK__\n11-07 01:00:00.000 1 2 I Demo: {} end\n",
+        "readable log ".repeat(120)
+    );
+    let (handle, _, _, _) = open_logs(cx, true, false, &[PROBE_ANDROID, &output]).await;
+    line(cx, handle, 1).await;
+    let before = in_frame(cx, handle, |window, _| {
+        let text = window.find(("log-text", 1u64)).bounds();
+        assert!(text.size.width > window.find("device-logs").bounds().size.width * 2.);
+        text.origin.x
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.scroll(
+            "device-logs",
+            gpui_kit::ScrollDelta::Pixels(point(px(-300.), px(0.))),
+            cx,
+        )
+    });
+    in_frame(cx, handle, |window, _| {
+        assert!(window.find(("log-text", 1u64)).bounds().origin.x < before);
+    });
+}
+
+#[gpui_kit::test]
 async fn log_toolbar_stays_within_the_sidebar_when_interface_text_is_enlarged(
     cx: &mut TestAppContext,
 ) {
@@ -18,6 +265,15 @@ async fn log_toolbar_stays_within_the_sidebar_when_interface_text_is_enlarged(
     in_frame(cx, handle, |window, _| {
         let panel = window.find("device-logs").bounds();
         for id in [
+            "device-logs-split",
+            "device-logs-search-regex",
+            "device-logs-search-case",
+            "device-logs-search-lines",
+            "device-logs-search-previous",
+            "device-logs-search-next",
+            "device-logs-font-smaller",
+            "device-logs-font-size",
+            "device-logs-font-larger",
             "device-logs-pause",
             "device-logs-clear",
             "device-logs-export",
@@ -559,6 +815,22 @@ async fn device_logs_serial_capture_uses_an_independent_channel_and_stops_when_h
     .await;
     in_frame(cx, handle, |window, cx| window.click("tool-logs", cx));
     line(cx, handle, 2).await;
+    assert_eq!(connector.connections.load(Ordering::SeqCst), 1);
+    assert_eq!(serial.exec_count(), 1);
+    in_frame(cx, handle, |window, cx| {
+        window.click("device-logs-split", cx)
+    });
+    in_frame(cx, handle, |window, _| {
+        assert!(
+            (window.find(("terminal-pane", 1u64)).bounds().size.width
+                - window.find("device-logs").bounds().size.width)
+                .abs()
+                <= px(1.),
+            "terminal={:?}, logs={:?}",
+            window.find(("terminal-pane", 1u64)).bounds(),
+            window.find("device-logs").bounds()
+        );
+    });
     assert_eq!(connector.connections.load(Ordering::SeqCst), 1);
     assert_eq!(serial.exec_count(), 1);
     serial.monitor_busy.store(true, Ordering::SeqCst);

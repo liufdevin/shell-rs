@@ -1020,6 +1020,8 @@ impl Render for TerminalPanel {
         let dispatch = self.focus_handle(cx);
         let id = self.id;
         v_flex()
+            .id(("terminal-pane", id.0))
+            .test_support()
             .size_full()
             .child(div().flex_1().min_h_0().child(self.terminal.clone()))
             .when(recording, |view| {

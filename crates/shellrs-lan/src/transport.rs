@@ -24,6 +24,7 @@ use crate::{
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum RemoteRequest {
     Status,
+    WakeInfo,
     Hosts,
     Execute {
         host: String,
@@ -57,6 +58,8 @@ pub struct Response {
     pub exit_code: Option<i32>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub devices: Vec<SharedDevice>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub wake_interfaces: Vec<crate::WakeInterface>,
 }
 
 pub struct Network {
@@ -161,6 +164,9 @@ impl Network {
             discovery_addresses,
         };
         core.running.store(true, Ordering::Release);
+        if core.is_active() {
+            core.sleep.enable();
+        }
         let discovery_core = core.clone();
         let discovery_stop = stop.clone();
         network.workers.push(
@@ -189,6 +195,7 @@ impl Network {
                     max_auth_attempts: 4,
                     inactivity_timeout: Some(Duration::from_secs(150)),
                     keepalive_interval: Some(Duration::from_secs(30)),
+                    keepalive_max: 2,
                     ..Default::default()
                 });
                 let connections = Arc::new(tokio::sync::Semaphore::new(16));
@@ -233,6 +240,7 @@ impl Network {
 impl Drop for Network {
     fn drop(&mut self) {
         self.core.running.store(false, Ordering::Release);
+        self.core.sleep.reset();
         self.core.invalidate_device_access();
         self.stop.store(true, Ordering::Release);
         for worker in self.workers.drain(..) {
@@ -532,8 +540,24 @@ async fn serve(
     ensure!(!core.is_blocked(address), "blocked_by_device");
     ensure!(core.is_active(), "LAN cooperation unavailable or locked");
     match request {
+        RemoteRequest::WakeInfo => {
+            ensure!(core.authorized(&peer, None, false), "device_not_authorized");
+            let response = Response {
+                wake_interfaces: crate::wake::local_interfaces(),
+                ..Default::default()
+            };
+            handle
+                .data(channel, serde_json::to_vec(&response)?)
+                .await
+                .map_err(|_| anyhow::anyhow!("disconnected"))?;
+            handle
+                .exit_status_request(channel, 0)
+                .await
+                .map_err(|_| anyhow::anyhow!("disconnected"))?;
+        }
         RemoteRequest::Devices => {
             ensure!(core.authorized(&peer, None, false), "device_not_authorized");
+            let _usage = core.keep_awake()?;
             let devices = core
                 .local_devices()
                 .into_iter()
@@ -579,6 +603,7 @@ async fn serve(
         }
         RemoteRequest::Hosts => {
             ensure!(core.authorized(&peer, None, false), "device_not_authorized");
+            let _usage = core.keep_awake()?;
             let hosts = core
                 .executor
                 .hosts()
@@ -613,6 +638,7 @@ async fn serve(
                 core.authorized(&peer, Some(&host), true),
                 "execution_not_authorized"
             );
+            let _usage = core.keep_awake()?;
             let permit = core
                 .command_slots
                 .clone()
@@ -734,6 +760,8 @@ pub(super) async fn connect(
     expected: Option<String>,
     mode: &str,
     password: Option<&str>,
+    cancelled: &AtomicBool,
+    wake: bool,
 ) -> Result<(russh::client::Handle<ClientHandler>, Seen, bool)> {
     let endpoint = crate::address::normalize_endpoint(endpoint);
     ensure!(
@@ -749,11 +777,21 @@ pub(super) async fn connect(
         keepalive_interval: Some(Duration::from_secs(30)),
         ..Default::default()
     });
+    let stream = crate::wake::connect(
+        core,
+        endpoint,
+        expected
+            .as_deref()
+            .filter(|peer| wake && mode == "trusted" && core.has_peer(peer)),
+        cancelled,
+    )
+    .await?;
+    stream.set_nodelay(true)?;
     let mut session = tokio::time::timeout(
         Duration::from_secs(5),
-        russh::client::connect(
+        russh::client::connect_stream(
             configuration,
-            endpoint,
+            stream,
             ClientHandler {
                 expected,
                 seen: seen.clone(),
@@ -810,7 +848,16 @@ pub(super) async fn connect(
 
 pub(super) fn inspect(core: &Core, endpoint: SocketAddr) -> Result<Device> {
     runtime()?.block_on(async {
-        let (session, seen, _) = connect(core, endpoint, None, "inspect", None).await?;
+        let (session, seen, _) = connect(
+            core,
+            endpoint,
+            None,
+            "inspect",
+            None,
+            &AtomicBool::new(false),
+            false,
+        )
+        .await?;
         let key = seen
             .key
             .ok_or_else(|| anyhow::anyhow!("device_identity_unavailable"))?;
@@ -838,6 +885,8 @@ pub(super) fn request_pair(core: &Core, device: &Device) -> Result<()> {
             Some(device.id.clone()),
             "request",
             None,
+            &AtomicBool::new(false),
+            false,
         )
         .await?;
         let _ = session
@@ -856,6 +905,8 @@ pub(super) fn pair_password(core: &Core, device: &Device, password: &str) -> Res
             Some(device.id.clone()),
             "password",
             Some(password),
+            &AtomicBool::new(false),
+            false,
         )
         .await?;
         let _ = session
@@ -874,8 +925,9 @@ pub(super) fn request(
     output: &mut dyn FnMut(bool, &[u8]) -> io::Result<()>,
 ) -> Result<Response> {
     runtime()?.block_on(async {
-        let (session, _, accepted) = connect(core, device.endpoint, Some(device.id.clone()), "trusted", None).await?;
+        let (session, _, accepted) = connect(core, device.endpoint, Some(device.id.clone()), "trusted", None, cancel, matches!(request, RemoteRequest::Hosts | RemoteRequest::Devices | RemoteRequest::Execute { .. })).await?;
         let result: Result<Response> = async {
+        ensure!(!cancel.load(Ordering::Acquire) && core.is_active(), "command_cancelled_or_timed_out");
         ensure!(accepted, "device_not_authorized");
         let execute = matches!(&request, RemoteRequest::Execute { .. });
         let mut channel = tokio::time::timeout(Duration::from_secs(5), session.channel_open_session()).await??;
@@ -905,6 +957,7 @@ pub(super) fn request(
         if execute { Ok(Response { exit_code: Some(code), ..Default::default() }) }
         else {
             let response: Response = serde_json::from_slice(&response)?;
+            crate::wake::validate(&response.wake_interfaces)?;
             ensure!(response.devices.len() <= 256, "invalid_device_catalog");
             let mut ids = std::collections::BTreeSet::new();
             for device in &response.devices {
