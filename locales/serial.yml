@@ -11,6 +11,27 @@ serial.mode.send_hex:
 serial.mode.scope:
   zh-CN: 仅修改当前串口标签，其他已打开的标签不变。保存的主机会记住此选择，重新打开时恢复。
   en: Changes only this serial tab, not other open tabs. Saved hosts remember these choices for the next connection.
+serial.mode.backspace:
+  zh-CN: 退格键
+  en: Backspace
+serial.backspace.hint_backspace:
+  zh-CN: 发送 0x08（Ctrl+H），与 Xshell 的 Backspace 默认序列相同。多数嵌入式控制台使用此项。
+  en: Sends 0x08 (Ctrl+H), the same sequence as Xshell’s Backspace default. Most embedded consoles use this.
+serial.backspace.hint_delete:
+  zh-CN: 发送 0x7F（DEL，Ctrl+?），多数 Linux 和 Unix 终端使用此项。
+  en: Sends 0x7F (DEL, Ctrl+?), the erase character used by most Linux and Unix terminals.
+serial.backspace.hint_vt220:
+  zh-CN: 发送 ESC [ 3 ~，部分 VT220 兼容设备使用。
+  en: Sends ESC [ 3 ~, used by some VT220-compatible devices.
+serial.backspace.name_backspace:
+  zh-CN: 退格键使用 ^H（0x08）
+  en: Backspace sends ^H (0x08)
+serial.backspace.name_delete:
+  zh-CN: 退格键使用 ^?（0x7F）
+  en: Backspace sends ^? (0x7F)
+serial.backspace.name_vt220:
+  zh-CN: 退格键使用 VT220 Delete（ESC [ 3 ~）
+  en: Backspace sends VT220 Delete (ESC [ 3 ~)
 serial.hex.send:
   zh-CN: 发送
   en: Send

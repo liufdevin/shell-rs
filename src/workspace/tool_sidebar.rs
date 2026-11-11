@@ -3,7 +3,7 @@ use std::rc::Rc;
 
 use gpui_kit::component::{
     ActiveTheme as _, Icon, IconName, Placement, Selectable as _, Sizable as _,
-    button::{Button, ButtonVariants as _},
+    button::{Button, ButtonGroup, ButtonVariants as _},
     checkbox::Checkbox,
     dock::{BasePanel, Panel, PanelControl, PanelEvent},
     h_flex, v_flex,
@@ -13,7 +13,8 @@ use gpui_kit::*;
 
 use crate::app::{
     AutoSerialFiles, CatalogIcon, DownloadSerialFile, NewSavedTerminal, NewTerminalGroup,
-    ToggleSerialReceiveHex, ToggleSerialSendHex, ToggleTool, ToolKind, UploadSerialFile,
+    SerialBackspaceChoice, SetSerialBackspace, ToggleSerialReceiveHex, ToggleSerialSendHex,
+    ToggleTool, ToolKind, UploadSerialFile,
 };
 use crate::docker::{Container, DockerObject, DockerPanel, ObjectSummary};
 use crate::explorer::ExplorerPanel;
@@ -28,7 +29,7 @@ use crate::processes::{Process, ProcessDetails, ProcessPanel, ProcessSort};
 use crate::project::ProjectPanel;
 use crate::services::{Service, ServicePanel};
 use crate::snippets::SnippetPanel;
-use crate::terminal::{ExecTarget, LocalTerminalId, RemoteTerminalId, TerminalView};
+use crate::terminal::{BackspaceKey, ExecTarget, LocalTerminalId, RemoteTerminalId, TerminalView};
 use crate::tmux::{TmuxPanel, TmuxTable};
 
 impl ToolKind {
@@ -881,7 +882,7 @@ impl ToolSidebar {
                 view.child(div().flex_1().min_h_0().child(tools))
             })
             .when_some(target, |view, (id, modes)| {
-                view.child(serial_mode_controls(id, modes, &self.dispatch))
+                view.child(serial_mode_controls(id, modes, &self.dispatch, cx))
             })
     }
 }
@@ -890,10 +891,52 @@ pub(super) fn serial_mode_controls(
     id: RemoteTerminalId,
     modes: crate::terminal::SerialDataModes,
     dispatch: &FocusHandle,
+    cx: &App,
 ) -> impl IntoElement + use<> {
+    let backspace = {
+        let dispatch = dispatch.clone();
+        ButtonGroup::new(("serial-backspace", id.0))
+            .ghost()
+            .small()
+            .children(BackspaceKey::ALL.into_iter().map(|key| {
+                Button::new(format!("serial-backspace-{}-{}", id.0, key.key()))
+                    .label(match key {
+                        BackspaceKey::Backspace => "^H",
+                        BackspaceKey::Delete => "^?",
+                        BackspaceKey::Vt220 => "VT",
+                    })
+                    .tooltip(match key {
+                        BackspaceKey::Backspace => t!("serial.backspace.hint_backspace"),
+                        BackspaceKey::Delete => t!("serial.backspace.hint_delete"),
+                        BackspaceKey::Vt220 => t!("serial.backspace.hint_vt220"),
+                    })
+                    .accessibility_label(match key {
+                        BackspaceKey::Backspace => t!("serial.backspace.name_backspace"),
+                        BackspaceKey::Delete => t!("serial.backspace.name_delete"),
+                        BackspaceKey::Vt220 => t!("serial.backspace.name_vt220"),
+                    })
+                    .selected(modes.backspace == key)
+            }))
+            .on_click(move |clicks, window, cx| {
+                let Some(key) = clicks
+                    .first()
+                    .and_then(|index| BackspaceKey::ALL.get(*index))
+                    .copied()
+                else {
+                    return;
+                };
+                dispatch.dispatch_action(
+                    &SetSerialBackspace(SerialBackspaceChoice { terminal: id, key }),
+                    window,
+                    cx,
+                );
+            })
+    };
     h_flex()
         .p_3()
-        .gap_4()
+        .gap_3()
+        .items_center()
+        .flex_wrap()
         .flex_shrink_0()
         .child(
             Checkbox::new(("serial-hex-receive", id.0))
@@ -925,6 +968,13 @@ pub(super) fn serial_mode_controls(
                     }
                 }),
         )
+        .child(
+            div()
+                .text_xs()
+                .text_color(cx.theme().muted_foreground)
+                .child(t!("serial.mode.backspace")),
+        )
+        .child(backspace)
 }
 
 /// The switch at the window's right edge: a button per tool `offered` for

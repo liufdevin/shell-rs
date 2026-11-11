@@ -99,11 +99,23 @@ pub fn render_title_bar(
                                     .accessibility_label(t!("workspace.title_bar.credentials"))
                                     .selected(sidebar == Some(SidebarMode::Credentials)),
                             )
+                            .child(
+                                Button::new("show-remote-management")
+                                    .icon(CatalogIcon::Network)
+                                    .tooltip(t!("remote.title"))
+                                    .accessibility_label(t!("remote.title"))
+                                    .selected(sidebar == Some(SidebarMode::Remote)),
+                            )
                             .on_click(move |picked: &Vec<usize>, window, cx| {
                                 match picked.first() {
                                     Some(0) => mode.dispatch_action(&ShowHosts, window, cx),
                                     Some(1) => mode.dispatch_action(&ShowForwards, window, cx),
                                     Some(2) => mode.dispatch_action(&ShowCredentials, window, cx),
+                                    Some(3) => mode.dispatch_action(
+                                        &crate::app::ShowRemoteManagement,
+                                        window,
+                                        cx,
+                                    ),
                                     _ => {}
                                 }
                             }),

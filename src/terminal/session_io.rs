@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
 use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 
@@ -35,6 +35,62 @@ impl Default for TerminalConnectionSettings {
 pub struct SerialDataModes {
     pub receive_hex: bool,
     pub send_hex: bool,
+    pub backspace: BackspaceKey,
+}
+
+/// What the Backspace key sends on a serial connection.
+///
+/// Devices disagree here: some take `0x08` (BS), most Unix terminals take
+/// `0x7F` (DEL), and a few expect VT220's Delete sequence. Xshell exposes
+/// the same three choices.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+#[non_exhaustive]
+pub enum BackspaceKey {
+    /// `0x08`, Xshell's Backspace (^H).
+    #[default]
+    Backspace,
+    /// `0x7F`, the usual Unix terminal erase character (^?).
+    Delete,
+    /// `ESC [ 3 ~`, the VT220 Delete key.
+    Vt220,
+}
+
+impl BackspaceKey {
+    pub const ALL: [Self; 3] = [Self::Backspace, Self::Delete, Self::Vt220];
+
+    /// How the value is written in the settings file.
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Backspace => "backspace",
+            Self::Delete => "delete",
+            Self::Vt220 => "vt220",
+        }
+    }
+
+    pub fn bytes(self) -> &'static [u8] {
+        match self {
+            Self::Backspace => &[0x08],
+            Self::Delete => &[0x7f],
+            Self::Vt220 => b"\x1b[3~",
+        }
+    }
+
+    pub(super) fn as_u8(self) -> u8 {
+        match self {
+            Self::Backspace => 0,
+            Self::Delete => 1,
+            Self::Vt220 => 2,
+        }
+    }
+
+    pub(super) fn from_u8(value: u8) -> Self {
+        match value {
+            1 => Self::Delete,
+            2 => Self::Vt220,
+            _ => Self::Backspace,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -223,6 +279,7 @@ pub(super) struct SessionIo {
     pub timestamps_enabled: AtomicBool,
     pub receive_hex: AtomicBool,
     pub send_hex: AtomicBool,
+    pub backspace: AtomicU8,
     recording: Mutex<Option<Recording>>,
     stopped_failures: Mutex<Vec<Arc<Mutex<Option<String>>>>>,
     failure: Mutex<Option<String>>,
@@ -431,7 +488,10 @@ pub(super) fn decode_hex(text: &str) -> Result<Vec<u8>, SharedString> {
 
 #[cfg(test)]
 mod tests {
-    use super::{DailyLog, LogChunk, Recording, SessionIo, decode_hex, format_hex};
+    use super::{
+        BackspaceKey, DailyLog, LogChunk, Recording, SerialDataModes, SessionIo, decode_hex,
+        format_hex,
+    };
     use chrono::NaiveDate;
     use std::time::{Duration, Instant};
 
@@ -444,6 +504,21 @@ mod tests {
             assert!(decode_hex(text).is_err(), "{text}");
         }
         assert_eq!(format_hex(&[0, 255, 13, 10]), "00 FF 0D 0A");
+    }
+
+    #[test]
+    fn old_serial_preferences_use_the_xshell_backspace_sequence() {
+        let modes: SerialDataModes =
+            serde_json::from_str(r#"{"receive_hex":true,"send_hex":false}"#).unwrap();
+        assert_eq!(modes.backspace, BackspaceKey::Backspace);
+        assert_eq!(
+            serde_json::to_string(&SerialDataModes {
+                backspace: BackspaceKey::Vt220,
+                ..Default::default()
+            })
+            .unwrap(),
+            r#"{"receive_hex":false,"send_hex":false,"backspace":"vt220"}"#
+        );
     }
 
     #[test]

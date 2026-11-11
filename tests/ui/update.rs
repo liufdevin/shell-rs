@@ -263,19 +263,35 @@ fn serve_updates_as(
 }
 
 #[gpui_kit::test]
-#[ignore = "The About settings page is temporarily hidden until launch"]
-fn the_about_page_opens_the_website(cx: &mut TestAppContext) {
+fn the_application_page_opens_the_website(cx: &mut TestAppContext) {
     let (handle, _) = open_workspace(cx);
     open_about_settings(cx, handle);
+    let position = in_frame(cx, handle, |window, _| {
+        window.find("settings").bounds().center()
+    });
+    for _ in 0..6 {
+        in_frame(cx, handle, |window, cx| {
+            window.dispatch_event(
+                gpui_kit::ScrollWheelEvent {
+                    position,
+                    delta: gpui_kit::ScrollDelta::Pixels(point(px(0.), px(-600.))),
+                    modifiers: gpui_kit::Modifiers::default(),
+                    touch_phase: gpui_kit::TouchPhase::Moved,
+                }
+                .to_platform_input(),
+                cx,
+            );
+        });
+    }
     in_frame(cx, handle, |window, cx| window.click("open-website", cx));
     assert_eq!(cx.opened_url().as_deref(), Some("https://shellrs.com"));
 }
 
-/// Open 设置 › 关于.
+/// Open 设置 › 应用, which holds updating and privacy.
 fn open_about_settings(cx: &mut TestAppContext, handle: WindowHandle<Root>) {
     in_frame(cx, handle, |window, cx| window.click("open-settings", cx));
     in_frame(cx, handle, |window, cx| {
-        window.within("settings").click("0-8", cx)
+        window.within("settings").click("0-7", cx)
     });
 }
 
@@ -329,7 +345,6 @@ fn update_channel_label(cx: &mut TestAppContext, handle: WindowHandle<Root>) -> 
 }
 
 #[gpui_kit::test]
-#[ignore = "The About settings page is temporarily hidden until launch"]
 fn a_development_build_does_not_check(cx: &mut TestAppContext) {
     let (handle, _) = open_workspace(cx);
     open_about_settings(cx, handle);
@@ -348,7 +363,6 @@ fn a_development_build_does_not_check(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-#[ignore = "The About settings page is temporarily hidden until launch"]
 async fn checking_by_hand_says_when_shellrs_is_up_to_date(cx: &mut TestAppContext) {
     let (handle, workspace) = open_workspace(cx);
     let fixture = serve_updates(cx, &workspace, Ok(RUNNING_VERSION), installable());
@@ -367,7 +381,6 @@ async fn checking_by_hand_says_when_shellrs_is_up_to_date(cx: &mut TestAppContex
 }
 
 #[gpui_kit::test]
-#[ignore = "The About settings page is temporarily hidden until launch"]
 async fn a_found_update_downloads_by_itself_and_the_title_bar_offers_it(cx: &mut TestAppContext) {
     let (handle, workspace) = open_workspace(cx);
     let fixture = serve_updates(cx, &workspace, Ok("0.2.0"), installable());
@@ -400,7 +413,6 @@ async fn a_found_update_downloads_by_itself_and_the_title_bar_offers_it(cx: &mut
 }
 
 #[gpui_kit::test]
-#[ignore = "The About settings page is temporarily hidden until launch"]
 async fn with_automatic_updates_off_a_found_update_waits_for_download(cx: &mut TestAppContext) {
     let (handle, workspace) = open_workspace(cx);
     set_automatic_updates(cx, &workspace, false);
@@ -549,7 +561,6 @@ async fn a_ready_update_is_installed_on_quit_once(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-#[ignore = "The About settings page is temporarily hidden until launch"]
 async fn an_unsupported_install_offers_the_download_page(cx: &mut TestAppContext) {
     let (handle, workspace) = open_workspace(cx);
     let fixture = serve_updates(
@@ -578,7 +589,6 @@ async fn an_unsupported_install_offers_the_download_page(cx: &mut TestAppContext
 }
 
 #[gpui_kit::test]
-#[ignore = "The About settings page is temporarily hidden until launch"]
 async fn a_portable_copy_downloads_the_portable_zip(cx: &mut TestAppContext) {
     let (handle, workspace) = open_workspace(cx);
     let fixture = serve_updates_as(
@@ -604,7 +614,6 @@ async fn a_portable_copy_downloads_the_portable_zip(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-#[ignore = "The About settings page is temporarily hidden until launch"]
 async fn a_read_only_portable_copy_links_the_portable_zip(cx: &mut TestAppContext) {
     let (handle, workspace) = open_workspace(cx);
     let fixture = serve_updates_as(
@@ -633,7 +642,6 @@ async fn a_read_only_portable_copy_links_the_portable_zip(cx: &mut TestAppContex
 }
 
 #[gpui_kit::test]
-#[ignore = "The About settings page is temporarily hidden until launch"]
 async fn a_failed_check_says_why_on_the_about_page(cx: &mut TestAppContext) {
     let (handle, workspace) = open_workspace(cx);
     let fixture = serve_updates(cx, &workspace, Err(UpdateError::Http(503)), installable());
@@ -653,7 +661,6 @@ async fn a_failed_check_says_why_on_the_about_page(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-#[ignore = "The About settings page is temporarily hidden until launch"]
 async fn turning_automatic_updates_off_stops_the_schedule(cx: &mut TestAppContext) {
     let (handle, workspace) = open_workspace(cx);
     let fixture = serve_updates(cx, &workspace, Ok(RUNNING_VERSION), installable());
@@ -686,7 +693,6 @@ async fn turning_automatic_updates_off_stops_the_schedule(cx: &mut TestAppContex
 }
 
 #[gpui_kit::test]
-#[ignore = "The About settings page is temporarily hidden until launch"]
 async fn switching_the_update_channel_looks_at_that_channel(cx: &mut TestAppContext) {
     let (handle, workspace) = open_workspace(cx);
     let fixture = serve_updates(cx, &workspace, Ok(RUNNING_VERSION), installable());

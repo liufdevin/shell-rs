@@ -1,0 +1,208 @@
+_version: 2
+remote.title:
+  zh-CN: 远程管理
+  en: Remote management
+remote.search:
+  zh-CN: 搜索服务器名称、账号或地址
+  en: Search server names, accounts or addresses
+remote.signed_in:
+  zh-CN: 已登录
+  en: Signed in
+remote.no_matches:
+  zh-CN: 没有匹配的服务器。
+  en: No matching servers.
+remote.signed_out:
+  zh-CN: 未登录
+  en: Signed out
+remote.show_devices:
+  zh-CN: 显示设备…
+  en: Show devices…
+remote.device_dialog_title:
+  zh-CN: 设备
+  en: Devices
+remote.network_dialog_title:
+  zh-CN: 客户网络
+  en: Customer networks
+remote.choose_network:
+  zh-CN: 连接网络…
+  en: Connect network…
+remote.edit_login:
+  zh-CN: 编辑登录信息…
+  en: Edit sign-in…
+remote.device_search:
+  zh-CN: 搜索名称、客户、虚拟 IP、设备编号或网段
+  en: Search names, customers, virtual IPs, device IDs or subnets
+remote.current_only:
+  zh-CN: 仅当前网络设备
+  en: Current network devices only
+remote.no_catalog_matches:
+  zh-CN: 没有可显示的项目，请调整搜索或网络筛选。
+  en: No items to show. Adjust the search or network filter.
+remote.active_network:
+  zh-CN: "当前网络：%{name} · 本机 IP：%{ip}"
+  en: "Current network: %{name} · Local IP: %{ip}"
+remote.intro:
+  zh-CN: 登录服务器，连接客户网络，再使用设备的虚拟 IP 打开 SSH。
+  en: Sign in, connect a customer network, then open SSH through a device’s virtual IP.
+remote.add:
+  zh-CN: 添加服务器…
+  en: Add server…
+remote.login_title:
+  zh-CN: 登录远程管理
+  en: Sign in to remote management
+remote.login_help:
+  zh-CN: 服务器和账号保存在本机；勾选保存密码后使用系统凭据管理器，下次登录无需重复输入。登录令牌不落盘，设备 SSH 单独认证。
+  en: Server and account details stay on this computer. Save the password in the system credential store to sign in without retyping it. Tokens are not saved; device SSH authenticates separately.
+remote.remember_password:
+  zh-CN: 保存密码到系统凭据管理器
+  en: Save password in the system credential store
+remote.no_keychain:
+  zh-CN: 系统凭据管理器不可用，本次只能临时使用密码。
+  en: The system credential store is unavailable. The password can only be used temporarily.
+remote.loading_password:
+  zh-CN: 正在读取已保存密码…
+  en: Reading saved password…
+remote.login_retry:
+  zh-CN: 登录未完成，请检查登录信息后重试；已保存的密码不会自动删除。
+  en: Sign-in did not complete. Check the details and retry. The saved password is kept.
+remote.server_name:
+  zh-CN: 服务器名称
+  en: Server name
+remote.server_url:
+  zh-CN: 服务器地址
+  en: Server address
+remote.username:
+  zh-CN: 账号
+  en: Account
+remote.password:
+  zh-CN: 密码
+  en: Password
+remote.login:
+  zh-CN: 登录
+  en: Sign in
+remote.select_login:
+  zh-CN: 选择服务器登录，查看设备与可连接的客户网络。
+  en: Select a server to sign in and view its devices and available networks.
+remote.device_count:
+  zh-CN: "%{count} 台设备"
+  en: "%{count} devices"
+remote.refresh:
+  zh-CN: 刷新
+  en: Refresh
+remote.logout:
+  zh-CN: 退出登录
+  en: Sign out
+remote.delete_help:
+  zh-CN: 将先断开该服务器的网络并退出登录，再删除本机保存的服务器、账号和密码。不会删除服务器上的设备或账号。
+  en: Disconnects this server’s network and signs out, then removes the locally saved server, account and password. Devices and accounts on the server are not deleted.
+remote.device_help:
+  zh-CN: 仅列出 SSH 已运行且租约有效的在线设备。先连接对应网络才能打开 SSH，实际连通性仍需确认。
+  en: Only devices with running SSH and a valid lease are listed. Connect the corresponding network before opening SSH; actual reachability still needs confirmation.
+remote.device_unavailable:
+  zh-CN: 设备已离线、租约失效或不属于当前网络，请刷新设备列表后重试。
+  en: The device is offline, its lease expired, or it is outside the current network. Refresh the device list and retry.
+remote.error.api_version:
+  zh-CN: 服务器不支持当前的在线 SSH 设备接口，请更新服务器或确认服务器地址。
+  en: The server does not support the online SSH device API. Update the server or check its address.
+remote.connect:
+  zh-CN: 连接当前网络
+  en: Connect network
+remote.connected:
+  zh-CN: 已连接
+  en: Connected
+remote.previous:
+  zh-CN: 上一页
+  en: Previous
+remote.next:
+  zh-CN: 下一页
+  en: Next
+remote.disconnect:
+  zh-CN: 断开网络
+  en: Disconnect network
+remote.no_networks:
+  zh-CN: 没有可连接的已启用网络或已配置设备，请联系服务器管理员。
+  en: No enabled networks or configured devices are available. Contact the server administrator.
+remote.ssh_user:
+  zh-CN: SSH 用户
+  en: SSH user
+remote.ssh:
+  zh-CN: SSH 连接
+  en: Open SSH
+remote.unconfigured:
+  zh-CN: 虚拟 IP 未配置
+  en: Virtual IP not configured
+remote.device_id:
+  zh-CN: "设备编号：%{id}"
+  en: "Device ID: %{id}"
+remote.connect_first:
+  zh-CN: 请先连接该设备所属的客户网络，再打开或重连 SSH。
+  en: Connect the device’s customer network before opening or reconnecting SSH.
+remote.working:
+  zh-CN: 正在处理，请稍候…
+  en: Working…
+remote.ready:
+  zh-CN: 已就绪
+  en: Ready
+remote.invalid_server:
+  zh-CN: 请填写名称、账号、密码和最终 HTTPS 站点地址；地址不能含路径、账号或查询参数。
+  en: Enter a name, account, password and final HTTPS origin without paths, credentials or query parameters.
+remote.error.auth:
+  zh-CN: 账号密码不正确或登录已失效，请重新登录。
+  en: Incorrect credentials or expired sign-in. Sign in again.
+remote.error.denied:
+  zh-CN: 账号无权访问或网络授权已撤销，请联系管理员。
+  en: Access is denied or network authorization was revoked. Contact the administrator.
+remote.error.in_use:
+  zh-CN: 网络客户端或本机身份正在使用中，请先断开已有连接或等待租约到期。
+  en: A network client or this installation identity is already in use. Disconnect it or wait for its lease to expire.
+remote.error.pool:
+  zh-CN: 客户端地址已分配完，请联系管理员扩容。
+  en: The client address pool is exhausted. Contact the administrator.
+remote.error.acl:
+  zh-CN: 设备尚未允许本机虚拟 IP，请联系管理员更新网络授权。
+  en: The devices do not allow this client IP yet. Ask the administrator to update network access.
+remote.error.backend:
+  zh-CN: 网络组件缺失或校验失败，请使用完整安装包，保留 EasyTier 和 Wintun 文件。
+  en: Network components are missing or failed verification. Use the complete package with EasyTier and Wintun files.
+remote.error.route:
+  zh-CN: 虚拟网段与本机现有路由冲突，未连接网络。请联系管理员调整网段。
+  en: The virtual subnet conflicts with an existing local route. The network was not connected. Ask the administrator to change the subnet.
+remote.error.cancelled:
+  zh-CN: 网络连接已取消或系统未允许启动，请重试。
+  en: Network startup was cancelled or not permitted by the system. Try again.
+remote.error.stop:
+  zh-CN: 尚未确认旧网络已停止，不会连接新网络。请稍后重试断开。
+  en: The previous network has not confirmed shutdown. A new network will not start. Retry disconnecting shortly.
+remote.error.expired:
+  zh-CN: 网络租约到期或配置已变化，已停止网络。请重新登录或连接。
+  en: The lease expired or configuration changed. Networking stopped. Sign in or connect again.
+remote.error.profile:
+  zh-CN: 服务器返回的网络配置未通过安全校验，未启动组网。请联系管理员。
+  en: The server’s network profile failed validation. Networking was not started. Contact the administrator.
+remote.error.platform:
+  zh-CN: 此组网组件目前仅支持 Windows x86_64。
+  en: This network component currently supports Windows x86_64 only.
+remote.error.failed:
+  zh-CN: 远程管理操作未完成，请检查服务器地址、证书和网络连接后重试。
+  en: The remote operation did not complete. Check the server address, certificate and network, then try again.
+remote.error.devices:
+  zh-CN: 已登录，但服务器返回的设备列表格式不兼容，请联系管理员检查接口。
+  en: Sign-in succeeded, but the device list format is incompatible. Ask the administrator to check the API.
+remote.error.networks:
+  zh-CN: 服务器返回的客户网络列表格式不兼容，请联系管理员检查接口。
+  en: The customer network list format is incompatible. Ask the administrator to check the API.
+remote.error.response:
+  zh-CN: 服务器未返回有效的接口数据，请确认地址为最终 HTTPS 站点，并检查服务状态。
+  en: The server did not return valid API data. Check the final HTTPS address and service status.
+remote.error.unreachable:
+  zh-CN: 无法访问服务器，请检查地址、HTTPS 证书和网络连接。
+  en: Could not reach the server. Check the address, HTTPS certificate and network connection.
+remote.error.credential_read:
+  zh-CN: 无法读取系统中保存的密码，请手动输入后重试。
+  en: Could not read the saved password. Enter it manually and retry.
+remote.error.credential_save:
+  zh-CN: 登录成功，但未能更新系统保存的密码。请检查凭据管理器权限，重新编辑登录信息。
+  en: Signed in, but the saved password could not be updated. Check credential-store access and edit the sign-in details again.
+remote.error.credential_delete:
+  zh-CN: 未能删除系统保存的密码，已保留服务器记录，请检查凭据管理器权限后重试。
+  en: Could not remove the saved password. The server profile was kept. Check credential-store access and retry.

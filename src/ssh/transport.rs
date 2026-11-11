@@ -1147,6 +1147,59 @@ mod tests {
         crate::ssh::SshConnectionTester::new(connector).test(request, Box::new(|_| true))
     }
 
+    #[test]
+    fn leased_endpoints_are_resolved_on_every_connection_and_host_keys_are_device_scoped() {
+        use crate::connection::ConnectionTester as _;
+        struct Resolver {
+            port: u16,
+            calls: std::sync::atomic::AtomicUsize,
+        }
+        impl shellrs_ssh::EndpointResolver for Resolver {
+            fn resolve(&self, _: &HostLogin) -> anyhow::Result<(String, u16)> {
+                self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(("127.0.0.1".into(), self.port))
+            }
+        }
+        let server = start_server(TestAuth::Password).expect("loopback server");
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("known_hosts");
+        trust_server(server.port, &path);
+        let resolver = Arc::new(Resolver {
+            port: server.port,
+            calls: std::sync::atomic::AtomicUsize::new(0),
+        });
+        let tester = crate::ssh::SshConnectionTester::new(
+            SshConnector::new(&path, Arc::new(NoSecretStore))
+                .with_endpoint_resolver(resolver.clone()),
+        );
+        let asked = Arc::new(Mutex::new(Vec::new()));
+        for (alias, address, trust) in [
+            ("device-a", "127.0.0.2", true),
+            ("device-a", "127.0.0.3", false),
+            ("device-b", "127.0.0.2", true),
+        ] {
+            let login = HostLogin::manual(address, server.port, "tester", AuthKind::Password)
+                .with_host_key_alias(alias);
+            let questions = asked.clone();
+            let result = tester.test(
+                crate::connection::LoginTest::typed(login).with_password(TEST_PASSWORD),
+                Box::new(move |prompt| {
+                    questions
+                        .lock()
+                        .unwrap()
+                        .push(prompt.fingerprint().to_string());
+                    trust
+                }),
+            );
+            assert_eq!(result, Ok(()));
+        }
+        assert_eq!(resolver.calls.load(std::sync::atomic::Ordering::SeqCst), 3);
+        assert_eq!(asked.lock().unwrap().len(), 2);
+        let saved = std::fs::read_to_string(path).unwrap();
+        assert!(saved.contains("device-a") && saved.contains("device-b"));
+        assert!(!saved.contains("127.0.0.2") && !saved.contains("127.0.0.3"));
+    }
+
     fn credential(kind: crate::host::CredentialKind) -> crate::host::Credential {
         crate::host::Credential::new(
             crate::host::CredentialId(1),

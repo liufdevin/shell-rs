@@ -259,7 +259,6 @@ impl Render for SettingsPanel {
                     .pages(
                         CATEGORIES
                             .iter()
-                            .filter(|category| category.title != "settings.category.about")
                             .enumerate()
                             .map(|(ix, category)| category.page(ix, self, cx)),
                     ),
@@ -323,14 +322,14 @@ const CATEGORIES: [Category; 10] = [
         groups: application_groups,
     },
     Category {
-        title: "settings.category.about",
-        icon: CatalogIcon::Info,
-        groups: about_groups,
-    },
-    Category {
         title: "settings.category.lan",
         icon: CatalogIcon::Laptop,
         groups: lan_groups,
+    },
+    Category {
+        title: "settings.category.about",
+        icon: CatalogIcon::Info,
+        groups: about_groups,
     },
 ];
 
@@ -1044,7 +1043,10 @@ fn application_groups(panel: &SettingsPanel, cx: &App) -> Vec<SettingGroup> {
     } else {
         window_group
     };
-    vec![window_group, app_lock_group(&panel.store, cx)]
+    let mut groups = update_privacy_groups(panel, cx);
+    groups.push(window_group);
+    groups.push(app_lock_group(&panel.store, cx));
+    groups
 }
 
 fn app_lock_group(store: &Entity<SettingsStore>, cx: &App) -> SettingGroup {
@@ -1219,9 +1221,8 @@ fn external_cli_groups(panel: &SettingsPanel, cx: &App) -> Vec<SettingGroup> {
     ]
 }
 
-/// 关于: 应用更新, as three rows: the version with where updating stands,
-/// the channel, and 自动升级; then 隐私, whether usage statistics are sent.
-fn about_groups(panel: &SettingsPanel, cx: &App) -> Vec<SettingGroup> {
+/// 应用: updates, the channel, 自动升级, privacy and the website.
+fn update_privacy_groups(panel: &SettingsPanel, cx: &App) -> Vec<SettingGroup> {
     let snapshot = panel.updater.read(cx).snapshot();
     let (reader, writer) = (panel.store.clone(), panel.store.clone());
     let (analytics_reader, analytics_writer) = (panel.store.clone(), panel.store.clone());
@@ -1282,6 +1283,33 @@ fn about_groups(panel: &SettingsPanel, cx: &App) -> Vec<SettingGroup> {
                 }),
             )
             .description(t!("settings.about.website_description"))]),
+    ]
+}
+
+/// 关于: the version only.
+fn about_groups(_: &SettingsPanel, _: &App) -> Vec<SettingGroup> {
+    vec![
+        SettingGroup::new()
+            .title(crate::app::APP_NAME)
+            .items([SettingItem::render(|_, _, cx| {
+                let version = SharedString::from(format!("v{}", build_info::VERSION));
+                h_flex()
+                    .w_full()
+                    .justify_between()
+                    .gap_3()
+                    .child(Label::new(t!("settings.about.version")).text_sm())
+                    .child(
+                        div()
+                            .id("about-version")
+                            .test_support()
+                            .aria_label(version.clone())
+                            .text_sm()
+                            .font_family(cx.theme().mono_font_family.clone())
+                            .text_color(cx.theme().muted_foreground)
+                            .child(version),
+                    )
+            })
+            .keywords(keywords(t!("settings.about.version_keywords")))]),
     ]
 }
 

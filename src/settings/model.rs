@@ -23,6 +23,7 @@ use crate::update::Channel;
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AppSettings {
+    pub remote_servers: Vec<crate::remote::Server>,
     pub language: InterfaceLanguage,
     pub appearance: Appearance,
     /// 外观 → 常规 → 界面字号.
@@ -596,6 +597,10 @@ impl AppSettings {
     /// to what the file holds and to every change, so neither a hand-edited
     /// file nor a typed value can give the terminal a size of zero.
     pub fn normalized(mut self) -> Self {
+        let mut ids = std::collections::HashSet::new();
+        self.remote_servers
+            .retain(|server| server.validate().is_ok() && ids.insert(server.id.clone()));
+        self.remote_servers.truncate(64);
         self.sidebar_width = self
             .sidebar_width
             .filter(|width| width.is_finite() && *width > 0.);

@@ -144,6 +144,29 @@ mod tests {
     use crate::settings::{AppSettings, Appearance, InterfaceLanguage};
 
     #[test]
+    fn remote_server_accounts_persist_without_secrets() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let server = crate::remote::Server::new(
+            "Customer".into(),
+            "https://example.test:8180".into(),
+            "operator".into(),
+        );
+        let (mut store, _) = SettingsStore::load(path.clone());
+        store
+            .update_unnotified(|settings| settings.remote_servers.push(server.clone()))
+            .unwrap()
+            .unwrap();
+        let (reloaded, problem) = SettingsStore::load(path.clone());
+        assert!(problem.is_none());
+        assert_eq!(reloaded.settings().remote_servers, vec![server]);
+        let json = fs::read_to_string(path).unwrap();
+        let data: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let remote = &data["remote_servers"][0];
+        assert!(remote.get("password").is_none() && remote.get("token").is_none());
+    }
+
+    #[test]
     fn sidebar_download_directory_is_optional_persistent_and_rejects_relative_paths() {
         let defaults: AppSettings = serde_json::from_str("{}").unwrap();
         assert!(defaults.sidebar_download_directory.is_none());

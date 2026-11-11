@@ -40,8 +40,8 @@ use super::mouse::{self, MouseReport, ReportButton, ReportKind};
 use super::scrollbar::ScrollbackHandle;
 use super::search::{SearchMark, SearchOptions, SearchPosition, TerminalFindOption};
 use super::{
-    MiddleClick, RightClick, SearchDirection, SharedTerminalTransportFactory, TerminalColors,
-    TerminalEngine, TerminalEvent, TerminalFont, TerminalInput, TerminalInputEvent,
+    BackspaceKey, MiddleClick, RightClick, SearchDirection, SharedTerminalTransportFactory,
+    TerminalColors, TerminalEngine, TerminalEvent, TerminalFont, TerminalInput, TerminalInputEvent,
     TerminalInteraction, TerminalLifecycle, TerminalSize, TerminalSnapshot, TerminalStatus,
     TerminalTheme, ZmodemReply,
 };
@@ -299,6 +299,13 @@ struct HoveredLink {
     position: gpui_kit::Point<Pixels>,
 }
 
+#[derive(Clone, Copy)]
+struct SelectionAnchor {
+    point: TerminalPoint,
+    side: Side,
+    kind: SelectionType,
+}
+
 pub struct TerminalView {
     timestamp_subscription: Option<Subscription>,
     timestamp_target: Option<(
@@ -324,6 +331,7 @@ pub struct TerminalView {
     requested_size: TerminalSize,
     /// A selection drag is under way.
     selecting: bool,
+    selection_anchor: Option<SelectionAnchor>,
     /// A selection drag held past the top or the bottom: how many lines
     /// each step scrolls, up when positive, and where across the edge row
     /// the selection ends. The steps run while it is set.
@@ -622,6 +630,7 @@ impl TerminalView {
             ime_cursor_bounds: None,
             requested_size: TerminalSize::DEFAULT,
             selecting: false,
+            selection_anchor: None,
             edge_scroll: None,
             edge_scroll_task: None,
             scroll_accumulator: ScrollAccumulator::default(),
@@ -886,6 +895,7 @@ impl TerminalView {
         self.marked_selection = 0..0;
         self.ime_cursor_bounds = None;
         self.selecting = false;
+        self.selection_anchor = None;
         self.scroll_accumulator.reset();
         self.context_menu = None;
         self.context_menu_subscription = None;
@@ -1020,6 +1030,7 @@ impl TerminalView {
     /// goes to the clipboard, as what the mouse selects does.
     pub fn select_all(&mut self, cx: &mut Context<Self>) {
         self.selecting = false;
+        self.selection_anchor = None;
         self.engine.update(cx, |engine, cx| engine.select_all(cx));
         if TerminalInteraction::current(cx).copy_on_select {
             self.copy_selection(cx);
@@ -1048,6 +1059,7 @@ impl TerminalView {
     ) -> Result<(), SharedString> {
         self.engine.read(cx).enter_command(command, run, replace)?;
         self.selecting = false;
+        self.selection_anchor = None;
         self.scroll_accumulator.reset();
         self.cursor_visible = true;
         cx.notify();
@@ -1078,6 +1090,7 @@ impl TerminalView {
     ) -> Result<(), SharedString> {
         self.engine.read(cx).upload_dropped(files)?;
         self.selecting = false;
+        self.selection_anchor = None;
         self.scroll_accumulator.reset();
         self.cursor_visible = true;
         cx.notify();
@@ -1087,6 +1100,7 @@ impl TerminalView {
     /// Clear the screen and the scrollback, keeping the prompt line.
     pub fn clear(&mut self, cx: &mut Context<Self>) {
         self.selecting = false;
+        self.selection_anchor = None;
         self.scroll_accumulator.reset();
         self.engine
             .update(cx, |engine, cx| engine.clear_keeping_prompt(cx));
@@ -1444,12 +1458,37 @@ impl TerminalView {
         cx: &mut Context<Self>,
     ) {
         self.selecting = true;
+        self.selection_anchor = Some(SelectionAnchor {
+            point,
+            side,
+            kind: selection_type,
+        });
         self.engine.update(cx, |engine, cx| {
             engine.start_selection(point, side, selection_type, cx)
         });
     }
 
     fn update_selection(&mut self, point: TerminalPoint, side: Side, cx: &mut Context<Self>) {
+        if let Some(anchor) = self.selection_anchor
+            && point != anchor.point
+        {
+            let wanted = if point < anchor.point {
+                Side::Right
+            } else {
+                Side::Left
+            };
+            if wanted != anchor.side {
+                self.engine.update(cx, |engine, cx| {
+                    engine.start_selection(anchor.point, wanted, anchor.kind, cx);
+                    engine.update_selection(point, side, cx);
+                });
+                self.selection_anchor = Some(SelectionAnchor {
+                    side: wanted,
+                    ..anchor
+                });
+                return;
+            }
+        }
         self.engine
             .update(cx, |engine, cx| engine.update_selection(point, side, cx));
     }
@@ -1507,6 +1546,7 @@ impl TerminalView {
     /// goes to the clipboard; a click that selected nothing leaves it be.
     fn finish_selection(&mut self, cx: &mut Context<Self>) {
         self.selecting = false;
+        self.selection_anchor = None;
         self.stop_edge_scroll();
         if TerminalInteraction::current(cx).copy_on_select {
             self.copy_selection(cx);
@@ -1616,7 +1656,9 @@ impl TerminalView {
         let engine = self.engine.read(cx);
         let sent = match input {
             TerminalInput::Key(key) => {
-                let Some(bytes) = encode_key(key, engine.mode()) else {
+                let Some(bytes) =
+                    encode_key_with_backspace(key, engine.mode(), engine.backspace_key())
+                else {
                     return false;
                 };
                 engine.send_user_input(bytes)
@@ -2048,6 +2090,28 @@ impl Render for TerminalView {
             // An I-beam over the text, as in other terminals; the scrollbar
             // and a link under the open key set their own pointer over it.
             .cursor_text()
+            // The left margin belongs to the grid too: pressing there starts
+            // a selection at column 0 instead of losing the mouse event.
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, event: &MouseDownEvent, window, cx| {
+                    let Some(viewport) = this.viewport else {
+                        return;
+                    };
+                    if event.position.x >= viewport.geometry.bounds.left() {
+                        return;
+                    }
+                    this.focus(window, cx);
+                    let (point, side) = viewport.grid_point(event.position);
+                    let selection_type = match event.click_count {
+                        2 => SelectionType::Semantic,
+                        count if count >= 3 => SelectionType::Lines,
+                        _ => SelectionType::Simple,
+                    };
+                    this.start_selection(point, side, selection_type, cx);
+                    cx.stop_propagation();
+                }),
+            )
             .child(terminal)
             // Over the whole margin, so the thumb lies mostly beside the text.
             .child(
@@ -2695,12 +2759,16 @@ impl Element for TerminalElement {
         &mut self,
         _: Option<&GlobalElementId>,
         _: Option<&InspectorElementId>,
-        bounds: Bounds<Pixels>,
+        _bounds: Bounds<Pixels>,
         _: &mut Self::RequestLayoutState,
         state: &mut Self::PrepaintState,
         window: &mut Window,
         cx: &mut App,
     ) {
+        // Prepaint snaps the grid to device pixels for shaping and hit
+        // testing. Paint must use that same rectangle, or the text sits a
+        // fraction of a pixel away from the cells the pointer selects.
+        let bounds = state.viewport.geometry.bounds;
         window.handle_input(
             &self.focus_handle,
             ElementInputHandler::new(bounds, self.view.clone()),
@@ -3322,7 +3390,16 @@ fn rgb_to_hsla(color: Rgb) -> Hsla {
     rgb(((color.r as u32) << 16) | ((color.g as u32) << 8) | color.b as u32).into()
 }
 
+#[cfg(test)]
 pub(crate) fn encode_key(keystroke: &Keystroke, mode: TermMode) -> Option<Vec<u8>> {
+    encode_key_with_backspace(keystroke, mode, BackspaceKey::Delete)
+}
+
+fn encode_key_with_backspace(
+    keystroke: &Keystroke,
+    mode: TermMode,
+    backspace: BackspaceKey,
+) -> Option<Vec<u8>> {
     if keystroke.modifiers.platform {
         return None;
     }
@@ -3346,7 +3423,7 @@ pub(crate) fn encode_key(keystroke: &Keystroke, mode: TermMode) -> Option<Vec<u8
         "enter" => vec![b'\r'],
         "tab" if modifiers.shift => b"\x1b[Z".to_vec(),
         "tab" => vec![b'\t'],
-        "backspace" => vec![0x7f],
+        "backspace" => backspace.bytes().to_vec(),
         "escape" => vec![0x1b],
         "up" if modifier > 1 => modified_csi('A'),
         "down" if modifier > 1 => modified_csi('B'),
@@ -3457,8 +3534,8 @@ mod tests {
     use gpui_kit::{Bounds, FontStyle, FontWeight, Keystroke, ScrollDelta, font, point, px, size};
 
     use super::{
-        ScrollAccumulator, ScrollTarget, encode_key, grid_point, painted_cell_text,
-        preedit_caret_position, preedit_cell_layouts, terminal_font,
+        BackspaceKey, ScrollAccumulator, ScrollTarget, encode_key, encode_key_with_backspace,
+        grid_point, painted_cell_text, preedit_caret_position, preedit_cell_layouts, terminal_font,
     };
 
     fn key(source: &str) -> Keystroke {
@@ -3602,6 +3679,20 @@ mod tests {
             encode_key(&key("alt-enter"), TermMode::default()),
             Some(b"\x1b\r".to_vec())
         );
+    }
+
+    #[test]
+    fn serial_backspace_matches_the_device() {
+        for (backspace, expected) in [
+            (BackspaceKey::Backspace, b"\x08".as_slice()),
+            (BackspaceKey::Delete, b"\x7f".as_slice()),
+            (BackspaceKey::Vt220, b"\x1b[3~".as_slice()),
+        ] {
+            assert_eq!(
+                encode_key_with_backspace(&key("backspace"), TermMode::default(), backspace),
+                Some(expected.to_vec())
+            );
+        }
     }
 
     #[test]

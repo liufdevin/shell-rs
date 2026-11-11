@@ -146,6 +146,14 @@ async fn log_search_supports_regex_case_matching_lines_and_navigation(cx: &mut T
     let calls = factory.exec_count();
     in_frame(cx, handle, |window, cx| {
         assert_eq!(
+            window.find("device-logs-search-regex").checked(),
+            Some(false)
+        );
+        assert_eq!(
+            window.find("device-logs-search-case").checked(),
+            Some(false)
+        );
+        assert_eq!(
             window.find("device-logs-search-lines").checked(),
             Some(false)
         );
@@ -158,18 +166,14 @@ async fn log_search_supports_regex_case_matching_lines_and_navigation(cx: &mut T
         assert!(window.find(("device-log-line", 2u64)).visible());
     });
     in_frame(cx, handle, |window, cx| {
-        window.click("device-logs-search-lines", cx)
+        window.click("device-logs-search-lines", cx);
     });
     in_frame(cx, handle, |window, _| {
-        assert_eq!(
-            window.find("device-logs-search-lines").checked(),
-            Some(true)
-        );
         assert!(window.try_find(("device-log-line", 1u64)).is_none());
         assert!(window.find(("device-log-line", 2u64)).visible());
     });
     in_frame(cx, handle, |window, cx| {
-        window.click("device-logs-search-case", cx)
+        window.click("device-logs-search-case", cx);
     });
     in_frame(cx, handle, |window, _| {
         assert_eq!(
@@ -183,7 +187,7 @@ async fn log_search_supports_regex_case_matching_lines_and_navigation(cx: &mut T
         window.click("device-logs-search-clear", cx)
     });
     in_frame(cx, handle, |window, cx| {
-        window.click("device-logs-search-regex", cx)
+        window.click("device-logs-search-regex", cx);
     });
     in_frame(cx, handle, |window, cx| {
         window.click("device-logs-keyword", cx);
@@ -266,6 +270,7 @@ async fn log_toolbar_stays_within_the_sidebar_when_interface_text_is_enlarged(
         let panel = window.find("device-logs").bounds();
         for id in [
             "device-logs-split",
+            "device-logs-follow",
             "device-logs-search-regex",
             "device-logs-search-case",
             "device-logs-search-lines",
@@ -289,6 +294,92 @@ async fn log_toolbar_stays_within_the_sidebar_when_interface_text_is_enlarged(
                 "{id}: {control:?} outside {panel:?}"
             );
         }
+        let search = window.find("device-logs-keyword").bounds();
+        for id in [
+            "device-logs-follow",
+            "device-logs-search-regex",
+            "device-logs-search-case",
+            "device-logs-search-lines",
+        ] {
+            assert!(
+                window.find(id).bounds().bottom() <= search.top(),
+                "{id} must remain above search"
+            );
+        }
+        let controls: Vec<_> = [
+            "device-logs-pause",
+            "device-logs-follow",
+            "device-logs-search-regex",
+            "device-logs-search-case",
+            "device-logs-search-lines",
+            "device-logs-filters",
+            "device-logs-bookmarks",
+            "device-logs-diagnostics",
+            "device-logs-export",
+            "device-logs-clear",
+        ]
+        .into_iter()
+        .map(|id| (id, window.find(id).bounds()))
+        .collect();
+        for (index, (first_id, first)) in controls.iter().enumerate() {
+            for (second_id, second) in &controls[index + 1..] {
+                assert!(
+                    first.right() <= second.left()
+                        || second.right() <= first.left()
+                        || first.bottom() <= second.top()
+                        || second.bottom() <= first.top(),
+                    "{first_id} overlaps {second_id}"
+                );
+            }
+        }
+    });
+}
+
+#[gpui_kit::test]
+async fn log_search_options_follow_the_follow_control_and_stay_out_of_filters(
+    cx: &mut TestAppContext,
+) {
+    let (handle, workspace, _, _) = open_logs(cx, true, false, &[PROBE_ANDROID, FIRST]).await;
+    line(cx, handle, 2).await;
+    cx.simulate_window_resize(handle.into(), size(px(1500.), px(900.)));
+    in_frame(cx, handle, |window, cx| {
+        let area = workspace.read(cx).dock_area().clone();
+        area.update(cx, |area, cx| {
+            area.set_dock_size(
+                gpui_kit::component::dock::DockPlacement::Right,
+                px(850.),
+                window,
+                cx,
+            )
+        });
+    });
+    in_frame(cx, handle, |window, cx| {
+        let mut previous = window.find("device-logs-follow").bounds();
+        for id in [
+            "device-logs-search-regex",
+            "device-logs-search-case",
+            "device-logs-search-lines",
+        ] {
+            let control = window.find(id).bounds();
+            assert!((control.top() - previous.top()).abs() <= px(2.));
+            assert!(control.left() >= previous.right());
+            assert!(control.bottom() <= window.find("device-logs-keyword").bounds().top());
+            previous = control;
+        }
+        window.click("device-logs-search-regex", cx);
+        window.click("device-logs-filters", cx);
+    });
+    in_frame(cx, handle, |window, cx| {
+        assert!(window.try_find("log-filter-search-regex").is_none());
+        assert!(window.try_find("log-filter-search-case").is_none());
+        assert!(window.try_find("log-filter-search-lines").is_none());
+        window.press("escape", cx);
+    });
+    in_frame(cx, handle, |window, _| {
+        assert_eq!(
+            window.find("device-logs-search-regex").checked(),
+            Some(true)
+        )
     });
 }
 

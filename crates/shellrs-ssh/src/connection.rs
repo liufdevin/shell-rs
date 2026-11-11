@@ -92,6 +92,11 @@ pub struct SshConnector {
     key_dir: Option<PathBuf>,
     /// See [`Self::with_nat64`].
     nat64: bool,
+    endpoint_resolver: Option<Arc<dyn EndpointResolver>>,
+}
+
+pub trait EndpointResolver: Send + Sync + 'static {
+    fn resolve(&self, login: &HostLogin) -> Result<(String, u16)>;
 }
 impl SshConnector {
     /// Trusts the host keys in the file at `path`, reads saved secrets from
@@ -105,6 +110,7 @@ impl SshConnector {
             agent: AgentLocation::System,
             key_dir: dirs::home_dir().map(|home| home.join(".ssh")),
             nat64: false,
+            endpoint_resolver: None,
         }
     }
 
@@ -127,6 +133,11 @@ impl SshConnector {
     /// not. Only Apple's systems do this; elsewhere it changes nothing.
     pub fn with_nat64(mut self, nat64: bool) -> Self {
         self.nat64 = nat64;
+        self
+    }
+
+    pub fn with_endpoint_resolver(mut self, resolver: Arc<dyn EndpointResolver>) -> Self {
+        self.endpoint_resolver = Some(resolver);
         self
     }
     /// Must run on a worker: keychain and private-key reads are blocking.
@@ -177,7 +188,15 @@ impl SshConnector {
         secrets: &SharedSecretSource,
         forwarded: Option<mpsc::UnboundedSender<ForwardedTcpip>>,
     ) -> Result<(client::Handle<SshClientHandler>, String)> {
-        let login = &config.login;
+        let mut resolved = config.login.clone();
+        if let Some(resolver) = self.endpoint_resolver.clone() {
+            let original = resolved.clone();
+            let (host, port) =
+                tokio::task::spawn_blocking(move || resolver.resolve(&original)).await??;
+            resolved.host = host;
+            resolved.port = port;
+        }
+        let login = &resolved;
         let tunnel = self
             .open_route(&login.route, &login.host, login.port, &broker, secrets)
             .await?;
@@ -226,6 +245,7 @@ impl SshConnector {
         let fingerprint = Arc::new(Mutex::new(String::new()));
         let handler = SshClientHandler {
             host: login.host.clone(),
+            host_key_alias: login.host_key_alias.clone(),
             port: login.port,
             jump_host: jump_host.map(str::to_string),
             known_hosts_path: self.known_hosts_path.clone(),
@@ -690,6 +710,7 @@ pub struct ForwardedTcpip {
 
 pub struct SshClientHandler {
     host: String,
+    host_key_alias: Option<String>,
     port: u16,
     /// The jump host's name, when this connection is to one.
     jump_host: Option<String>,
@@ -715,7 +736,11 @@ impl client::Handler for SshClientHandler {
         let algorithm = key.algorithm().to_string();
         let known = {
             let _guard = lock(&self.known_hosts_lock);
-            read_known_keys(&self.host, self.port, &self.known_hosts_path)?
+            read_known_keys(
+                self.host_key_alias.as_deref().unwrap_or(&self.host),
+                self.port,
+                &self.known_hosts_path,
+            )?
         };
         if known.iter().any(|(_, saved)| saved == &key) {
             return Ok(true);
@@ -724,14 +749,19 @@ impl client::Handler for SshClientHandler {
         // server, or someone posing as it. The user decides, and saying yes
         // to a changed key replaces the saved ones.
         let question = if known.is_empty() {
-            ConnectionPromptKind::unknown_host(&self.host, self.port, algorithm, fingerprint)
+            ConnectionPromptKind::unknown_host(
+                self.host_key_alias.as_deref().unwrap_or(&self.host),
+                self.port,
+                algorithm,
+                fingerprint,
+            )
         } else {
             let old = known
                 .iter()
                 .map(|(_, saved)| saved.fingerprint(HashAlg::Sha256).to_string())
                 .collect();
             ConnectionPromptKind::host_key_changed(
-                &self.host,
+                self.host_key_alias.as_deref().unwrap_or(&self.host),
                 self.port,
                 algorithm,
                 old,
@@ -746,7 +776,8 @@ impl client::Handler for SshClientHandler {
             return Ok(false);
         }
         let _guard = lock(&self.known_hosts_lock);
-        let now = read_known_keys(&self.host, self.port, &self.known_hosts_path)?;
+        let known_host = self.host_key_alias.as_deref().unwrap_or(&self.host);
+        let now = read_known_keys(known_host, self.port, &self.known_hosts_path)?;
         if now.iter().any(|(_, saved)| saved == &key) {
             return Ok(true);
         }
@@ -765,10 +796,10 @@ impl client::Handler for SshClientHandler {
             })
         };
         if !known.is_empty() {
-            forget_known_host(&self.host, self.port, &self.known_hosts_path)
+            forget_known_host(known_host, self.port, &self.known_hosts_path)
                 .map_err(|_| write_failed())?;
         }
-        learn_known_hosts_path(&self.host, self.port, &key, &self.known_hosts_path)
+        learn_known_hosts_path(known_host, self.port, &key, &self.known_hosts_path)
             .map_err(|_| write_failed())?;
         Ok(true)
     }

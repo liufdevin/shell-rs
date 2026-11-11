@@ -26,8 +26,8 @@ pub mod sftp;
 pub mod testing;
 
 pub use connection::{
-    AgentLocation, ForwardedTcpip, SshConnectionConfig, SshConnector, SshHandle, SshPrompts,
-    Tunnel, is_network_error, timeout_excluding_prompts,
+    AgentLocation, EndpointResolver, ForwardedTcpip, SshConnectionConfig, SshConnector, SshHandle,
+    SshPrompts, Tunnel, is_network_error, timeout_excluding_prompts,
 };
 pub use error::{
     AgentProblem, AgentUnreachable, AuthError, ChannelError, ConnectError, ForwardProblem,

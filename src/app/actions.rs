@@ -23,7 +23,7 @@ use crate::{
     processes::ProcessSort,
     services::ServiceCommand,
     terminal::{
-        LocalTerminalId, LocalTerminalKind, LocalTerminalStart, RemoteTerminalId,
+        BackspaceKey, LocalTerminalId, LocalTerminalKind, LocalTerminalStart, RemoteTerminalId,
         TerminalFindOption,
     },
 };
@@ -143,6 +143,7 @@ gpui_kit::actions!(
         SelectNextForward,
         /// Show the credential list in the left dock.
         ShowCredentials,
+        ShowRemoteManagement,
         OpenAdbDevices,
         /// Open the new-credential dialog.
         NewCredential,
@@ -267,7 +268,15 @@ macro_rules! id_actions {
     };
 }
 
+/// The Backspace sequence chosen for one serial terminal.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SerialBackspaceChoice {
+    pub terminal: RemoteTerminalId,
+    pub key: BackspaceKey,
+}
+
 id_actions! {
+    RemoteAction(crate::remote::Command);
     LanAction(crate::lan::LanCommand);
     AdbDeviceAction(crate::adb::DeviceCommand);
     DeviceLogAction(crate::device_logs::DeviceLogCommand);
@@ -320,6 +329,7 @@ id_actions! {
     SendSerialHex(RemoteTerminalId);
     ToggleSerialReceiveHex(RemoteTerminalId);
     ToggleSerialSendHex(RemoteTerminalId);
+    SetSerialBackspace(SerialBackspaceChoice);
     AutoSerialFiles(RemoteTerminalId);
     UploadSerialFile(RemoteTerminalId);
     DownloadSerialFile(RemoteTerminalId);

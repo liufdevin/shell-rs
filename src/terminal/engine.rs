@@ -43,7 +43,8 @@ use super::search::{
     visible_matches,
 };
 use super::session_io::{
-    Recording, SerialDataModes, SessionIo, TerminalConnectionSettings, TerminalOptions, format_hex,
+    BackspaceKey, Recording, SerialDataModes, SessionIo, TerminalConnectionSettings,
+    TerminalOptions, format_hex,
 };
 use super::zmodem::{Fed, Shown, Zmodem, ZmodemControl, ZmodemDirection, ZmodemReply};
 use super::{
@@ -707,12 +708,24 @@ impl TerminalEngine {
             self.serial_name.is_some() && modes.send_hex,
             Ordering::Release,
         );
+        self.io
+            .backspace
+            .store(modes.backspace.as_u8(), Ordering::Release);
     }
 
     pub(super) fn serial_modes(&self) -> SerialDataModes {
         SerialDataModes {
             receive_hex: self.io.displays_hex(),
             send_hex: self.sends_hex(),
+            backspace: self.backspace_key(),
+        }
+    }
+
+    pub(super) fn backspace_key(&self) -> BackspaceKey {
+        if self.serial_name.is_some() {
+            BackspaceKey::from_u8(self.io.backspace.load(Ordering::Acquire))
+        } else {
+            BackspaceKey::Delete
         }
     }
 

@@ -57,6 +57,8 @@ on:
       - "src/project/project_panel.rs"
       - "src/terminal/zmodem.rs"
       - "src/serial/**"
+      - "src/remote/**"
+      - "tests/ui/remote_management.rs"
       - "crates/shellrs-sync/**"
       - "src/app/shortcuts.rs"
       - "src/workspace/window_state.rs"

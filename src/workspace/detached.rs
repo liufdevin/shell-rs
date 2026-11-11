@@ -76,6 +76,7 @@ impl DetachedSerialTools {
                                 self.terminal,
                                 modes,
                                 dispatch,
+                                cx,
                             ))
                         }),
                 )

@@ -42,7 +42,8 @@ use crate::app::{
     ZoomOut, ZoomReset, ZoomTerminalIn, ZoomTerminalOut, ZoomTerminalReset,
 };
 use crate::app::{
-    ClearTerminalLog, DeleteTerminalLog, ToggleSerialReceiveHex, ToggleSerialSendHex,
+    ClearTerminalLog, DeleteTerminalLog, SetSerialBackspace, ToggleSerialReceiveHex,
+    ToggleSerialSendHex,
 };
 use crate::cli::{CliIntegration, CliServer, IntegrationPaths, SshCliBackend};
 use crate::connection::{
@@ -173,6 +174,9 @@ pub struct Workspace {
     pub(super) skin: Rc<WorkspaceDockSkin>,
     /// The left dock's panel: the host tree or the forward list.
     pub(super) sidebar: Entity<Sidebar>,
+    pub(super) remote: Entity<crate::remote::Service>,
+    remote_panel: Entity<crate::remote::RemotePanel>,
+    remote_hosts: HashMap<HostId, (String, String, String, String)>,
     /// The right dock's panel: the tools for the host of the tab in front.
     pub(super) tools: Entity<ToolSidebar>,
     pub(super) host_panel: Entity<HostPanel>,
@@ -294,10 +298,14 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        let remote_backend = Arc::new(crate::remote::SystemBackend::new(
+            crate::app::data_dir().join("remote"),
+        ));
         let connector = crate::ssh::SshConnector::new(
             crate::app::data_dir().join("known_hosts"),
             crate::secrets::KeychainSource::shared(store.read(cx).secrets()),
-        );
+        )
+        .with_endpoint_resolver(remote_backend.clone());
         let remote = Arc::new(crate::ssh::SshTerminalTransportProvider::with_connector(
             connector.clone(),
         ));
@@ -376,6 +384,8 @@ impl Workspace {
             )
         });
         this.remember_window(crate::app::window_state_path(), window, cx);
+        this.remote
+            .update(cx, |service, cx| service.set_backend(remote_backend, cx));
         let bundle = cx.app_path().ok();
         this.updater.update(cx, |updater, cx| {
             updater.set_services(UpdateServices::system(bundle), cx);
@@ -476,7 +486,27 @@ impl Workspace {
         });
         let credential_panel =
             cx.new(|cx| CredentialPanel::new(store.clone(), focus_handle.clone(), window, cx));
-        let sidebar = cx.new(|_| Sidebar::new(host_panel.clone(), forward_panel, credential_panel));
+        let remote = cx.new(crate::remote::Service::new);
+        remote.update(cx, |remote, cx| {
+            remote.set_secrets(store.read(cx).secrets(), cx)
+        });
+        let remote_panel = cx.new(|cx| {
+            crate::remote::RemotePanel::new(
+                remote.clone(),
+                settings.clone(),
+                focus_handle.clone(),
+                window,
+                cx,
+            )
+        });
+        let sidebar = cx.new(|_| {
+            Sidebar::new(
+                host_panel.clone(),
+                forward_panel,
+                credential_panel,
+                remote_panel.clone(),
+            )
+        });
         let tools = cx.new(|cx| {
             ToolSidebar::new(
                 store.clone(),
@@ -503,6 +533,46 @@ impl Workspace {
 
         let mut sidebar_width = dock_area.read(cx).dock_size(DockPlacement::Left);
         let mut subscriptions = vec![
+            cx.subscribe_in(&remote, window, |this, _, event, window, cx| {
+                if let crate::remote::Event::DeviceAddressesChanged(server, devices) = event {
+                    let hosts: std::collections::HashSet<_> = this
+                        .remote_hosts
+                        .iter()
+                        .filter(|(_, (owner, _, device, _))| {
+                            owner == server && devices.contains(device)
+                        })
+                        .map(|(host, _)| *host)
+                        .collect();
+                    this.disconnect_remote_hosts(Some(&hosts), window, cx);
+                }
+                if let crate::remote::Event::SshReady(resolved) = event {
+                    this.open_resolved_remote(resolved, window, cx);
+                }
+                let invalidated: std::collections::HashSet<_> = this
+                    .remote_hosts
+                    .iter()
+                    .filter(|(_, (server, network, device, _))| {
+                        this.remote.read(cx).connection().is_none_or(|active| {
+                            active.server != *server
+                                || active.network != *network
+                                || !active
+                                    .devices
+                                    .iter()
+                                    .any(|target| target.device_id == *device)
+                        })
+                    })
+                    .map(|(host, _)| *host)
+                    .collect();
+                if matches!(
+                    event,
+                    crate::remote::Event::NetworkChanging | crate::remote::Event::NetworkChanged
+                ) {
+                    this.disconnect_remote_hosts(None, window, cx);
+                } else if matches!(event, crate::remote::Event::Updated) && !invalidated.is_empty()
+                {
+                    this.disconnect_remote_hosts(Some(&invalidated), window, cx);
+                }
+            }),
             cx.observe(&lan, |this, _, cx| this.sync_cli_server(cx)),
             cx.subscribe_in(
                 &lan,
@@ -797,6 +867,9 @@ impl Workspace {
             dock_area,
             skin,
             sidebar,
+            remote,
+            remote_panel,
+            remote_hosts: HashMap::new(),
             tools,
             host_panel,
             forwards,
@@ -1604,6 +1677,10 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if !self.remote_host_allowed(host_id, cx) {
+            window.push_notification(Notification::info(t!("remote.connect_first")), cx);
+            return;
+        }
         if self.store.read(cx).host(host_id).is_none() {
             return;
         }
@@ -1650,6 +1727,10 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if !self.remote_host_allowed(host_id, cx) {
+            window.push_notification(Notification::info(t!("remote.connect_first")), cx);
+            return;
+        }
         // Only an SSH host has SFTP; nothing offers it another.
         let store = self.store.read(cx);
         let Some((host, login)) = store
@@ -1883,6 +1964,160 @@ impl Workspace {
         self.dock_area.update(cx, |area, cx| {
             area.add_panel_view(panel_handle(panel), DockPlacement::Center, None, window, cx);
         });
+    }
+
+    pub fn remote_management(&self) -> &Entity<crate::remote::Service> {
+        &self.remote
+    }
+
+    fn on_show_remote_management(
+        &mut self,
+        _: &crate::app::ShowRemoteManagement,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.show_sidebar(super::sidebar::SidebarMode::Remote, window, cx);
+    }
+
+    fn on_remote_action(
+        &mut self,
+        action: &crate::app::RemoteAction,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if crate::app_lock::is_locked(cx) {
+            return;
+        }
+        if let crate::remote::Command::Ssh {
+            server,
+            device,
+            user,
+        } = &action.0
+        {
+            if self.remote.read(cx).ssh_target(server, device).is_none() {
+                window.push_notification(Notification::info(t!("remote.connect_first")), cx);
+                return;
+            }
+            if user.is_empty()
+                || user.len() > 128
+                || user
+                    .chars()
+                    .any(|character| character.is_control() || character.is_whitespace())
+            {
+                return;
+            }
+            self.remote.update(cx, |service, cx| {
+                service.run(
+                    crate::remote::Operation::Resolve(
+                        server.clone(),
+                        device.clone(),
+                        user.clone(),
+                        None,
+                    ),
+                    cx,
+                )
+            });
+            return;
+        }
+        self.remote_panel
+            .update(cx, |panel, cx| panel.command(action.0.clone(), window, cx));
+    }
+
+    fn open_resolved_remote(
+        &mut self,
+        resolved: &crate::remote::ResolvedSsh,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if crate::app_lock::is_locked(cx)
+            || self
+                .remote
+                .read(cx)
+                .ssh_target(&resolved.server, &resolved.device)
+                .is_none()
+        {
+            return;
+        }
+        if let Some(terminal) = resolved.terminal {
+            if let Some(panel) = self.terminals.get(&RemoteTerminalId(terminal)).cloned()
+                && self
+                    .remote_hosts
+                    .get(&panel.read(cx).host_id())
+                    .is_some_and(|(server, network, device, _)| {
+                        *server == resolved.server
+                            && *network == resolved.network
+                            && *device == resolved.device
+                    })
+            {
+                panel.update(cx, |panel, cx| panel.reconnect(window, cx));
+            }
+            return;
+        }
+        let draft = crate::host::HostDraft::new(
+            &resolved.name,
+            &resolved.address,
+            22,
+            &resolved.user,
+            crate::host::AuthKind::Password,
+            None,
+        );
+        let host = self.store.update(cx, |store, cx| {
+            let host = store.insert_temporary(draft, None, cx);
+            store.set_temporary_host_key_alias(host, resolved.alias.clone());
+            host
+        });
+        self.remote_hosts.insert(
+            host,
+            (
+                resolved.server.clone(),
+                resolved.network.clone(),
+                resolved.device.clone(),
+                resolved.user.clone(),
+            ),
+        );
+        self.connect_host(host, window, cx);
+    }
+
+    fn disconnect_remote_hosts(
+        &mut self,
+        hosts: Option<&std::collections::HashSet<HostId>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let managed = |host: HostId| {
+            self.remote_hosts.contains_key(&host) && hosts.is_none_or(|hosts| hosts.contains(&host))
+        };
+        let terminals: Vec<_> = self
+            .terminals
+            .iter()
+            .filter(|(_, panel)| managed(panel.read(cx).host_id()))
+            .map(|(id, _)| *id)
+            .collect();
+        let explorers: Vec<_> = self
+            .explorers
+            .values()
+            .filter(|panel| managed(panel.read(cx).host_id()))
+            .cloned()
+            .collect();
+        for id in terminals {
+            self.on_disconnect_terminal(&DisconnectTerminal(id), window, cx);
+        }
+        for panel in explorers {
+            panel.update(cx, |panel, cx| panel.disconnect(window, cx));
+        }
+    }
+
+    fn remote_host_allowed(&self, host: HostId, cx: &App) -> bool {
+        self.remote_hosts
+            .get(&host)
+            .is_none_or(|(server, network, device, _)| {
+                !self.remote.read(cx).is_busy()
+                    && self.remote.read(cx).is_logged_in(server)
+                    && self.remote.read(cx).connection().is_some_and(|current| {
+                        current.server == *server && current.network == *network
+                    })
+                    && self.remote.read(cx).ssh_target(server, device).is_some()
+            })
     }
 
     /// Open a local terminal tab: in the home folder, or a saved terminal's
@@ -2299,6 +2534,12 @@ impl Workspace {
         let Some(panel) = self.explorers.get(&action.explorer()).cloned() else {
             return;
         };
+        if !matches!(action.command(), ExplorerCommand::CancelTransfer)
+            && !self.remote_host_allowed(panel.read(cx).host_id(), cx)
+        {
+            window.push_notification(Notification::info(t!("remote.connect_first")), cx);
+            return;
+        }
         if action
             .generation()
             .is_some_and(|g| g != panel.read(cx).generation())
@@ -2768,6 +3009,25 @@ impl Workspace {
     }
 
     fn toggle_serial_mode(&mut self, id: RemoteTerminalId, receive: bool, cx: &mut Context<Self>) {
+        self.update_serial_modes(
+            id,
+            |modes| {
+                if receive {
+                    modes.receive_hex = !modes.receive_hex;
+                } else {
+                    modes.send_hex = !modes.send_hex;
+                }
+            },
+            cx,
+        );
+    }
+
+    fn update_serial_modes(
+        &mut self,
+        id: RemoteTerminalId,
+        update: impl FnOnce(&mut crate::terminal::SerialDataModes),
+        cx: &mut Context<Self>,
+    ) {
         let Some(panel) = self.terminals.get(&id).cloned() else {
             return;
         };
@@ -2779,11 +3039,7 @@ impl Workspace {
         let public_id = host.public_id.as_str().to_owned();
         let modes = panel.update(cx, |panel, cx| {
             let mut modes = panel.serial_modes(cx);
-            if receive {
-                modes.receive_hex = !modes.receive_hex;
-            } else {
-                modes.send_hex = !modes.send_hex;
-            }
+            update(&mut modes);
             panel.set_serial_modes(modes, cx);
             modes
         });
@@ -2813,6 +3069,16 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         self.toggle_serial_mode(action.0, false, cx);
+    }
+
+    fn on_set_serial_backspace(
+        &mut self,
+        action: &SetSerialBackspace,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let choice = action.0;
+        self.update_serial_modes(choice.terminal, |modes| modes.backspace = choice.key, cx);
     }
 
     fn on_start_terminal_recording(
@@ -2895,6 +3161,21 @@ impl Workspace {
         let id = action.0;
         self.cancel_prompts_for_terminal(id, window, cx);
         if let Some(terminal) = self.terminals.get(&id).cloned() {
+            if !self.remote_host_allowed(terminal.read(cx).host_id(), cx) {
+                window.push_notification(Notification::info(t!("remote.connect_first")), cx);
+                return;
+            }
+            if let Some((server, _, device, user)) =
+                self.remote_hosts.get(&terminal.read(cx).host_id()).cloned()
+            {
+                self.remote.update(cx, |service, cx| {
+                    service.run(
+                        crate::remote::Operation::Resolve(server, device, user, Some(id.0)),
+                        cx,
+                    )
+                });
+                return;
+            }
             terminal.update(cx, |terminal, cx| terminal.reconnect(window, cx));
         }
     }
@@ -3986,6 +4267,7 @@ impl Workspace {
             .on_action(cx.listener(Self::on_send_serial_hex))
             .on_action(cx.listener(Self::on_toggle_serial_receive_hex))
             .on_action(cx.listener(Self::on_toggle_serial_send_hex))
+            .on_action(cx.listener(Self::on_set_serial_backspace))
             .on_action(cx.listener(Self::on_start_terminal_recording))
             .on_action(cx.listener(Self::on_stop_terminal_recording))
             .on_action(cx.listener(Self::on_clear_terminal_log))
@@ -4139,6 +4421,8 @@ impl Workspace {
             .on_action(cx.listener(Self::on_start_forward))
             .on_action(cx.listener(Self::on_stop_forward))
             .on_action(cx.listener(Self::on_show_credentials))
+            .on_action(cx.listener(Self::on_show_remote_management))
+            .on_action(cx.listener(Self::on_remote_action))
             .on_action(cx.listener(Self::on_new_credential))
             .on_action(cx.listener(Self::on_generate_credential_key))
             .on_action(cx.listener(Self::on_edit_credential))

@@ -74,6 +74,7 @@ pub struct HostData {
     temporary: Vec<Host>,
     /// The temporary hosts a link from outside opened (外部连接).
     external: HashSet<HostId>,
+    host_key_aliases: HashMap<HostId, String>,
     next_host_id: u64,
     next_group_id: u64,
     /// A fixture's hosts whose terminals are open from the start: the
@@ -347,6 +348,7 @@ impl HostData {
             hosts: Vec::new(),
             temporary: Vec::new(),
             external: HashSet::new(),
+            host_key_aliases: HashMap::new(),
             next_host_id: 1,
             next_group_id: 1,
             starting_terminals: Vec::new(),
@@ -501,6 +503,7 @@ impl HostData {
             hosts,
             temporary: Vec::new(),
             external: HashSet::new(),
+            host_key_aliases: HashMap::new(),
             starting_terminals: Vec::new(),
             recent,
             bookmarks,
@@ -725,6 +728,7 @@ impl HostData {
     }
 
     pub fn remove_temporary_unnotified(&mut self, id: HostId) -> bool {
+        self.host_key_aliases.remove(&id);
         let Some(index) = self.temporary.iter().position(|host| host.id == id) else {
             return false;
         };
@@ -1463,7 +1467,14 @@ impl HostData {
             login.password = SecretRef::temporary(host.id.0);
         }
         login.shell_only = self.is_external(host.id);
+        login.host_key_alias = self.host_key_aliases.get(&host.id).cloned();
         login
+    }
+
+    pub fn set_temporary_host_key_alias(&mut self, id: HostId, alias: String) {
+        if self.is_temporary(id) {
+            self.host_key_aliases.insert(id, alias);
+        }
     }
 
     /// How `host` logs in once the connection has reached it.
@@ -3745,6 +3756,27 @@ mod tests {
         assert!(store.secrets().get(&login.password).unwrap().is_none());
         // Only memory gave it an id: the next one still moves on.
         assert!(store.insert_unnotified(draft("db", None)).0 > id.0);
+    }
+
+    #[test]
+    fn temporary_device_host_keys_use_runtime_identity_not_the_recycled_address() {
+        let mut store = HostData::empty();
+        let saved = store.insert_unnotified(draft("saved", None));
+        let host = store.insert_external_unnotified(link("root", "10.215.0.11", 22), None);
+        store.set_temporary_host_key_alias(host, "device-identity".into());
+        store.set_temporary_host_key_alias(saved, "not-allowed".into());
+        assert_eq!(
+            store.login(host).unwrap().host_key_alias.as_deref(),
+            Some("device-identity")
+        );
+        assert!(store.login(saved).unwrap().host_key_alias.is_none());
+        assert_eq!(
+            store.login(host).unwrap().password,
+            SecretRef::temporary(host.0)
+        );
+        assert!(store.remove_temporary_unnotified(host));
+        let next = store.insert_external_unnotified(link("root", "10.215.0.11", 22), None);
+        assert!(store.login(next).unwrap().host_key_alias.is_none());
     }
 
     #[test]

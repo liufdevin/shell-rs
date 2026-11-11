@@ -1035,6 +1035,63 @@ async fn copy_on_select_puts_what_the_mouse_selects_on_the_clipboard(cx: &mut Te
     });
 }
 
+#[gpui_kit::test]
+async fn selecting_a_long_command_from_its_first_cell_copies_the_whole_line(
+    cx: &mut TestAppContext,
+) {
+    const LINE: &str =
+        "root@HelperA133:~# baijie-remote-service-test start remote -u baijie -p testpass";
+    let (handle, workspace, factory) = terminal_printing(
+        cx,
+        "\r\nroot@HelperA133:~# baijie-remote-service-test start remote -u baijie -p testpass\r\nready",
+        "ready",
+    )
+    .await;
+    cx.simulate_window_resize(handle.into(), size(px(1100.5), px(760.5)));
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        window.render_frame(cx);
+        local_screen(&workspace, cx).contains(LINE)
+    })
+    .await;
+    let cell = *factory
+        .resizes
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .last()
+        .expect("the terminal has been laid out");
+    let (cell_width, cell_height) = (px(cell.cell_width() as f32), px(cell.cell_height() as f32));
+    let line = cx
+        .update(|cx| {
+            local_screen(&workspace, cx)
+                .lines()
+                .position(|line| line.contains("baijie-remote-service-test"))
+        })
+        .expect("the long command is on screen");
+    let (bounds, margin_x) = in_frame(cx, handle, |window, _| {
+        (
+            window.find(("local-terminal", 1_u64)).bounds(),
+            window.find("terminal-grid").bounds().left() - px(4.),
+        )
+    });
+    let y = bounds.top() + cell_height * (line as f32 + 0.5);
+    let margin_start = point(margin_x, y);
+    // The first glyph's right half: its cell must still be included.
+    let start = point(bounds.left() + cell_width * 0.75, y);
+    let reverse_end = point(bounds.left() + cell_width * 0.25, y);
+    let end = point(bounds.left() + cell_width * (LINE.len() as f32 + 0.5), y);
+    for (from, to) in [(margin_start, end), (start, end), (end, reverse_end)] {
+        cx.update(|cx| cx.write_to_clipboard(ClipboardItem::new_string("sentinel".into())));
+        in_frame(cx, handle, |window, cx| {
+            window.drag(from, to, cx);
+            window.dispatch_action(Box::new(CopyTerminal), cx);
+        });
+        let copied = cx
+            .update(|cx| cx.read_from_clipboard().and_then(|item| item.text()))
+            .expect("a selection");
+        assert!(copied.contains(LINE), "{copied:?}");
+    }
+}
+
 /// 全选 takes the scrollback too, without the blank lines below the text.
 /// It only selects; with 选中复制 on, selecting is copying.
 #[gpui_kit::test]

@@ -49,6 +49,7 @@ pub enum SidebarMode {
     Hosts,
     Forwards,
     Credentials,
+    Remote,
 }
 
 /// The left dock's one panel: the host tree, the port-forwarding list or
@@ -65,6 +66,7 @@ pub struct Sidebar {
     hosts: Entity<HostPanel>,
     forwards: Entity<ForwardPanel>,
     credentials: Entity<CredentialPanel>,
+    remote: Entity<crate::remote::RemotePanel>,
 }
 
 impl Sidebar {
@@ -72,12 +74,14 @@ impl Sidebar {
         hosts: Entity<HostPanel>,
         forwards: Entity<ForwardPanel>,
         credentials: Entity<CredentialPanel>,
+        remote: Entity<crate::remote::RemotePanel>,
     ) -> Self {
         Self {
             mode: SidebarMode::default(),
             hosts,
             forwards,
             credentials,
+            remote,
         }
     }
 
@@ -107,6 +111,9 @@ impl Sidebar {
             SidebarMode::Credentials => self
                 .credentials
                 .update(cx, |panel, cx| panel.focus_search(window, cx)),
+            SidebarMode::Remote => self
+                .remote
+                .update(cx, |panel, cx| panel.focus_search(window, cx)),
         }
     }
 }
@@ -119,6 +126,7 @@ impl Focusable for Sidebar {
             SidebarMode::Hosts => self.hosts.read(cx).focus_handle(cx),
             SidebarMode::Forwards => self.forwards.read(cx).focus_handle(cx),
             SidebarMode::Credentials => self.credentials.read(cx).focus_handle(cx),
+            SidebarMode::Remote => self.remote.read(cx).focus_handle(cx),
         }
     }
 }
@@ -146,6 +154,7 @@ impl Panel for Sidebar {
                 .update(cx, |panel, cx| panel.title(window, cx).into_any_element()),
             SidebarMode::Forwards => self.forwards.read(cx).title().into_any_element(),
             SidebarMode::Credentials => self.credentials.read(cx).title().into_any_element(),
+            SidebarMode::Remote => self.remote.read(cx).title().into_any_element(),
         }
     }
 
@@ -160,6 +169,7 @@ impl Panel for Sidebar {
                 .update(cx, |panel, cx| panel.toolbar_buttons(window, cx)),
             SidebarMode::Forwards => Some(self.forwards.read(cx).toolbar_buttons()),
             SidebarMode::Credentials => Some(self.credentials.read(cx).toolbar_buttons()),
+            SidebarMode::Remote => Some(self.remote.read(cx).toolbar_buttons()),
         }
     }
 
@@ -173,7 +183,7 @@ impl Panel for Sidebar {
     ) -> PopupMenu {
         match self.mode {
             SidebarMode::Hosts => import_menu_items(menu),
-            SidebarMode::Forwards | SidebarMode::Credentials => menu,
+            SidebarMode::Forwards | SidebarMode::Credentials | SidebarMode::Remote => menu,
         }
     }
 
@@ -192,6 +202,7 @@ impl Render for Sidebar {
             SidebarMode::Hosts => self.hosts.clone().into_any_element(),
             SidebarMode::Forwards => self.forwards.clone().into_any_element(),
             SidebarMode::Credentials => self.credentials.clone().into_any_element(),
+            SidebarMode::Remote => self.remote.clone().into_any_element(),
         };
         v_flex()
             .id("workspace-sidebar")

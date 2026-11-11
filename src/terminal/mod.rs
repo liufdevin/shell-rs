@@ -75,7 +75,9 @@ pub use run::{
 };
 pub use search::{SearchDirection, SearchMark, SearchPosition, TerminalFindOption};
 pub use session_io::default_log_directory;
-pub use session_io::{SerialDataModes, SerialPreferences, TerminalConnectionSettings};
+pub use session_io::{
+    BackspaceKey, SerialDataModes, SerialPreferences, TerminalConnectionSettings,
+};
 pub(crate) use shell_query::Shell as ShellQuery;
 pub(crate) use terminal_panel::TerminalCopy;
 pub use terminal_panel::{TerminalPanel, TerminalPanelEvent};

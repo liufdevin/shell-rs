@@ -8,6 +8,20 @@ One section per version, titled `## [version]`, optionally followed by a date. E
 
 ### Added
 
+- Updated remote management to `/api/client/ssh/devices` for lease-valid online SSH devices. Device IPs are resolved before connecting and host keys are scoped to device identity. Device churn and IP recycling no longer stop the network; existing leases may renew with empty catalogs, while only affected device channels disconnect. Password saving and catalog dialogs are preserved.
+
+- Fixed terminal selection from a long line’s first character or the left padding before the text missing the first or following characters. Painting and hit testing now share the same pixel-snapped grid, presses in the left padding start at column 0, and the anchor side follows the drag direction.
+
+- Device-log Regex, Match case and Matching lines only now sit above the search field, immediately after Follow, applying instantly instead of through Filters. Narrow sidebars wrap the toolbar without collapsing it onto content; changing search options does not restart collection. Added a Settings › About page that shows only the current version; update checks, channel, automatic updates, privacy and the website link moved to General.
+
+- Remote management now keeps only servers in the sidebar, with double-click sign-in/device browsing and context-menu device, network, disconnect, edit and delete actions. Devices and networks use larger searchable, paginated dialogs with a current-network device filter. Password saving defaults to the system credential store for reuse, retry and cleanup on deletion; passwords and tokens never enter settings. Operation status and network actions are server-scoped.
+
+- Remote management now uses the host-list pattern: a pinned search field for servers, networks and devices, Add server in the top-right toolbar, status-aware server rows with the existing context-menu deletion, an empty-state add action, and a denser network/device detail list.
+
+- Fixed remote sign-in failing on device APIs that return numeric `0/1` enabled flags. Both numeric and Boolean flags are supported, with separate catalog-format and connectivity errors. New servers no longer prefill a test address; sign-in buttons have equal widths and passwords start masked. Saved servers can be deleted from their context menu after confirmation, disconnecting their network and signing out before removing the local profile.
+
+- Added Remote management beside Hosts, Forwards and Credentials: saved server/account profiles, device and virtual-IP catalogs, customer-network switching with on-demand system authorization, and SSH through the existing authentication and host-key checks. Switching stops the previous network first; only devices authorized by the current lease can open SSH. Lease expiry, revocation and exit clean up the owned network process.
+
 - Sidebar Files downloads remember the last local destination across terminals and restarts. Cancelling the picker keeps the saved folder; standalone SFTP tabs still use the current local pane directory.
 
 - Fixed editing in the Ctrl+T ShellLF command terminal: Left/Right, Home/End, Delete and Backspace now work at the cursor, with Ctrl+A/E/K/W shortcuts, while commands still run on the original connection.
@@ -15,6 +29,8 @@ One section per version, titled `## [version]`, optionally followed by a date. E
 - Device logs now support plain, regular-expression and case-sensitive search, optional matching-lines filtering, numbered highlighted results and Enter / Shift+Enter or button navigation. The log font can be set from 12 to 24 and is saved; Split view is off by default and restores the previous sidebar width when closed.
 
 - Improved the default Serial tools layout with an expanding capture preview, a separate bottom sender and a full-width Send button. Auto-reply and Connection now separate toggles, fields, actions and help into clearer groups without enabling Serial assistant.
+
+- Serial tools now offer three Backspace sequences: `^H` (0x08, Xshell’s default), `^?` (0x7F) and VT220 (`ESC [ 3 ~`), saved per host. Choose `^H` when a device can only erase in Xshell.
 
 - Enabling Serial assistant from Auto-reply or Connection now opens the assistant page at the top. Detached serial terminals gain a collapsible tools sidebar, reusing the existing connection and the host’s assistant settings and command groups.
 

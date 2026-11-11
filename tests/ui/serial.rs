@@ -1385,3 +1385,63 @@ async fn serial_hex_modes_are_independent_per_tab_and_remembered_per_host(cx: &m
         );
     });
 }
+
+#[gpui_kit::test]
+async fn serial_backspace_sequence_is_remembered_per_host(cx: &mut TestAppContext) {
+    let (store, first) = serial_store();
+    let line = Arc::new(FakeTerminalFactory::default());
+    let (handle, workspace) = open_workspace_with_terminals(
+        cx,
+        store,
+        Arc::new(FakeTerminalFactory::default()),
+        Arc::new(FixedSerialTerminalTransportProvider::new(line.clone())),
+    );
+    connect(cx, handle, first).await;
+    in_frame(cx, handle, |window, cx| {
+        window.click("tool-serial", cx);
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.click(("terminal", 1_u64), cx);
+        window.press("backspace", cx);
+    });
+    assert_eq!(*line.writes.lock().unwrap(), vec![vec![0x08]]);
+    in_frame(cx, handle, |window, cx| {
+        window.click("serial-backspace-1-delete", cx);
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.click(("terminal", 1_u64), cx);
+        window.press("backspace", cx);
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.click("serial-backspace-1-vt220", cx);
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.click(("terminal", 1_u64), cx);
+        window.press("backspace", cx);
+    });
+    assert_eq!(
+        *line.writes.lock().unwrap(),
+        vec![vec![0x08], vec![0x7f], b"\x1b[3~".to_vec()]
+    );
+    cx.update(|cx| {
+        let workspace = workspace.read(cx);
+        let panel = workspace
+            .remote_terminal(RemoteTerminalId(1))
+            .expect("the serial terminal is open");
+        assert_eq!(
+            panel.read(cx).serial_modes(cx).backspace,
+            shellrs::terminal::BackspaceKey::Vt220
+        );
+        let host = workspace.store().read(cx).host(first).unwrap();
+        assert_eq!(
+            workspace
+                .settings()
+                .read(cx)
+                .settings()
+                .serial_preferences
+                .get(host.public_id.as_str())
+                .backspace,
+            shellrs::terminal::BackspaceKey::Vt220
+        );
+    });
+}

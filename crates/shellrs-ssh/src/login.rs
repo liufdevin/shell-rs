@@ -50,6 +50,7 @@ pub struct HostLogin {
     /// session per connection and ends it when another channel comes and
     /// goes, as Xshell and OpenSSH never make it do.
     pub shell_only: bool,
+    pub host_key_alias: Option<String>,
 }
 
 impl HostLogin {
@@ -72,12 +73,18 @@ impl HostLogin {
             key_path: None,
             route: LoginRoute::Direct,
             shell_only: false,
+            host_key_alias: None,
         }
     }
 
     /// The same login, reaching the host by `route`.
     pub fn with_route(mut self, route: LoginRoute) -> Self {
         self.route = route;
+        self
+    }
+
+    pub fn with_host_key_alias(mut self, alias: impl Into<String>) -> Self {
+        self.host_key_alias = Some(alias.into());
         self
     }
 

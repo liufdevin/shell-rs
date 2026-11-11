@@ -1473,21 +1473,19 @@ impl Render for DeviceLogPanel {
                     dispatch.dispatch_action(&DeviceLogAction(command.clone()), window, cx)
                 })
         };
-        let option =
-            |id: &'static str, label: SharedString, command: DeviceLogCommand, selected: bool| {
-                let dispatch = self.dispatch.clone();
-                Button::new(id)
-                    .ghost()
-                    .xsmall()
-                    .label(label.clone())
-                    .selected(selected)
-                    .toggled(selected)
-                    .tooltip(label)
-                    .on_click(move |_, window, cx| {
-                        dispatch.dispatch_action(&DeviceLogAction(command.clone()), window, cx)
-                    })
-            };
         let follow_dispatch = self.dispatch.clone();
+        let search_option = |id, label: SharedString, command: DeviceLogCommand, checked| {
+            let dispatch = self.dispatch.clone();
+            Checkbox::new(id)
+                .small()
+                .w_auto()
+                .flex_shrink_0()
+                .label(label)
+                .checked(checked)
+                .on_change(move |_, window, cx| {
+                    dispatch.dispatch_action(&DeviceLogAction(command.clone()), window, cx)
+                })
+        };
         v_flex()
             .id("device-logs")
             .test_support()
@@ -1499,6 +1497,7 @@ impl Render for DeviceLogPanel {
                     .px_3()
                     .py_3()
                     .gap_3()
+                    .flex_shrink_0()
                     .border_b_1()
                     .border_color(cx.theme().border)
                     .child(
@@ -1575,6 +1574,8 @@ impl Render for DeviceLogPanel {
                             .child(
                                 Checkbox::new("device-logs-follow")
                                     .small()
+                                    .w_auto()
+                                    .flex_shrink_0()
                                     .checked(self.follow)
                                     .label(t!("device_logs.follow"))
                                     .on_change(move |follow, window, cx| {
@@ -1585,6 +1586,24 @@ impl Render for DeviceLogPanel {
                                         )
                                     }),
                             )
+                            .child(search_option(
+                                "device-logs-search-regex",
+                                t!("device_logs.search.regex"),
+                                DeviceLogCommand::ToggleSearchRegex,
+                                self.search.regex,
+                            ))
+                            .child(search_option(
+                                "device-logs-search-case",
+                                t!("device_logs.search.case_sensitive"),
+                                DeviceLogCommand::ToggleSearchCaseSensitive,
+                                self.search.case_sensitive,
+                            ))
+                            .child(search_option(
+                                "device-logs-search-lines",
+                                t!("device_logs.search.matching_lines"),
+                                DeviceLogCommand::ToggleMatchingLines,
+                                self.search.matching_lines,
+                            ))
                             .child(
                                 action(
                                     "device-logs-filters",
@@ -1709,34 +1728,13 @@ impl Render for DeviceLogPanel {
                             }),
                     )
                     .child(
-                        h_flex()
-                            .flex_wrap()
-                            .gap_2()
-                            .child(
-                                Select::new(&self.level)
-                                    .id("device-logs-level")
-                                    .w_24()
-                                    .small()
-                                    .placeholder(t!("device_logs.level.all")),
-                            )
-                            .child(option(
-                                "device-logs-search-regex",
-                                t!("device_logs.search.regex"),
-                                DeviceLogCommand::ToggleSearchRegex,
-                                self.search.regex,
-                            ))
-                            .child(option(
-                                "device-logs-search-case",
-                                t!("device_logs.search.case_sensitive"),
-                                DeviceLogCommand::ToggleSearchCaseSensitive,
-                                self.search.case_sensitive,
-                            ))
-                            .child(option(
-                                "device-logs-search-lines",
-                                t!("device_logs.search.matching_lines"),
-                                DeviceLogCommand::ToggleMatchingLines,
-                                self.search.matching_lines,
-                            )),
+                        h_flex().flex_wrap().gap_2().child(
+                            Select::new(&self.level)
+                                .id("device-logs-level")
+                                .w_24()
+                                .small()
+                                .placeholder(t!("device_logs.level.all")),
+                        ),
                     )
                     .when_some(search_error, |view, error| {
                         view.child(
