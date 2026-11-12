@@ -299,13 +299,6 @@ struct HoveredLink {
     position: gpui_kit::Point<Pixels>,
 }
 
-#[derive(Clone, Copy)]
-struct SelectionAnchor {
-    point: TerminalPoint,
-    side: Side,
-    kind: SelectionType,
-}
-
 pub struct TerminalView {
     timestamp_subscription: Option<Subscription>,
     timestamp_target: Option<(
@@ -331,7 +324,6 @@ pub struct TerminalView {
     requested_size: TerminalSize,
     /// A selection drag is under way.
     selecting: bool,
-    selection_anchor: Option<SelectionAnchor>,
     /// A selection drag held past the top or the bottom: how many lines
     /// each step scrolls, up when positive, and where across the edge row
     /// the selection ends. The steps run while it is set.
@@ -630,7 +622,6 @@ impl TerminalView {
             ime_cursor_bounds: None,
             requested_size: TerminalSize::DEFAULT,
             selecting: false,
-            selection_anchor: None,
             edge_scroll: None,
             edge_scroll_task: None,
             scroll_accumulator: ScrollAccumulator::default(),
@@ -895,7 +886,6 @@ impl TerminalView {
         self.marked_selection = 0..0;
         self.ime_cursor_bounds = None;
         self.selecting = false;
-        self.selection_anchor = None;
         self.scroll_accumulator.reset();
         self.context_menu = None;
         self.context_menu_subscription = None;
@@ -1030,7 +1020,6 @@ impl TerminalView {
     /// goes to the clipboard, as what the mouse selects does.
     pub fn select_all(&mut self, cx: &mut Context<Self>) {
         self.selecting = false;
-        self.selection_anchor = None;
         self.engine.update(cx, |engine, cx| engine.select_all(cx));
         if TerminalInteraction::current(cx).copy_on_select {
             self.copy_selection(cx);
@@ -1059,7 +1048,6 @@ impl TerminalView {
     ) -> Result<(), SharedString> {
         self.engine.read(cx).enter_command(command, run, replace)?;
         self.selecting = false;
-        self.selection_anchor = None;
         self.scroll_accumulator.reset();
         self.cursor_visible = true;
         cx.notify();
@@ -1090,7 +1078,6 @@ impl TerminalView {
     ) -> Result<(), SharedString> {
         self.engine.read(cx).upload_dropped(files)?;
         self.selecting = false;
-        self.selection_anchor = None;
         self.scroll_accumulator.reset();
         self.cursor_visible = true;
         cx.notify();
@@ -1100,7 +1087,6 @@ impl TerminalView {
     /// Clear the screen and the scrollback, keeping the prompt line.
     pub fn clear(&mut self, cx: &mut Context<Self>) {
         self.selecting = false;
-        self.selection_anchor = None;
         self.scroll_accumulator.reset();
         self.engine
             .update(cx, |engine, cx| engine.clear_keeping_prompt(cx));
@@ -1458,37 +1444,15 @@ impl TerminalView {
         cx: &mut Context<Self>,
     ) {
         self.selecting = true;
-        self.selection_anchor = Some(SelectionAnchor {
-            point,
-            side,
-            kind: selection_type,
-        });
         self.engine.update(cx, |engine, cx| {
             engine.start_selection(point, side, selection_type, cx)
         });
     }
 
     fn update_selection(&mut self, point: TerminalPoint, side: Side, cx: &mut Context<Self>) {
-        if let Some(anchor) = self.selection_anchor
-            && point != anchor.point
-        {
-            let wanted = if point < anchor.point {
-                Side::Right
-            } else {
-                Side::Left
-            };
-            if wanted != anchor.side {
-                self.engine.update(cx, |engine, cx| {
-                    engine.start_selection(anchor.point, wanted, anchor.kind, cx);
-                    engine.update_selection(point, side, cx);
-                });
-                self.selection_anchor = Some(SelectionAnchor {
-                    side: wanted,
-                    ..anchor
-                });
-                return;
-            }
-        }
+        // Keep the half-cell boundary chosen on mouse down. Expanding the
+        // anchor to a whole cell when the drag changes direction pulls in
+        // adjacent punctuation, such as the slash before a selected path name.
         self.engine
             .update(cx, |engine, cx| engine.update_selection(point, side, cx));
     }
@@ -1546,7 +1510,6 @@ impl TerminalView {
     /// goes to the clipboard; a click that selected nothing leaves it be.
     fn finish_selection(&mut self, cx: &mut Context<Self>) {
         self.selecting = false;
-        self.selection_anchor = None;
         self.stop_edge_scroll();
         if TerminalInteraction::current(cx).copy_on_select {
             self.copy_selection(cx);

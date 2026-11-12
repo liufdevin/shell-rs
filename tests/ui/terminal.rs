@@ -1036,9 +1036,59 @@ async fn copy_on_select_puts_what_the_mouse_selects_on_the_clipboard(cx: &mut Te
 }
 
 #[gpui_kit::test]
-async fn selecting_a_long_command_from_its_first_cell_copies_the_whole_line(
-    cx: &mut TestAppContext,
-) {
+async fn selecting_a_path_name_keeps_adjacent_slashes_out(cx: &mut TestAppContext) {
+    let (handle, workspace, factory) = terminal_printing(
+        cx,
+        "\x1b[2J\x1b[H/vendor/\r\nroot@HelperA133:~# /vendor/\r\n\x1b[1m中文\x1b[0m /vendor/\r\nready",
+        "ready",
+    )
+    .await;
+    let cell = *factory.resizes.lock().unwrap().last().unwrap();
+    let locations: Vec<_> = cx.update(|cx| {
+        local_screen(&workspace, cx)
+            .lines()
+            .enumerate()
+            .filter_map(|(row, line)| {
+                line.find("/vendor/")
+                    .map(|offset| (row, unicode_width::UnicodeWidthStr::width(&line[..offset])))
+            })
+            .collect()
+    });
+    assert_eq!(locations.len(), 3);
+    let bounds = in_frame(cx, handle, |window, _| {
+        window.find(("local-terminal", 1_u64)).bounds()
+    });
+    for (row, start_column) in locations {
+        let at = |column: f32| {
+            point(
+                bounds.left() + px(cell.cell_width() as f32) * (start_column as f32 + column),
+                bounds.top() + px(cell.cell_height() as f32) * (row as f32 + 0.5),
+            )
+        };
+        // The blank half of either slash's cell is next to the word. Starting
+        // there must keep that boundary instead of expanding to the whole cell.
+        for (from, to) in [
+            (at(0.8), at(7.2)),
+            (at(7.2), at(0.8)),
+            (at(1.2), at(6.8)),
+            (at(6.8), at(1.2)),
+        ] {
+            cx.update(|cx| cx.write_to_clipboard(ClipboardItem::new_string("sentinel".into())));
+            in_frame(cx, handle, |window, cx| {
+                window.drag(from, to, cx);
+                window.dispatch_action(Box::new(CopyTerminal), cx);
+            });
+            assert_eq!(
+                cx.update(|cx| cx.read_from_clipboard().and_then(|item| item.text())),
+                Some("vendor".into()),
+                "selection from {from:?} to {to:?}"
+            );
+        }
+    }
+}
+
+#[gpui_kit::test]
+async fn selecting_a_long_command_respects_the_first_cell_boundary(cx: &mut TestAppContext) {
     const LINE: &str =
         "root@HelperA133:~# baijie-remote-service-test start remote -u baijie -p testpass";
     let (handle, workspace, factory) = terminal_printing(
@@ -1075,11 +1125,17 @@ async fn selecting_a_long_command_from_its_first_cell_copies_the_whole_line(
     });
     let y = bounds.top() + cell_height * (line as f32 + 0.5);
     let margin_start = point(margin_x, y);
-    // The first glyph's right half: its cell must still be included.
-    let start = point(bounds.left() + cell_width * 0.75, y);
+    let start_left = point(bounds.left() + cell_width * 0.25, y);
+    // The first cell's right half is the boundary after that character.
+    let start_right = point(bounds.left() + cell_width * 0.75, y);
     let reverse_end = point(bounds.left() + cell_width * 0.25, y);
     let end = point(bounds.left() + cell_width * (LINE.len() as f32 + 0.5), y);
-    for (from, to) in [(margin_start, end), (start, end), (end, reverse_end)] {
+    for (from, to, expected) in [
+        (margin_start, end, LINE),
+        (start_left, end, LINE),
+        (start_right, end, &LINE[1..]),
+        (end, reverse_end, LINE),
+    ] {
         cx.update(|cx| cx.write_to_clipboard(ClipboardItem::new_string("sentinel".into())));
         in_frame(cx, handle, |window, cx| {
             window.drag(from, to, cx);
@@ -1088,7 +1144,7 @@ async fn selecting_a_long_command_from_its_first_cell_copies_the_whole_line(
         let copied = cx
             .update(|cx| cx.read_from_clipboard().and_then(|item| item.text()))
             .expect("a selection");
-        assert!(copied.contains(LINE), "{copied:?}");
+        assert_eq!(copied, expected);
     }
 }
 
