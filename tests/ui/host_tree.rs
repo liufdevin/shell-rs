@@ -4,6 +4,91 @@
 use crate::support::*;
 
 #[gpui_kit::test]
+async fn serial_hosts_automatically_sort_on_open_insert_and_rename(cx: &mut TestAppContext) {
+    use shellrs::host::SerialSettings;
+
+    let mut store = HostStore::empty();
+    let group = store.insert_group_unnotified(GroupDraft::new("com", None));
+    let ids: Vec<_> = ["COM3", "COM5", "COM6", "COM4", "COM10"]
+        .into_iter()
+        .map(|name| {
+            store.insert_unnotified(HostDraft::serial(
+                name,
+                name,
+                SerialSettings::default(),
+                Some(group),
+            ))
+        })
+        .collect();
+    let (handle, workspace) = open_workspace_with_store(cx, store);
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(
+            window.find(("host-row", ids[0].0)).bounds().top()
+                < window.find(("host-row", ids[3].0)).bounds().top()
+        );
+        assert!(
+            window.find(("host-row", ids[3].0)).bounds().top()
+                < window.find(("host-row", ids[1].0)).bounds().top()
+        );
+        window.dispatch_action(Box::new(NewHostInGroup(group)), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    in_frame(cx, handle, |window, cx| {
+        window.within("host-protocol").click(2usize, cx);
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.click("host-name", cx);
+        window.input("COM2", cx);
+        window.click("host-serial-device", cx);
+        window.input("COM2", cx);
+        window.click("commit", cx);
+    });
+    wait_for_dialog_to_close(cx, handle).await;
+    let created = workspace.read_with(cx, |workspace, cx| {
+        workspace
+            .store()
+            .read(cx)
+            .hosts()
+            .iter()
+            .find(|h| h.name == "COM2")
+            .unwrap()
+            .id
+    });
+    in_frame(cx, handle, |window, cx| {
+        let rows = [created, ids[0], ids[3], ids[1], ids[2], ids[4]];
+        for pair in rows.windows(2) {
+            assert!(
+                window.find(("host-row", pair[0].0)).bounds().top()
+                    < window.find(("host-row", pair[1].0)).bounds().top()
+            );
+        }
+        // Closing the create dialog releases focus. Select a row before
+        // dispatching the next workspace action.
+        window.click(("host-row", created.0), cx);
+        window.dispatch_action(Box::new(EditHost(created)), cx);
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.click("host-name", cx);
+        window.press("secondary-a", cx);
+        window.input("COM7", cx);
+        window.click("commit", cx);
+    });
+    wait_for_dialog_to_close(cx, handle).await;
+    in_frame(cx, handle, |window, _| {
+        assert!(
+            window.find(("host-row", ids[2].0)).bounds().top()
+                < window.find(("host-row", created.0)).bounds().top()
+        );
+        assert!(
+            window.find(("host-row", created.0)).bounds().top()
+                < window.find(("host-row", ids[4].0)).bounds().top()
+        );
+    });
+}
+
+#[gpui_kit::test]
 fn search_filters_the_tree(cx: &mut TestAppContext) {
     let (handle, _) = open_workspace(cx);
 
@@ -274,7 +359,7 @@ fn dragging_a_host_into_a_group_updates_the_host_tree(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-fn dragging_peers_changes_their_order_and_groups_can_nest(cx: &mut TestAppContext) {
+fn hosts_keep_name_order_when_dragged_onto_peers_and_groups_can_nest(cx: &mut TestAppContext) {
     let (handle, workspace) = open_workspace(cx);
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
@@ -299,7 +384,7 @@ fn dragging_peers_changes_their_order_and_groups_can_nest(cx: &mut TestAppContex
         let db = store.host(HostId(DB_01)).unwrap();
         let web = store.host(HostId(WEB_01)).unwrap();
         let web02 = store.host(HostId(2)).unwrap();
-        assert!(web.sort_order < db.sort_order && db.sort_order < web02.sort_order);
+        assert!(web.sort_order < web02.sort_order && web02.sort_order < db.sort_order);
     });
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
@@ -310,6 +395,10 @@ fn dragging_peers_changes_their_order_and_groups_can_nest(cx: &mut TestAppContex
         assert_eq!(
             window.find(("group-count", DEVELOPMENT)).label(),
             Some("1 台主机")
+        );
+        assert!(
+            window.find(("host-row", DB_01)).bounds().top()
+                < window.find(("host-row", WEB_01)).bounds().top()
         );
     })
     .unwrap();
@@ -333,7 +422,7 @@ fn dragging_a_host_to_blank_tree_space_moves_it_to_the_root(cx: &mut TestAppCont
 }
 
 #[gpui_kit::test]
-fn dragged_order_survives_reopening_the_database(cx: &mut TestAppContext) {
+fn moved_host_group_and_automatic_name_order_survive_reopening(cx: &mut TestAppContext) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("shellrs.db");
     let database = HostDatabase::open(&path).unwrap();
@@ -350,22 +439,23 @@ fn dragged_order_survives_reopening_the_database(cx: &mut TestAppContext) {
         window.render_frame(cx);
         window
             .within("host-tree")
-            .drag_to(("host-row", DB_01), ("host-row", WEB_01), cx);
+            .drag_to(("host-row", DB_01), ("group-row", DEVELOPMENT), cx);
     })
     .unwrap();
     cx.run_until_parked();
 
-    let reopened = HostDatabase::open(&path).unwrap().load().unwrap();
-    let order = |id| {
-        reopened
-            .hosts
-            .iter()
-            .find(|host| host.id == HostId(id))
-            .unwrap()
-            .sort_order
-    };
-    assert!(order(WEB_01) < order(DB_01));
-    assert!(order(DB_01) < order(2));
+    let reopened = HostStore::load(HostDatabase::open(&path).unwrap()).unwrap();
+    assert_eq!(
+        reopened.host(HostId(DB_01)).unwrap().group,
+        Some(GroupId(DEVELOPMENT))
+    );
+    let (handle, _) = open_workspace_with_store(cx, reopened);
+    in_frame(cx, handle, |window, _| {
+        assert!(
+            window.find(("host-row", DB_01)).bounds().top()
+                < window.find(("host-row", DEV_BOX)).bounds().top()
+        );
+    });
 }
 
 #[gpui_kit::test]

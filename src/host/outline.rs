@@ -25,7 +25,8 @@ fn group_matches_query(group: &HostGroup, query: &str) -> bool {
 }
 
 /// Build the nested tree. Each level lists its subgroups first, then the
-/// hosts that belong to it; hosts with no group sit at the root beside
+/// hosts that belong to it in natural, case-insensitive name order; hosts
+/// with no group sit at the root beside
 /// the top-level groups. A non-empty query keeps the matching hosts and
 /// the matching groups with everything in them, drops the groups left
 /// without either, and expands what remains; otherwise `expanded` decides
@@ -119,14 +120,55 @@ fn items_under(
         .hosts
         .iter()
         .filter(|s| s.group == parent && (everything || matches_query(s, level.query)))
+        .map(|host| (host, host.name.to_lowercase()))
         .collect();
-    child_hosts.sort_by_key(|host| (host.sort_order, host.id));
+    child_hosts.sort_by(|(a, a_name), (b, b_name)| {
+        natural_name_order(a_name, b_name)
+            .then_with(|| (a.sort_order, a.id).cmp(&(b.sort_order, b.id)))
+    });
     items.extend(
         child_hosts
             .into_iter()
-            .map(|host| TreeItem::new(HostNode::Host(host.id).id(), host.name.clone())),
+            .map(|(host, _)| TreeItem::new(HostNode::Host(host.id).id(), host.name.clone())),
     );
     items
+}
+
+/// Compare lowercase names without bounding the size of their numeric parts.
+fn natural_name_order(a: &str, b: &str) -> std::cmp::Ordering {
+    let (mut a, mut b) = (a.as_bytes(), b.as_bytes());
+    while let (Some(left), Some(right)) = (a.first(), b.first()) {
+        let order = if left.is_ascii_digit() && right.is_ascii_digit() {
+            let a_end = a
+                .iter()
+                .position(|c| !c.is_ascii_digit())
+                .unwrap_or(a.len());
+            let b_end = b
+                .iter()
+                .position(|c| !c.is_ascii_digit())
+                .unwrap_or(b.len());
+            let a_start = a[..a_end].iter().position(|c| *c != b'0').unwrap_or(a_end);
+            let b_start = b[..b_end].iter().position(|c| *c != b'0').unwrap_or(b_end);
+            let a_number = &a[a_start..a_end];
+            let b_number = &b[b_start..b_end];
+            let order = a_number
+                .len()
+                .cmp(&b_number.len())
+                .then_with(|| a_number.cmp(b_number));
+            a = &a[a_end..];
+            b = &b[b_end..];
+            order
+        } else {
+            let order = left.cmp(right);
+            a = &a[1..];
+            b = &b[1..];
+            order
+        };
+        if !order.is_eq() {
+            return order;
+        }
+    }
+    a.len().cmp(&b.len())
 }
 
 /// Groups flattened depth first, each labelled by its full path (e.g.
@@ -167,14 +209,116 @@ fn collect_group_options(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::host::{AuthKind, GroupDraft, HostDraft, HostStore};
+    use crate::host::{
+        AuthKind, GroupDraft, HostData, HostDatabase, HostDraft, HostStore, NodeDrop,
+        SerialSettings,
+    };
 
-    fn all_groups(store: &HostStore) -> HashSet<GroupId> {
+    fn all_groups(store: &HostData) -> HashSet<GroupId> {
         store.groups().iter().map(|g| g.id).collect()
     }
 
     fn labels(items: &[TreeItem]) -> Vec<String> {
         items.iter().map(|item| item.label.to_string()).collect()
+    }
+
+    #[test]
+    fn serial_hosts_sort_by_name_on_load_insert_rename_and_move() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("hosts.db");
+        let mut store = HostData::load(HostDatabase::open(&path).unwrap()).unwrap();
+        let group = store.insert_group(GroupDraft::new("com", None));
+        let child = store.insert_group(GroupDraft::new("nested", Some(group)));
+        for name in ["COM3", "COM5", "COM6", "COM4", "COM10"] {
+            store.insert(HostDraft::serial(
+                name,
+                name,
+                SerialSettings::default(),
+                Some(group),
+            ));
+        }
+        let mut store = HostData::load(HostDatabase::open(&path).unwrap()).unwrap();
+        let children = |store: &HostData| {
+            host_tree_items(store.groups(), store.hosts(), "", &all_groups(store))[0]
+                .children
+                .clone()
+        };
+        assert_eq!(
+            labels(&children(&store)),
+            ["nested", "COM3", "COM4", "COM5", "COM6", "COM10"]
+        );
+        let id = store.insert(HostDraft::serial(
+            "COM2",
+            "COM2",
+            SerialSettings::default(),
+            Some(group),
+        ));
+        assert_eq!(
+            labels(&children(&store)),
+            ["nested", "COM2", "COM3", "COM4", "COM5", "COM6", "COM10"]
+        );
+        assert_eq!(
+            first_matching_host(store.groups(), store.hosts(), "COM"),
+            Some(id)
+        );
+        let mut draft = store.host(id).unwrap().draft();
+        draft.name = "COM7".into();
+        store.update(id, draft);
+        assert_eq!(
+            labels(&children(&store)),
+            ["nested", "COM3", "COM4", "COM5", "COM6", "COM7", "COM10"]
+        );
+        store.move_node(HostNode::Host(id), NodeDrop::Into(child));
+        assert_eq!(
+            labels(&children(&store)),
+            ["nested", "COM3", "COM4", "COM5", "COM6", "COM10"]
+        );
+        store.move_node(HostNode::Host(id), NodeDrop::Root);
+        let items = host_tree_items(store.groups(), store.hosts(), "", &all_groups(&store));
+        assert_eq!(labels(&items), ["com", "COM7"]);
+    }
+
+    #[test]
+    fn natural_names_sort_case_insensitively_in_every_level() {
+        let mut store = HostStore::empty();
+        for name in [
+            "机10",
+            "机2",
+            "rack10-port2",
+            "rack2-port10",
+            "rack2-port2",
+            "com10",
+            "COM3",
+            "COM03",
+        ] {
+            store.insert_unnotified(HostDraft::new(
+                name,
+                "example.test",
+                22,
+                "root",
+                AuthKind::NoPassword,
+                None,
+            ));
+        }
+        let items = host_tree_items(store.groups(), store.hosts(), "", &HashSet::new());
+        assert_eq!(
+            labels(&items),
+            [
+                "COM3",
+                "COM03",
+                "com10",
+                "rack2-port2",
+                "rack2-port10",
+                "rack10-port2",
+                "机2",
+                "机10"
+            ]
+        );
+        assert!(
+            natural_name_order("com999999999999999999999", "com1000000000000000000000").is_lt()
+        );
+        assert!(natural_name_order("com00", "com0").is_eq());
+        assert!(natural_name_order("com", "com0").is_lt());
     }
 
     #[test]
@@ -211,7 +355,7 @@ mod tests {
             .iter()
             .flat_map(|g| g.children.iter().map(|c| c.label.to_string()))
             .collect();
-        assert_eq!(names, ["staging-api", "qa-runner"]);
+        assert_eq!(names, ["qa-runner", "staging-api"]);
 
         let by_user = host_tree_items(store.groups(), store.hosts(), "POSTGRES", &HashSet::new());
         assert_eq!(by_user.len(), 1);

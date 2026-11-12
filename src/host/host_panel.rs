@@ -769,9 +769,9 @@ fn valid_drop(
     }
     match source {
         HostNode::Host(_) => match destination {
-            NodeDrop::Before(HostNode::Host(_))
-            | NodeDrop::After(HostNode::Host(_))
-            | NodeDrop::Root => true,
+            // Hosts within a level are always sorted by name. Dragging a host
+            // changes its group, not its position among its siblings.
+            NodeDrop::Root => true,
             NodeDrop::Into(group) => parents.contains_key(&group),
             _ => false,
         },
