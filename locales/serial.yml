@@ -1,4 +1,43 @@
 _version: 2
+serial.open.configuration_mismatch:
+  zh-CN: 串口驱动实际参数与请求不一致，请检查波特率、帧格式和控制线是否受支持
+  en: The serial driver did not apply the requested settings. Check support for the baud rate, frame format and control lines.
+serial.diagnostics.title:
+  zh-CN: 底层收发诊断
+  en: Serial transport diagnostics
+serial.diagnostics.on:
+  zh-CN: 已置位
+  en: Asserted
+serial.diagnostics.off:
+  zh-CN: 已清除
+  en: Deasserted
+serial.diagnostics.handshake:
+  zh-CN: 硬件握手
+  en: Hardware handshake
+serial.diagnostics.unknown:
+  zh-CN: 不可用
+  en: Unavailable
+serial.diagnostics.inputs:
+  zh-CN: "CTS：%{cts} · DSR：%{dsr}"
+  en: "CTS: %{cts} · DSR: %{dsr}"
+serial.diagnostics.count:
+  zh-CN: "RX %{received} 字节 · TX %{transmitted} 字节 · 错误 %{errors}"
+  en: "RX %{received} bytes · TX %{transmitted} bytes · Errors %{errors}"
+serial.diagnostics.first:
+  zh-CN: "首次接收：连接后 %{ms} 毫秒"
+  en: "First receive: %{ms} ms after opening"
+serial.diagnostics.no_receive:
+  zh-CN: 尚未收到串口数据；请核对设备参数及 DTR/RTS。
+  en: No serial bytes received yet. Check the device settings and DTR/RTS.
+serial.signals.dtr:
+  zh-CN: 启用 DTR
+  en: Assert DTR
+serial.signals.rts:
+  zh-CN: 启用 RTS
+  en: Assert RTS
+serial.signals.help:
+  zh-CN: 按设备要求设置控制线。RTS/CTS 模式由驱动管理 RTS；修改后重连生效，部分设备可能随控制线变化复位。
+  en: Set control lines as required by the device. RTS/CTS lets the driver manage RTS. Reconnect to apply changes. Some devices reset when control lines change.
 serial.connected:
   zh-CN: "%{name} connected successfully"
   en: "%{name} connected successfully"

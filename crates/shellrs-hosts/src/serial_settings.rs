@@ -15,6 +15,8 @@ pub struct SerialSettings {
     pub stop_bits: StopBits,
     pub flow: FlowControl,
     pub linux_shell: bool,
+    pub dtr: bool,
+    pub rts: bool,
 }
 
 /// 115200 8N1 without flow control, what most consoles use today.
@@ -27,6 +29,8 @@ impl Default for SerialSettings {
             stop_bits: StopBits::One,
             flow: FlowControl::None,
             linux_shell: false,
+            dtr: true,
+            rts: true,
         }
     }
 }
@@ -186,6 +190,7 @@ mod tests {
             stop_bits: StopBits::Two,
             flow: FlowControl::RtsCts,
             linux_shell: false,
+            ..SerialSettings::default()
         };
         assert_eq!(settings.summary(), "9600 7E2");
     }

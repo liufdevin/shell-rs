@@ -814,6 +814,65 @@ impl Render for SerialToolsPanel {
                 .id("serial-default-connection")
                 .test_support()
                 .gap_4()
+                .when_some(snapshot.diagnostics.as_ref(), |body, diagnostics| {
+                    body.child(
+                        v_flex()
+                            .gap_2()
+                            .id("serial-wire-diagnostics")
+                            .test_support()
+                            .child(div().text_sm().child(t!("serial.diagnostics.title")))
+                            .child(div().text_xs().child(diagnostics.configuration.clone()))
+                            .child(
+                                div()
+                                    .id("serial-wire-count")
+                                    .test_support()
+                                    .role(Role::Status)
+                                    .aria_label(t!(
+                                        "serial.diagnostics.count",
+                                        received = diagnostics.received,
+                                        transmitted = diagnostics.transmitted,
+                                        errors = diagnostics.errors
+                                    ))
+                                    .text_xs()
+                                    .child(t!(
+                                        "serial.diagnostics.count",
+                                        received = diagnostics.received,
+                                        transmitted = diagnostics.transmitted,
+                                        errors = diagnostics.errors
+                                    )),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(match diagnostics.first_received_ms {
+                                        Some(ms) => t!("serial.diagnostics.first", ms = ms),
+                                        None => t!("serial.diagnostics.no_receive"),
+                                    }),
+                            )
+                            .child(div().text_xs().child(t!(
+                                "serial.diagnostics.inputs",
+                                cts = match diagnostics.cts {
+                                    Some(true) => t!("serial.diagnostics.on"),
+                                    Some(false) => t!("serial.diagnostics.off"),
+                                    None => t!("serial.diagnostics.unknown"),
+                                },
+                                dsr = match diagnostics.dsr {
+                                    Some(true) => t!("serial.diagnostics.on"),
+                                    Some(false) => t!("serial.diagnostics.off"),
+                                    None => t!("serial.diagnostics.unknown"),
+                                }
+                            )))
+                            .when_some(diagnostics.last_error.as_ref(), |body, error| {
+                                body.child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(cx.theme().danger)
+                                        .child(error.clone()),
+                                )
+                            }),
+                    )
+                })
                 .child(
                     v_flex()
                         .gap_2()

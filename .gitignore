@@ -7,3 +7,5 @@
 .env.*
 !.env.example
 .claude/settings.local.json
+/baijie-remote-ssh-cmd-demo/
+/baijie-remote-ssh-cmd-source/

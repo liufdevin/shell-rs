@@ -1,6 +1,6 @@
 [package]
 name = "shellrs"
-version = "0.1.19"
+version = "0.1.20"
 edition = "2024"
 publish = false
 description = "SSH client and host manager: terminal, SFTP, port forwarding"
@@ -77,7 +77,7 @@ dunce = "1"
 futures = "0.3"
 portable-pty = "0.9"
 # Serial ports, for serial hosts: portable-pty already builds it.
-serial2 = "0.2"
+serial2 = { version = "0.2", features = ["windows"] }
 rand = "0.9"
 # 关键字高亮: the rules match the terminal's text, not Alacritty's grid
 # search, whose DFA cannot build `\b` and loses `^` after the first line.
@@ -153,6 +153,7 @@ objc2-foundation = { version = "0.3", default-features = false, features = ["std
 [target.'cfg(windows)'.dependencies]
 windows-registry = "0.6"
 windows-sys = { version = "0.61", features = [
+    "Win32_Devices_Communication",
     "Win32_Foundation",
     "Win32_Security",
     "Win32_Security_Authorization",

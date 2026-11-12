@@ -140,6 +140,48 @@ remote.connect_first:
 remote.working:
   zh-CN: 正在处理，请稍候…
   en: Working…
+remote.progress.status:
+  zh-CN: "%{stage} · 已用时 %{seconds} 秒"
+  en: "%{stage} · %{seconds}s elapsed"
+remote.progress.failed:
+  zh-CN: "%{error}（%{progress}）"
+  en: "%{error} (%{progress})"
+remote.progress.preparing:
+  zh-CN: 准备连接网络
+  en: Preparing network connection
+remote.progress.permission:
+  zh-CN: 等待系统允许启动网络组件
+  en: Waiting for permission to start networking
+remote.progress.backend:
+  zh-CN: 校验网络组件
+  en: Verifying network components
+remote.progress.route:
+  zh-CN: 检查本机路由与虚拟网卡
+  en: Checking local routes and virtual adapter
+remote.progress.firewall:
+  zh-CN: 准备本程序防火墙规则
+  en: Preparing firewall rule
+remote.progress.lease:
+  zh-CN: 申请网络授权与临时 IP
+  en: Requesting network lease and local IP
+remote.progress.profile:
+  zh-CN: 校验网络配置
+  en: Validating network profile
+remote.progress.core:
+  zh-CN: 启动组网核心
+  en: Starting network core
+remote.progress.interface:
+  zh-CN: 等待虚拟网卡就绪
+  en: Waiting for the virtual adapter
+remote.progress.connected:
+  zh-CN: 虚拟网卡已就绪
+  en: Virtual adapter is ready
+remote.progress.renewing:
+  zh-CN: 正在续租网络
+  en: Renewing network lease
+remote.progress.stopping:
+  zh-CN: 停止并清理网络组件
+  en: Stopping and cleaning up networking
 remote.ready:
   zh-CN: 已就绪
   en: Ready
@@ -176,6 +218,18 @@ remote.error.stop:
 remote.error.expired:
   zh-CN: 网络租约到期或配置已变化，已停止网络。请重新登录或连接。
   en: The lease expired or configuration changed. Networking stopped. Sign in or connect again.
+remote.error.authorization:
+  zh-CN: 申请网络授权失败。请检查账号权限，以及服务器返回的状态码和错误信息。
+  en: The network lease was not granted. Check the account permissions and the server’s status and error response.
+remote.error.renewal:
+  zh-CN: 网络续租被服务器拒绝，已停止本机组网。请重新登录或连接。
+  en: The server rejected the lease renewal, so networking stopped. Sign in or connect again.
+remote.error.core:
+  zh-CN: 组网核心未能启动或提前退出。请查看网络状态日志，并确认 EasyTier 组件完整。
+  en: The network core did not start or exited early. Check the network status log and the EasyTier components.
+remote.error.interface:
+  zh-CN: 虚拟网卡未在限定时间内就绪。请查看网络状态日志中的路由、网卡和启动阶段。
+  en: The virtual adapter did not become ready in time. Check the network status log for routing, adapter and startup details.
 remote.error.profile:
   zh-CN: 服务器返回的网络配置未通过安全校验，未启动组网。请联系管理员。
   en: The server’s network profile failed validation. Networking was not started. Contact the administrator.

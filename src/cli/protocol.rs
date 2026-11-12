@@ -476,6 +476,10 @@ pub enum FlowControlChoice {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SerialDetails {
     #[serde(default)]
+    pub dtr: bool,
+    #[serde(default)]
+    pub rts: bool,
+    #[serde(default)]
     pub linux_shell: bool,
     pub device: String,
     pub baud: u32,
@@ -491,6 +495,10 @@ pub struct SerialDetails {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SerialFields {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dtr: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rts: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub linux_shell: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

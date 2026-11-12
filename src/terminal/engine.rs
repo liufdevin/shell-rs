@@ -1695,6 +1695,14 @@ impl TerminalRuntime {
                         TerminalTransportEvent::Started => {
                             parser.proxy.send(TerminalUiEventKind::Started);
                         }
+                        TerminalTransportEvent::SerialDiagnostics(snapshot) => {
+                            parser_serial_tool
+                                .lock()
+                                .unwrap()
+                                .get_or_insert_with(Default::default)
+                                .diagnostics = Some(snapshot);
+                            parser.proxy.wakeup();
+                        }
                         TerminalTransportEvent::Output(bytes) => {
                             io.record(&bytes);
                             let hex_mode = io.displays_hex();

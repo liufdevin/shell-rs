@@ -16,6 +16,7 @@ use gpui_kit::{
         list::ListItem,
         menu::{ContextMenuExt as _, PopupMenu, PopupMenuItem},
         scroll::ScrollableElement as _,
+        spinner::Spinner,
         v_flex,
     },
     *,
@@ -424,17 +425,33 @@ impl Render for RemotePanel {
                         }
                     }),
             );
-            if let Some((message, true)) = status {
+            if let Some(status) = status.filter(|status| status.failed || status.progress.is_some())
+            {
+                let progress = status.progress.is_some();
                 rows = rows.child(
                     div()
                         .id(SharedString::from(format!("remote-status-{}", server.id)))
                         .test_support()
                         .role(Role::Status)
-                        .aria_label(message.clone())
+                        .aria_label(status.message.clone())
                         .px_3()
                         .text_sm()
-                        .text_color(cx.theme().danger)
-                        .child(message),
+                        .text_color(if status.failed {
+                            cx.theme().danger
+                        } else {
+                            cx.theme().muted_foreground
+                        })
+                        .child(
+                            h_flex()
+                                .gap_2()
+                                .items_center()
+                                .when(progress, |row| {
+                                    row.child(
+                                        Spinner::new().xsmall().color(cx.theme().muted_foreground),
+                                    )
+                                })
+                                .child(status.message),
+                        ),
                 );
             }
         }
@@ -546,6 +563,11 @@ pub(super) fn describe(code: &str) -> SharedString {
         "network_launch_cancelled" | "network_cancelled" => "remote.error.cancelled",
         "network_stop_timeout" => "remote.error.stop",
         "lease_expired" | "profile_changed_reconnect" => "remote.error.expired",
+        "authorization_failed" => "remote.error.authorization",
+        "renewal_failed" => "remote.error.renewal",
+        "core_start_failed" | "core_exited" => "remote.error.core",
+        "interface_timeout" | "network_start_timeout" => "remote.error.interface",
+        "rpc_in_use" | "adapter_in_use" => "remote.error.in_use",
         "invalid_profile" | "profile_hash_mismatch" | "invalid_lease" => "remote.error.profile",
         "unsupported_platform" => "remote.error.platform",
         "invalid_server" | "https_required" => "remote.invalid_server",

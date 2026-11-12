@@ -90,6 +90,9 @@ Drag a group or host above or below another item of the same kind to reorder ite
 
 - **Serial port**: type it, or pick from the menu at its right end, which lists the serial ports found on this computer; its last item, “Look again”, looks again. macOS lists only `/dev/cu.*`, Linux has paths like `/dev/ttyUSB0`, and Windows has names like `COM3`. The name is the serial port if left empty.
 - **Baud rate**: 115200 by default; the menu has the common rates, and you can type any other.
+- **DTR / RTS:** saved per host and applied when reconnecting. Both default to asserted, matching Xshell and common serial tools. RTS/CTS lets the driver control RTS and disables the manual RTS option. Choose the states required by the device; changing a control line may reset some boards.
+- **Transport diagnostics:** “Serial tools → Connection” shows the driver’s actual configuration, RX/TX byte counts, first receive time, CTS/DSR and the latest error. Counts work without capture enabled. RX is counted before decoding or shell-query filtering; TX counts bytes accepted by the driver, including tool commands and transfers. Reconnecting resets the counts; disconnecting keeps the last snapshot. Logs contain configuration, counts and errors, never communication payloads.
+- **Windows compatibility:** RTS/CTS uses hardware handshaking. Configuration is read back and verified; unsupported settings fail explicitly. Inherited abort-on-error and DSR gating are disabled. Line errors are reported and cleared, with limited retries for recoverable read errors; unplugging still disconnects normally.
 - **Data bits, Parity, Stop bits, Flow control**: data bits 5–8, parity None / Odd / Even, stop bits 1 / 2, flow control None / RTS/CTS / XON/XOFF; 8N1 without flow control by default. Mark and space parity, 1.5 stop bits and DSR/DTR flow control aren’t supported.
 - **Test connection**: opens the serial port with the settings you entered and closes it again, saying whether it opened, or why not (not found, in use, no permission). It only tells you this computer can open the port, not whether a device on the other end answers.
 - **What it doesn’t have**: a serial host has no address, port, authentication or connection. It can’t be a jump host, and no port forward can go through it.
@@ -101,7 +104,7 @@ Drag a group or host above or below another item of the same kind to reorder ite
 - **One at a time**: a serial port can be open in only one program at a time, and on macOS and Linux ShellRS holds it to itself. Connecting to it again while it’s open says it’s in use. On Linux, your user usually needs to be in the `dialout` group to open serial ports.
 - **Menus**: a serial host’s context menu has no “Open SFTP” and no “Copy IP”. Hovering over it shows “device · 115200 8N1”.
 
-**Not yet available: opening ShellRS from a bastion host’s `telnet://` link, sending files with XMODEM / YMODEM (ZMODEM works: see “ZMODEM transfers” under “Terminal”), controlling the DTR / RTS lines, and on macOS, virtual serial ports made by programs such as socat (a pseudo-terminal takes no baud rate).**
+**Not yet available: opening ShellRS from a bastion host’s `telnet://` link, sending files with XMODEM / YMODEM (ZMODEM works: see “ZMODEM transfers” under “Terminal”), and on macOS, virtual serial ports made by programs such as socat (a pseudo-terminal takes no baud rate).**
 
 ## Quick connect
 

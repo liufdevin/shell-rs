@@ -307,6 +307,7 @@ mod tests {
                 }
                 Ok(
                     TerminalTransportEvent::Started
+                    | TerminalTransportEvent::SerialDiagnostics(_)
                     | TerminalTransportEvent::Failed(_)
                     | TerminalTransportEvent::Prompt(_)
                     | TerminalTransportEvent::HostOsDetected(_)

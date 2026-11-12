@@ -177,6 +177,8 @@ pub fn host_details(host: &Host, store: &HostStore) -> HostDetails {
 
 fn serial_details(device: &str, line: SerialSettings) -> SerialDetails {
     SerialDetails {
+        dtr: line.dtr,
+        rts: line.rts,
         linux_shell: line.linux_shell,
         device: device.to_string(),
         baud: line.baud,
@@ -625,6 +627,8 @@ fn plan_serial_host(
         base.unwrap_or_else(|| HostDraft::serial("", "", SerialSettings::default(), None));
     let mut line = draft.protocol.serial().unwrap_or_default();
     let SerialFields {
+        dtr,
+        rts,
         linux_shell,
         device,
         baud,
@@ -633,6 +637,12 @@ fn plan_serial_host(
         stop_bits,
         flow_control,
     } = fields.serial.unwrap_or_default();
+    if let Some(enabled) = dtr {
+        line.dtr = enabled;
+    }
+    if let Some(enabled) = rts {
+        line.rts = enabled;
+    }
     if let Some(enabled) = linux_shell {
         line.linux_shell = enabled;
     }
@@ -1337,7 +1347,7 @@ mod tests {
         let plan = plan_host(
             fields(serde_json::json!({
                 "name": "console",
-                "serial": { "device": "/dev/ttyUSB0", "baud": 9600, "flow_control": "rts_cts" }
+                "serial": { "device": "/dev/ttyUSB0", "baud": 9600, "flow_control": "rts_cts", "dtr": true, "rts": true }
             })),
             None,
             &store,
@@ -1346,6 +1356,8 @@ mod tests {
         let line = SerialSettings {
             baud: 9600,
             flow: FlowControl::RtsCts,
+            dtr: true,
+            rts: true,
             ..SerialSettings::default()
         };
         assert_eq!(plan.draft.protocol, Protocol::Serial(line));

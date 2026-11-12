@@ -779,6 +779,7 @@ mod tests {
                 TerminalTransportEvent::Failed(error) => panic!("SSH failed: {error}"),
                 TerminalTransportEvent::Exited { .. } => panic!("unexpected early exit"),
                 TerminalTransportEvent::HostOsDetected(_)
+                | TerminalTransportEvent::SerialDiagnostics(_)
                 | TerminalTransportEvent::ConnectSsh(_)
                 | TerminalTransportEvent::Latency(_)
                 | TerminalTransportEvent::WorkingDirectory(_)
@@ -897,6 +898,7 @@ mod tests {
                     panic!("unexpected command terminal event")
                 }
                 TerminalTransportEvent::HostOsDetected(_)
+                | TerminalTransportEvent::SerialDiagnostics(_)
                 | TerminalTransportEvent::Latency(_)
                 | TerminalTransportEvent::WorkingDirectory(_)
                 | TerminalTransportEvent::Replay(_) => {}

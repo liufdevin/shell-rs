@@ -143,6 +143,7 @@ impl std::fmt::Debug for TerminalTransportCommand {
 pub enum TerminalTransportEvent {
     ConnectSsh(super::SshCommand),
     Started,
+    SerialDiagnostics(crate::serial::SerialDiagnostics),
     Output(Vec<u8>),
     Prompt(ConnectionPrompt),
     /// What the transport found running on the host. Sent once per successful

@@ -303,6 +303,9 @@ async fn a_serial_host_is_made_from_its_device_and_line(cx: &mut TestAppContext)
         );
         assert_eq!(window.find("host-serial-baud").value(), Some("115200"));
         assert_eq!(window.find("host-serial-flow").value(), Some("无"));
+        assert_eq!(window.find("host-serial-dtr").checked(), Some(true));
+        assert!(enabled(&window.find("host-serial-rts")));
+        window.click("host-serial-dtr", cx);
         window.click("host-name", cx);
         window.click("commit", cx);
     });
@@ -324,6 +327,7 @@ async fn a_serial_host_is_made_from_its_device_and_line(cx: &mut TestAppContext)
     }
     in_frame(cx, handle, |window, _| {
         assert_eq!(window.find("host-serial-flow").value(), Some("RTS/CTS"));
+        assert!(!enabled(&window.find("host-serial-rts")));
     });
     // 测试连接 opens the port with what the form shows, and says how it went
     // beside the form's error from before.
@@ -339,6 +343,7 @@ async fn a_serial_host_is_made_from_its_device_and_line(cx: &mut TestAppContext)
     let line = SerialSettings {
         baud: 9600,
         flow: FlowControl::RtsCts,
+        dtr: false,
         ..SerialSettings::default()
     };
     assert_eq!(

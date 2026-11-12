@@ -22,6 +22,10 @@ pub enum DeviceKind {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct SerialParameters {
+    #[serde(default)]
+    pub dtr: bool,
+    #[serde(default)]
+    pub rts: bool,
     pub baud: u32,
     pub data_bits: u8,
     pub parity: String,
@@ -32,12 +36,20 @@ pub struct SerialParameters {
 impl SerialParameters {
     pub fn new(baud: u32, data_bits: u8, parity: String, stop_bits: u8, flow: String) -> Self {
         Self {
+            dtr: false,
+            rts: false,
             baud,
             data_bits,
             parity,
             stop_bits,
             flow,
         }
+    }
+
+    pub fn with_signals(mut self, dtr: bool, rts: bool) -> Self {
+        self.dtr = dtr;
+        self.rts = rts;
+        self
     }
 }
 

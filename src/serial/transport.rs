@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 use std::io::{self, ErrorKind};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, mpsc};
+use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -10,7 +10,7 @@ use async_channel::Sender;
 use gpui_kit::SharedString;
 use serial2::SerialPort;
 
-use crate::host::{DataBits, FlowControl, Parity, SerialLine, StopBits};
+use crate::host::{DataBits, FlowControl, Parity, SerialLine, SerialSettings, StopBits};
 use crate::i18n::t;
 use crate::terminal::{
     SerialTerminalTransportProvider, SharedTerminalTransportFactory, TerminalSize,
@@ -100,16 +100,166 @@ pub fn check(line: &SerialLine) -> Result<(), String> {
 /// pseudo-terminal posing as one (socat's) does not open there.
 pub(crate) fn open(line: &SerialLine) -> io::Result<SerialPort> {
     let settings = line.settings;
+    #[cfg(windows)]
+    let mut port = {
+        use std::os::windows::fs::OpenOptionsExt as _;
+        use std::os::windows::io::OwnedHandle;
+        let mut path = std::ffi::OsString::from("\\\\.\\");
+        path.push(&line.device);
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(false)
+            .custom_flags(0x4000_0000)
+            .open(path)?;
+        let handle: OwnedHandle = file.into();
+        SerialPort::from(handle)
+    };
+    #[cfg(windows)]
+    {
+        let actual = port.get_configuration()?;
+        let mut desired = actual.clone();
+        apply_settings(&mut desired, settings)?;
+        if !super::windows::same(&actual, &desired) {
+            port.set_configuration(&desired)?;
+        }
+    }
+    #[cfg(not(windows))]
     let port = SerialPort::open(&line.device, move |mut port: serial2::Settings| {
-        port.set_raw();
-        port.set_baud_rate(settings.baud)?;
-        port.set_char_size(char_size(settings.data_bits));
-        port.set_parity(parity(settings.parity));
-        port.set_stop_bits(stop_bits(settings.stop_bits));
-        port.set_flow_control(flow_control(settings.flow));
-        Ok(port)
+        apply_settings(&mut port, settings)
     })?;
+    #[cfg(not(windows))]
+    {
+        port.set_dtr(settings.dtr)?;
+        if settings.flow != FlowControl::RtsCts {
+            port.set_rts(settings.rts)?;
+        }
+    }
+    let actual = port.get_configuration()?;
+    let frame_matches = actual.get_baud_rate()? == settings.baud
+        && actual.get_char_size()? == char_size(settings.data_bits)
+        && actual.get_parity()? == parity(settings.parity)
+        && actual.get_stop_bits()? == stop_bits(settings.stop_bits);
+    #[cfg(windows)]
+    let signals_match = super::windows::verify(&actual, settings);
+    #[cfg(not(windows))]
+    let signals_match = actual.get_flow_control()? == flow_control(settings.flow);
+    if !frame_matches || !signals_match {
+        return Err(io::Error::other(
+            t!("serial.open.configuration_mismatch").to_string(),
+        ));
+    }
     hold(port)
+}
+
+fn apply_settings(port: &mut serial2::Settings, settings: SerialSettings) -> io::Result<()> {
+    port.set_raw();
+    port.set_baud_rate(settings.baud)?;
+    port.set_char_size(char_size(settings.data_bits));
+    port.set_parity(parity(settings.parity));
+    port.set_stop_bits(stop_bits(settings.stop_bits));
+    port.set_flow_control(flow_control(settings.flow));
+    #[cfg(windows)]
+    super::windows::configure(port, settings);
+    Ok(())
+}
+
+struct ObservedPort {
+    port: Arc<SerialPort>,
+    diagnostics: Mutex<super::diagnostics::Diagnostics>,
+}
+
+impl std::ops::Deref for ObservedPort {
+    type Target = SerialPort;
+    fn deref(&self) -> &SerialPort {
+        &self.port
+    }
+}
+
+impl ObservedPort {
+    fn new(port: Arc<SerialPort>) -> io::Result<Self> {
+        let actual = port.get_configuration()?;
+        let mark = match actual.get_parity()? {
+            serial2::Parity::None => "N",
+            serial2::Parity::Odd => "O",
+            serial2::Parity::Even => "E",
+        };
+        let mut description = format!(
+            "{} {}{}{}",
+            actual.get_baud_rate()?,
+            actual.get_char_size()?,
+            mark,
+            actual.get_stop_bits()?
+        );
+        #[cfg(windows)]
+        {
+            let raw = actual.as_raw_dbc();
+            let signal = |mode| match mode {
+                0 => t!("serial.diagnostics.off"),
+                1 => t!("serial.diagnostics.on"),
+                _ => t!("serial.diagnostics.handshake"),
+            };
+            let flow = if raw._bitfield & (1 << 2) != 0 {
+                "RTS/CTS"
+            } else if raw._bitfield & (3 << 8) != 0 {
+                "XON/XOFF"
+            } else {
+                "None"
+            };
+            description.push_str(&format!(
+                " · {flow} · DTR={} · RTS={}",
+                signal((raw._bitfield >> 4) & 3),
+                signal((raw._bitfield >> 12) & 3)
+            ));
+        }
+        #[cfg(not(windows))]
+        description.push_str(&format!(" · {}", actual.get_flow_control()?));
+        Ok(Self {
+            port,
+            diagnostics: Mutex::new(super::diagnostics::Diagnostics::new(description)),
+        })
+    }
+
+    fn write_all(&self, bytes: &[u8]) -> io::Result<()> {
+        let mut remaining = bytes;
+        while !remaining.is_empty() {
+            match self.port.write(remaining) {
+                Ok(0) => {
+                    let error = io::Error::from(ErrorKind::WriteZero);
+                    self.diagnostics.lock().unwrap().error(&error);
+                    return Err(error);
+                }
+                Ok(count) => {
+                    self.diagnostics.lock().unwrap().transmitted(count);
+                    remaining = &remaining[count..];
+                }
+                Err(error) if error.kind() == ErrorKind::Interrupted => {}
+                Err(error) => {
+                    self.diagnostics.lock().unwrap().error(&error);
+                    return Err(error);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn snapshot(&self) -> super::SerialDiagnostics {
+        self.diagnostics.lock().unwrap().snapshot.clone()
+    }
+
+    #[cfg(windows)]
+    fn refresh_status(&self) -> io::Result<u32> {
+        let (errors, cts, dsr) = super::windows::status(&self.port)?;
+        let mut state = self.diagnostics.lock().unwrap();
+        state.snapshot.cts = cts;
+        state.snapshot.dsr = dsr;
+        if errors != 0 {
+            tracing::warn!(flags = errors, "Serial line error flags cleared");
+            state.snapshot.errors = state.snapshot.errors.saturating_add(1);
+            state.snapshot.last_error = Some(format!("Windows CE=0x{errors:04X}"));
+        }
+        Ok(errors)
+    }
 }
 
 /// Hold an open port for this terminal alone, and set how long its reads
@@ -176,6 +326,7 @@ fn serve_shell(
     mut shell: crate::terminal::ShellQuery,
     mut baud: u32,
 ) -> Result<()> {
+    let port = Arc::new(ObservedPort::new(port)?);
     // Set by the reader when the port is gone, and by the command loop when
     // the terminal shuts down.
     let stop = Arc::new(AtomicBool::new(false));
@@ -191,11 +342,33 @@ fn serve_shell(
     };
 
     send_event(events, TerminalTransportEvent::Started);
+    tracing::info!(device, configuration=%port.snapshot().configuration, "Serial port opened and settings verified");
+    send_event(
+        events,
+        TerminalTransportEvent::SerialDiagnostics(port.snapshot()),
+    );
+    let mut last_diagnostics = port.snapshot();
+    let mut next_diagnostics = Instant::now();
     let mut lines = VecDeque::new();
     let mut next_line = Instant::now();
     let mut pending_input = Vec::new();
     let result = (|| -> Result<()> {
         while !stop.load(Ordering::Acquire) {
+            if Instant::now() >= next_diagnostics {
+                #[cfg(windows)]
+                {
+                    let _ = port.refresh_status();
+                }
+                let snapshot = port.snapshot();
+                if snapshot != last_diagnostics {
+                    send_event(
+                        events,
+                        TerminalTransportEvent::SerialDiagnostics(snapshot.clone()),
+                    );
+                    last_diagnostics = snapshot;
+                }
+                next_diagnostics = Instant::now() + Duration::from_millis(250);
+            }
             while let Ok(event) = received.try_recv() {
                 match event {
                     SerialRead::Output(bytes) => {
@@ -263,6 +436,10 @@ fn serve_shell(
                             ));
                         }
                         baud = requested;
+                        port.diagnostics.lock().unwrap().snapshot.configuration =
+                            ObservedPort::new(port.port.clone())?
+                                .snapshot()
+                                .configuration;
                         Ok(())
                     })();
                     let _ = reply.send(result.map_err(|error| error.to_string()));
@@ -328,17 +505,28 @@ fn serve_shell(
     stop.store(true, Ordering::Release);
     drop(received);
     let _ = reader.join();
+    let snapshot = port.snapshot();
+    tracing::info!(device, received=snapshot.received, transmitted=snapshot.transmitted, errors=snapshot.errors,
+        first_received_ms=?snapshot.first_received_ms, "Serial connection statistics");
+    send_event(events, TerminalTransportEvent::SerialDiagnostics(snapshot));
     result
 }
 
 /// Hand what comes in to the terminal until `stop`, or until the port goes
 /// away, which ends the terminal with why.
-fn read(port: &SerialPort, device: &str, stop: &AtomicBool, raw: mpsc::SyncSender<SerialRead>) {
+fn read(port: &ObservedPort, device: &str, stop: &AtomicBool, raw: mpsc::SyncSender<SerialRead>) {
     let mut buffer = [0_u8; 8192];
+    #[cfg(windows)]
+    let mut recoveries = 0;
     while !stop.load(Ordering::Acquire) {
         let lost = match port.read(&mut buffer) {
             Ok(0) => t!("serial.lost", device = device),
             Ok(count) => {
+                #[cfg(windows)]
+                {
+                    recoveries = 0;
+                }
+                port.diagnostics.lock().unwrap().received(count);
                 if raw
                     .send(SerialRead::Output(buffer[..count].to_vec()))
                     .is_err()
@@ -353,9 +541,22 @@ fn read(port: &SerialPort, device: &str, stop: &AtomicBool, raw: mpsc::SyncSende
                     ErrorKind::TimedOut | ErrorKind::WouldBlock | ErrorKind::Interrupted
                 ) =>
             {
+                #[cfg(windows)]
+                {
+                    recoveries = 0;
+                }
                 continue;
             }
-            Err(error) => t!("serial.lost_error", device = device, error = error),
+            Err(error) => {
+                port.diagnostics.lock().unwrap().error(&error);
+                #[cfg(windows)]
+                if recoveries < 3 && port.refresh_status().is_ok_and(|flags| flags & 0x1f != 0) {
+                    recoveries += 1;
+                    thread::sleep(Duration::from_millis(5));
+                    continue;
+                }
+                t!("serial.lost_error", device = device, error = error)
+            }
         };
         // Said once, unless the terminal was shutting down anyway.
         if !stop.load(Ordering::Acquire) {

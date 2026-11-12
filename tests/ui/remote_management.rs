@@ -3,7 +3,8 @@ use shellrs::{
     app::RemoteAction,
     cli::Secret,
     remote::{
-        Backend, Catalog, Command, Connected, Device, Network, Operation, Reply, Server, Target,
+        Backend, Catalog, Command, Connected, Device, Network, NetworkProgress, NetworkStage,
+        Operation, Reply, Server, Target,
     },
     secrets::{InMemorySecretStore, SecretRef, SecretStore},
 };
@@ -112,6 +113,8 @@ struct FakeRemote {
     fail_logout: AtomicBool,
     moved: AtomicBool,
     offline: AtomicBool,
+    slow_connect: AtomicBool,
+    connect_progress: Mutex<Option<NetworkProgress>>,
 }
 
 impl Backend for FakeRemote {
@@ -165,6 +168,16 @@ impl Backend for FakeRemote {
                 if self.fail.load(Ordering::SeqCst) {
                     reply.error = Some("network_launch_cancelled".into());
                 } else {
+                    if self.slow_connect.load(Ordering::SeqCst) {
+                        *self.connect_progress.lock().unwrap() =
+                            Some(NetworkProgress::new(NetworkStage::StartingCore));
+                        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+                        while self.slow_connect.load(Ordering::SeqCst)
+                            && std::time::Instant::now() < deadline
+                        {
+                            std::thread::yield_now();
+                        }
+                    }
                     self.calls.lock().unwrap().push(format!("start:{network}"));
                     *active = Some(Connected::new(
                         server,
@@ -177,6 +190,7 @@ impl Backend for FakeRemote {
                             "10.215.0.11".parse().unwrap(),
                         )],
                     ));
+                    *self.connect_progress.lock().unwrap() = None;
                 }
             }
             Operation::Logout(id) => {
@@ -253,6 +267,10 @@ impl Backend for FakeRemote {
         }
         reply.connection = self.active.lock().unwrap().clone();
         reply
+    }
+
+    fn progress(&self) -> Option<NetworkProgress> {
+        self.connect_progress.lock().unwrap().clone()
     }
 }
 
@@ -577,6 +595,95 @@ async fn remote_sidebar_is_server_only_and_dialogs_search_page_filter_and_gate_s
                 .unwrap()
                 .contains("test password")
         )
+    });
+}
+
+#[gpui_kit::test]
+async fn connecting_network_shows_the_current_stage_and_elapsed_time(cx: &mut TestAppContext) {
+    let (handle, workspace) = open_workspace_with_store(cx, HostStore::empty());
+    cx.simulate_window_resize(handle.into(), size(px(1000.), px(750.)));
+    let backend = Arc::new(FakeRemote::default());
+    let server = Server::new(
+        "Test".into(),
+        "https://example.test".into(),
+        "operator".into(),
+    );
+    cx.update(|cx| {
+        workspace
+            .read(cx)
+            .remote_management()
+            .clone()
+            .update(cx, |service, cx| service.set_backend(backend.clone(), cx))
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.click("show-remote-management", cx)
+    });
+    dispatch(
+        cx,
+        handle,
+        Command::SaveLogin(server.clone(), Secret::new("test password"), false),
+    );
+    cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
+        workspace
+            .read(cx)
+            .remote_management()
+            .read(cx)
+            .is_logged_in(&server.id)
+    })
+    .await;
+    dispatch(cx, handle, Command::Networks(server.id.clone()));
+    backend.slow_connect.store(true, Ordering::SeqCst);
+    in_frame(cx, handle, |window, cx| {
+        window.click("remote-connect-one", cx)
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window.try_find("remote-status").is_some_and(|status| {
+            status
+                .label()
+                .is_some_and(|label| label.contains("启动组网核心") && label.contains("已用时"))
+        })
+    })
+    .await;
+    in_frame(cx, handle, |window, _| {
+        let status = window.find("remote-status");
+        assert!(status.label().is_some_and(|label| label.contains("已用时")));
+        assert!(!enabled(&window.find("remote-connect-one")));
+    });
+    *backend.connect_progress.lock().unwrap() =
+        Some(NetworkProgress::new(NetworkStage::WaitingForInterface));
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window.try_find("remote-status").is_some_and(|status| {
+            status
+                .label()
+                .is_some_and(|label| label.contains("等待虚拟网卡就绪"))
+        })
+    })
+    .await;
+    in_frame(cx, handle, |window, cx| window.press("escape", cx));
+    in_frame(cx, handle, |window, _| {
+        assert!(
+            window
+                .find(format!("remote-status-{}", server.id))
+                .label()
+                .is_some_and(|label| label.contains("等待虚拟网卡就绪"))
+        );
+    });
+    backend.slow_connect.store(false, Ordering::SeqCst);
+    cx.wait_for(handle.into(), Duration::from_secs(4), |_, cx| {
+        workspace
+            .read(cx)
+            .remote_management()
+            .read(cx)
+            .connection()
+            .is_some()
+    })
+    .await;
+    in_frame(cx, handle, |window, _| {
+        assert!(
+            window
+                .try_find(format!("remote-status-{}", server.id))
+                .is_none()
+        );
     });
 }
 

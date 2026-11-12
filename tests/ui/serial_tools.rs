@@ -37,6 +37,22 @@ struct SerialToolFactory {
 }
 
 impl SerialToolFactory {
+    fn diagnostics(&self, received: u64, transmitted: u64) {
+        let mut snapshot = shellrs::serial::SerialDiagnostics::default();
+        snapshot.configuration = "115200 8N1 · DTR=Asserted".into();
+        snapshot.received = received;
+        snapshot.transmitted = transmitted;
+        snapshot.first_received_ms = Some(25);
+        snapshot.errors = 1;
+        snapshot.last_error = Some("Windows CE=0x0004".into());
+        self.events
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .send_blocking(TerminalTransportEvent::SerialDiagnostics(snapshot))
+            .unwrap();
+    }
     fn output(&self, bytes: &[u8]) {
         self.events
             .lock()
@@ -76,6 +92,9 @@ impl TerminalTransport for SerialToolTransport {
         self.starts.fetch_add(1, Ordering::SeqCst);
         *self.events.lock().unwrap() = Some(events.clone());
         events.send_blocking(TerminalTransportEvent::Started)?;
+        let mut diagnostics = shellrs::serial::SerialDiagnostics::default();
+        diagnostics.configuration = "115200 8N1".into();
+        events.send_blocking(TerminalTransportEvent::SerialDiagnostics(diagnostics))?;
         while let Ok(command) = commands.recv() {
             match command {
                 TerminalTransportCommand::WriteData(bytes)
@@ -97,6 +116,61 @@ impl TerminalTransport for SerialToolTransport {
         }
         Ok(())
     }
+}
+
+#[gpui_kit::test]
+async fn serial_diagnostics_work_before_capture_and_reset_when_reconnecting(
+    cx: &mut TestAppContext,
+) {
+    let mut store = HostStore::empty();
+    let host = store.insert_unnotified(HostDraft::serial(
+        "console",
+        "TEST-NOT-A-PORT",
+        SerialSettings::default(),
+        None,
+    ));
+    let factory = Arc::new(SerialToolFactory::default());
+    let (handle, _) = open_workspace_with_terminals(
+        cx,
+        store,
+        Arc::new(FakeTerminalFactory::default()),
+        Arc::new(FixedSerialTerminalTransportProvider::new(factory.clone())),
+    );
+    cx.simulate_window_resize(handle.into(), size(px(1000.), px(900.)));
+    connect(cx, handle, host, "console").await;
+    in_frame(cx, handle, |window, cx| window.click("tool-serial", cx));
+    page(cx, handle, SerialToolPage::Connection);
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window
+            .try_find("serial-wire-count")
+            .is_some_and(|item| item.label() == Some("RX 0 字节 · TX 0 字节 · 错误 0"))
+    })
+    .await;
+    factory.diagnostics(1234, 56);
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window
+            .try_find("serial-wire-count")
+            .is_some_and(|item| item.label() == Some("RX 1234 字节 · TX 56 字节 · 错误 1"))
+    })
+    .await;
+    page(cx, handle, SerialToolPage::Transfer);
+    in_frame(cx, handle, |window, _| {
+        assert_eq!(window.find("serial-tool-capture").checked(), Some(false));
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.dispatch_action(Box::new(ReconnectTerminal(RemoteTerminalId(1))), cx);
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(3), |_, _| {
+        factory.starts.load(Ordering::SeqCst) == 2
+    })
+    .await;
+    page(cx, handle, SerialToolPage::Connection);
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window
+            .try_find("serial-wire-count")
+            .is_some_and(|item| item.label() == Some("RX 0 字节 · TX 0 字节 · 错误 0"))
+    })
+    .await;
 }
 
 #[gpui_kit::test]
@@ -186,7 +260,21 @@ async fn serial_tools_share_the_connection_capture_reply_send_and_reset_on_recon
     })
     .await;
     assert_eq!(factory.writes.lock().unwrap()[1], vec![0, 0xff, 13, 10]);
+    in_frame(cx, handle, |window, cx| {
+        window.click("serial-tool-capture", cx)
+    });
     page(cx, handle, SerialToolPage::Connection);
+    factory.diagnostics(1234, 56);
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window.try_find("serial-wire-count").is_some_and(|item| {
+            item.label()
+                .is_some_and(|label| label.contains("1234") && label.contains("56"))
+        })
+    })
+    .await;
+    in_frame(cx, handle, |window, _| {
+        assert!(window.find("serial-wire-diagnostics").visible());
+    });
     in_frame(cx, handle, |window, cx| {
         window.click("serial-tool-baud", cx);
         window.input("230400", cx);

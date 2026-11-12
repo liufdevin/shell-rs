@@ -58,6 +58,7 @@ struct ReplyRule {
 
 #[derive(Default)]
 pub(crate) struct SerialToolState {
+    pub(crate) diagnostics: Option<crate::serial::SerialDiagnostics>,
     pub(crate) capturing: bool,
     captured: VecDeque<u8>,
     rule: Option<ReplyRule>,
@@ -68,6 +69,7 @@ pub(crate) struct SerialToolState {
 
 #[derive(Default)]
 pub(crate) struct SerialToolSnapshot {
+    pub(crate) diagnostics: Option<crate::serial::SerialDiagnostics>,
     pub(crate) capturing: bool,
     pub(crate) received: u64,
     pub(crate) replies: u64,
@@ -84,6 +86,7 @@ impl SerialToolState {
 
     pub(crate) fn snapshot(&self) -> SerialToolSnapshot {
         SerialToolSnapshot {
+            diagnostics: self.diagnostics.clone(),
             capturing: self.capturing,
             received: self.received,
             replies: self.replies,

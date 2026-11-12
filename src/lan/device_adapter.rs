@@ -62,13 +62,16 @@ impl DeviceCatalog {
                         line.settings.summary(),
                         host.terminal_encoding.key().into(),
                     )
-                    .with_serial(SerialParameters::new(
-                        line.settings.baud,
-                        line.settings.data_bits.value(),
-                        line.settings.parity.as_str().into(),
-                        line.settings.stop_bits.value(),
-                        line.settings.flow.as_str().into(),
-                    )),
+                    .with_serial(
+                        SerialParameters::new(
+                            line.settings.baud,
+                            line.settings.data_bits.value(),
+                            line.settings.parity.as_str().into(),
+                            line.settings.stop_bits.value(),
+                            line.settings.flow.as_str().into(),
+                        )
+                        .with_signals(line.settings.dtr, line.settings.rts),
+                    ),
                     Endpoint::Serial(line),
                 ))
             })

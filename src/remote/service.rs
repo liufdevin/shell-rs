@@ -1,8 +1,8 @@
 use super::{
     api::{Account, Catalog, Server},
-    network::{Connected, Running},
+    network::{Connected, NetworkProgress, NetworkStage, Running},
 };
-use gpui_kit::{AppContext as _, Context, EventEmitter, Task};
+use gpui_kit::{Context, EventEmitter, Task};
 use std::{
     collections::HashMap,
     path::PathBuf,
@@ -39,6 +39,10 @@ pub struct Reply {
 
 pub trait Backend: Send + Sync + 'static {
     fn perform(&self, operation: Operation) -> Reply;
+
+    fn progress(&self) -> Option<NetworkProgress> {
+        None
+    }
 }
 
 struct State {
@@ -61,17 +65,20 @@ pub struct ResolvedSsh {
     pub alias: String,
 }
 
-pub struct SystemBackend(Mutex<State>);
+pub struct SystemBackend(Mutex<State>, Arc<Mutex<Option<NetworkProgress>>>);
 
 impl SystemBackend {
     pub fn new(root: PathBuf) -> Self {
-        Self(Mutex::new(State {
-            accounts: HashMap::new(),
-            running: None,
-            root,
-            refreshed: None,
-            bindings: HashMap::new(),
-        }))
+        Self(
+            Mutex::new(State {
+                accounts: HashMap::new(),
+                running: None,
+                root,
+                refreshed: None,
+                bindings: HashMap::new(),
+            }),
+            Arc::new(Mutex::new(None)),
+        )
     }
 }
 
@@ -115,7 +122,12 @@ impl State {
         Ok(())
     }
 
-    fn run(&mut self, operation: Operation, reply: &mut Reply) -> anyhow::Result<()> {
+    fn run(
+        &mut self,
+        operation: Operation,
+        reply: &mut Reply,
+        progress: &Arc<Mutex<Option<NetworkProgress>>>,
+    ) -> anyhow::Result<()> {
         match operation {
             Operation::Login(server, password) => {
                 if self
@@ -169,7 +181,7 @@ impl State {
                 if self.running.as_ref().is_some_and(|running| {
                     running.info.server == server && running.info.network == network
                 }) {
-                    return self.run(Operation::Poll, reply);
+                    return self.run(Operation::Poll, reply, progress);
                 }
                 self.stop()?;
                 self.refresh(&server, reply)?;
@@ -177,7 +189,7 @@ impl State {
                     .accounts
                     .get(&server)
                     .ok_or_else(|| anyhow::anyhow!("login_required"))?;
-                self.running = Some(Running::start(account, &network, &self.root)?);
+                self.running = Some(Running::start(account, &network, &self.root, progress)?);
             }
             Operation::Disconnect => self.stop()?,
             Operation::Logout(id) => {
@@ -197,7 +209,7 @@ impl State {
                 if let Some(running) = &self.running
                     && let Some((false, error)) = running.status()?
                 {
-                    self.running = None;
+                    self.stop()?;
                     anyhow::bail!("{error}");
                 }
                 if self
@@ -291,6 +303,11 @@ impl shellrs_ssh::EndpointResolver for SystemBackend {
 
 impl Backend for SystemBackend {
     fn perform(&self, operation: Operation) -> Reply {
+        *self.1.lock().unwrap() = match &operation {
+            Operation::Connect(..) => Some(NetworkProgress::new(NetworkStage::Preparing)),
+            Operation::Disconnect => Some(NetworkProgress::new(NetworkStage::Stopping)),
+            _ => None,
+        };
         let mut state = self.0.lock().unwrap();
         let mut reply = Reply::default();
         let account_id = match &operation {
@@ -305,7 +322,7 @@ impl Backend for SystemBackend {
             _ => None,
         };
         let login = matches!(operation, Operation::Login(..));
-        if let Err(error) = state.run(operation, &mut reply) {
+        if let Err(error) = state.run(operation, &mut reply, &self.1) {
             let code = error.to_string();
             if (code == "http_401" || code == "http_403")
                 && state
@@ -324,7 +341,12 @@ impl Backend for SystemBackend {
             reply.error = Some(code);
         }
         reply.connection = state.running.as_ref().map(|running| running.info.clone());
+        *self.1.lock().unwrap() = None;
         reply
+    }
+
+    fn progress(&self) -> Option<NetworkProgress> {
+        self.1.lock().unwrap().clone()
     }
 }
 
@@ -339,6 +361,13 @@ pub enum Event {
     DeviceAddressesChanged(String, Vec<String>),
 }
 
+#[derive(Clone)]
+pub(super) struct ServiceStatus {
+    pub message: String,
+    pub failed: bool,
+    pub progress: Option<NetworkProgress>,
+}
+
 pub struct Service {
     pub(super) backend: Option<Arc<dyn Backend>>,
     pub(super) catalogs: HashMap<String, Catalog>,
@@ -346,7 +375,7 @@ pub struct Service {
     pub(super) busy: bool,
     pub(super) status: String,
     pub(super) status_error: bool,
-    pub(super) statuses: HashMap<String, (String, bool)>,
+    pub(super) statuses: HashMap<String, ServiceStatus>,
     pub(super) secrets: crate::secrets::SharedSecretStore,
     pub(super) pending_server: Option<String>,
     task: Option<Task<()>>,
@@ -461,6 +490,8 @@ impl Service {
             | Operation::Resolve(id, ..) => Some(id.clone()),
             _ => self.connection.as_ref().map(|active| active.server.clone()),
         };
+        let network_progress = matches!(operation, Operation::Connect(..))
+            .then(|| NetworkProgress::new(NetworkStage::Preparing));
         let secrets = self.secrets.clone();
         if !polling {
             self.pending_server = server_id.clone();
@@ -481,20 +512,76 @@ impl Service {
             if changing {
                 cx.emit(Event::NetworkChanging);
             }
-            self.status = crate::i18n::t!("remote.working").to_string();
+            self.status = network_progress
+                .as_ref()
+                .map(network_progress_message)
+                .unwrap_or_else(|| crate::i18n::t!("remote.working").to_string());
             self.status_error = false;
             if let Some(id) = &server_id {
-                self.statuses
-                    .insert(id.clone(), (self.status.clone(), false));
+                self.statuses.insert(
+                    id.clone(),
+                    ServiceStatus {
+                        message: self.status.clone(),
+                        failed: false,
+                        progress: network_progress,
+                    },
+                );
             }
         }
         self.busy = true;
+        let progress_backend = backend.clone();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let worker = std::thread::Builder::new()
+            .name("shelllf-remote-operation".into())
+            .spawn(move || {
+                let reply = super::credentials::perform(backend, secrets, operation);
+                let _ = sender.send(reply);
+            });
         self.task = Some(cx.spawn(async move |this, cx| {
-            let reply = cx
-                .background_spawn(async move {
-                    super::credentials::perform(backend, secrets, operation)
-                })
-                .await;
+            let reply = loop {
+                match receiver.try_recv() {
+                    Ok(reply) => break reply,
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        break Reply {
+                            error: Some("network_stopped".into()),
+                            keep_connection: true,
+                            ..Reply::default()
+                        };
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                }
+                if worker.is_err() {
+                    break Reply {
+                        error: Some("network_stopped".into()),
+                        keep_connection: true,
+                        ..Reply::default()
+                    };
+                }
+                if !polling
+                    && let Some(server) = &server_id
+                    && let Some(progress) = progress_backend.progress()
+                    && this
+                        .update(cx, |this, cx| {
+                            let message = network_progress_message(&progress);
+                            this.status = message.clone();
+                            this.statuses.insert(
+                                server.clone(),
+                                ServiceStatus {
+                                    message,
+                                    failed: false,
+                                    progress: Some(progress),
+                                },
+                            );
+                            cx.notify();
+                        })
+                        .is_err()
+                {
+                    return;
+                }
+                cx.background_executor()
+                    .timer(Duration::from_millis(100))
+                    .await;
+            };
             let _ = this.update(cx, |this, cx| {
                 this.busy = false;
                 this.pending_server = None;
@@ -541,6 +628,18 @@ impl Service {
                 let failed = reply.error.is_some();
                 if let Some(error) = reply.error {
                     this.status = super::panel::describe(&error).to_string();
+                    if let Some(progress) = server_id
+                        .as_ref()
+                        .and_then(|id| this.statuses.get(id))
+                        .and_then(|status| status.progress.as_ref())
+                    {
+                        this.status = crate::i18n::t!(
+                            "remote.progress.failed",
+                            error = this.status.clone(),
+                            progress = network_progress_message(progress)
+                        )
+                        .to_string();
+                    }
                     this.status_error = true;
                 } else if !polling || catalog_refreshed {
                     this.status = crate::i18n::t!("remote.ready").to_string();
@@ -549,8 +648,14 @@ impl Service {
                 if let Some(id) = server_id
                     && (!polling || failed || catalog_refreshed)
                 {
-                    this.statuses
-                        .insert(id, (this.status.clone(), this.status_error));
+                    this.statuses.insert(
+                        id,
+                        ServiceStatus {
+                            message: this.status.clone(),
+                            failed: this.status_error,
+                            progress: None,
+                        },
+                    );
                 }
                 if let Some((server, password)) = reply.prompt {
                     cx.emit(Event::LoginRequired(server, password));
@@ -576,6 +681,25 @@ impl Service {
             cx.notify();
         }
     }
+}
+
+fn network_progress_message(progress: &NetworkProgress) -> String {
+    let stage = match progress.stage() {
+        NetworkStage::Preparing => crate::i18n::t!("remote.progress.preparing"),
+        NetworkStage::RequestingPermission => crate::i18n::t!("remote.progress.permission"),
+        NetworkStage::CheckingBackend => crate::i18n::t!("remote.progress.backend"),
+        NetworkStage::CheckingRoute => crate::i18n::t!("remote.progress.route"),
+        NetworkStage::PreparingFirewall => crate::i18n::t!("remote.progress.firewall"),
+        NetworkStage::RequestingLease => crate::i18n::t!("remote.progress.lease"),
+        NetworkStage::ValidatingProfile => crate::i18n::t!("remote.progress.profile"),
+        NetworkStage::StartingCore => crate::i18n::t!("remote.progress.core"),
+        NetworkStage::WaitingForInterface => crate::i18n::t!("remote.progress.interface"),
+        NetworkStage::Connected => crate::i18n::t!("remote.progress.connected"),
+        NetworkStage::RenewingLease => crate::i18n::t!("remote.progress.renewing"),
+        NetworkStage::Stopping => crate::i18n::t!("remote.progress.stopping"),
+    };
+    let seconds = format!("{:.1}", progress.elapsed().as_secs_f32());
+    crate::i18n::t!("remote.progress.status", stage = stage, seconds = seconds).to_string()
 }
 
 impl Drop for Service {

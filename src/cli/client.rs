@@ -607,6 +607,26 @@ fn serial_fields(serial: &SerialDetails) -> Vec<(SharedString, String)> {
             ),
         ),
         (t!("cli.field.flow_control"), flow),
+        (
+            "DTR".into(),
+            if serial.dtr {
+                t!("serial.diagnostics.on")
+            } else {
+                t!("serial.diagnostics.off")
+            }
+            .to_string(),
+        ),
+        (
+            "RTS".into(),
+            if serial.flow_control == FlowControlChoice::RtsCts {
+                t!("serial.diagnostics.handshake")
+            } else if serial.rts {
+                t!("serial.diagnostics.on")
+            } else {
+                t!("serial.diagnostics.off")
+            }
+            .to_string(),
+        ),
     ]
 }
 

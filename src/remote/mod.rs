@@ -7,7 +7,7 @@ mod panel;
 mod service;
 
 pub use api::{Catalog, Device, Network, Server};
-pub use network::{Connected, Target};
+pub use network::{Connected, NetworkProgress, NetworkStage, Target};
 pub use panel::{Command, RemotePanel};
 pub use service::device_alias;
 pub use service::{Backend, Event, Operation, Reply, ResolvedSsh, Service, SystemBackend};

@@ -1,5 +1,6 @@
 use super::{Command, Server, Service};
 use crate::{app::RemoteAction, i18n::t};
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     component::{
         ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, WindowExt as _,
@@ -8,6 +9,7 @@ use gpui_kit::{
         h_flex,
         input::{Input, InputEvent, InputState},
         scroll::ScrollableElement as _,
+        spinner::Spinner,
         v_flex,
     },
     *,
@@ -158,20 +160,26 @@ impl Render for CatalogDialog {
             } else {
                 t!("remote.device_help")
             }));
-        if let Some((message, failed)) = service.statuses.get(&self.server.id) {
+        if let Some(status) = service.statuses.get(&self.server.id) {
+            let progress = status.progress.is_some();
             body = body.child(
-                div()
+                h_flex()
                     .id("remote-status")
                     .test_support()
                     .role(Role::Status)
-                    .aria_label(message.clone())
+                    .aria_label(status.message.clone())
+                    .gap_2()
+                    .items_center()
                     .text_sm()
-                    .text_color(if *failed {
+                    .text_color(if status.failed {
                         cx.theme().danger
                     } else {
                         cx.theme().muted_foreground
                     })
-                    .child(message.clone()),
+                    .when(progress, |row| {
+                        row.child(Spinner::new().xsmall().color(cx.theme().muted_foreground))
+                    })
+                    .child(status.message.clone()),
             );
         }
         if let Some(catalog) = catalog {

@@ -4,8 +4,54 @@ use serde::{Deserialize, Serialize};
 use std::{
     net::Ipv4Addr,
     path::{Path, PathBuf},
+    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum NetworkStage {
+    Preparing,
+    RequestingPermission,
+    CheckingBackend,
+    CheckingRoute,
+    PreparingFirewall,
+    RequestingLease,
+    ValidatingProfile,
+    StartingCore,
+    WaitingForInterface,
+    Connected,
+    RenewingLease,
+    Stopping,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct NetworkProgress {
+    stage: NetworkStage,
+    started: Instant,
+}
+
+impl NetworkProgress {
+    pub fn new(stage: NetworkStage) -> Self {
+        Self {
+            stage,
+            started: Instant::now(),
+        }
+    }
+
+    pub fn stage(&self) -> NetworkStage {
+        self.stage
+    }
+
+    pub fn elapsed(&self) -> Duration {
+        self.started.elapsed()
+    }
+
+    fn set_stage(&mut self, stage: NetworkStage) {
+        self.stage = stage;
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -61,6 +107,43 @@ pub(super) struct Running {
     pub info: Connected,
     directory: PathBuf,
     subnet: (Ipv4Addr, u8),
+}
+
+#[derive(Debug)]
+struct WorkerStatus {
+    state: String,
+    stage: String,
+    error: String,
+}
+
+impl WorkerStatus {
+    fn is_running(&self) -> bool {
+        self.state == "running"
+    }
+
+    fn network_stage(&self) -> NetworkStage {
+        match self.stage.as_str() {
+            "backend_check" => NetworkStage::CheckingBackend,
+            "route_check" => NetworkStage::CheckingRoute,
+            "firewall" => NetworkStage::PreparingFirewall,
+            "authorization" => NetworkStage::RequestingLease,
+            "profile" => NetworkStage::ValidatingProfile,
+            "core_start" => NetworkStage::StartingCore,
+            "interface_wait" => NetworkStage::WaitingForInterface,
+            "running" | "connected" => NetworkStage::Connected,
+            "renewal" | "renewing" => NetworkStage::RenewingLease,
+            "stopping" => NetworkStage::Stopping,
+            _ => NetworkStage::Preparing,
+        }
+    }
+}
+
+fn report_progress(progress: &Arc<Mutex<Option<NetworkProgress>>>, stage: NetworkStage) {
+    let mut progress = progress.lock().unwrap();
+    match progress.as_mut() {
+        Some(progress) => progress.set_stage(stage),
+        None => *progress = Some(NetworkProgress::new(stage)),
+    }
 }
 
 pub(super) fn validate_grant(
@@ -200,7 +283,12 @@ impl Running {
         }
     }
 
-    pub fn start(account: &Account, network: &str, root: &Path) -> Result<Self> {
+    pub fn start(
+        account: &Account,
+        network: &str,
+        root: &Path,
+        progress: &Arc<Mutex<Option<NetworkProgress>>>,
+    ) -> Result<Self> {
         ensure!(
             cfg!(all(windows, target_arch = "x86_64")),
             "unsupported_platform"
@@ -213,29 +301,68 @@ impl Running {
                 ),
             "unsupported_platform"
         );
-        let name = account
+        report_progress(progress, NetworkStage::CheckingBackend);
+        let selected = account
             .catalog
             .networks
             .iter()
             .find(|item| item.network_id == network && item.enabled)
-            .ok_or_else(|| anyhow::anyhow!("network_disabled"))?
-            .name
-            .clone();
+            .ok_or_else(|| anyhow::anyhow!("network_disabled"))?;
         let client = client_id(root)?;
         let backend = std::env::current_exe()?
             .parent()
             .ok_or_else(|| anyhow::anyhow!("missing_backend"))?
             .to_path_buf();
         verify_backend(&backend)?;
+        report_progress(progress, NetworkStage::CheckingRoute);
         let probe = std::net::TcpListener::bind("127.0.0.1:15889")
             .map_err(|_| anyhow::anyhow!("network_in_use"))?;
         drop(probe);
-        let started = Instant::now();
-        let mut grant = account.request(
-            "/api/client/ssh/session",
-            Some(serde_json::json!({ "clientId": client, "networkId": network })),
-        )?;
-        let result = (|| -> Result<Self> {
+        let directory = root.join(format!("session-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&directory)?;
+        let mut running = Self {
+            info: Connected::new(
+                account.server.id.clone(),
+                network.to_owned(),
+                selected.name.clone(),
+                Ipv4Addr::UNSPECIFIED,
+                vec![],
+            ),
+            directory,
+            subnet: (Ipv4Addr::UNSPECIFIED, 24),
+        };
+        let context = serde_json::json!({
+            "serverUrl": account.server.url, "token": account.token(), "clientId": client,
+            "networkId": network, "subnet": selected.subnet, "parentPid": std::process::id(),
+            "packageRoot": backend, "directory": running.directory,
+        });
+        prepare(&running.directory, &context)?;
+        report_progress(progress, NetworkStage::RequestingPermission);
+        launch(&running.directory)?;
+        let mut authorized = false;
+        let result = (|| -> Result<()> {
+            let deadline = Instant::now() + Duration::from_secs(120);
+            loop {
+                if let Some(status) = running.worker_status()? {
+                    report_progress(progress, status.network_stage());
+                    if status.state == "stopped" {
+                        bail!("{}", status.error);
+                    }
+                    if status.stage == "authorization" {
+                        break;
+                    }
+                }
+                ensure!(Instant::now() < deadline, "network_start_timeout");
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            let started = Instant::now();
+            report_progress(progress, NetworkStage::RequestingLease);
+            let mut grant = account.request(
+                "/api/client/ssh/session",
+                Some(serde_json::json!({ "clientId": client, "networkId": network })),
+            )?;
+            authorized = true;
+            report_progress(progress, NetworkStage::ValidatingProfile);
             let targets = validate_grant(&grant, &client, network)?;
             ensure!(!targets.is_empty(), "no_authorized_devices");
             let config: serde_json::Value =
@@ -248,51 +375,44 @@ impl Running {
                 .saturating_sub(started.elapsed().as_secs() + 1);
             ensure!(remaining > 0, "lease_expired");
             grant["expiresIn"] = remaining.into();
-            let directory = root.join(format!("session-{}", uuid::Uuid::new_v4()));
-            std::fs::create_dir(&directory)?;
-            let mut running = Self {
-                info: Connected {
-                    server: account.server.id.clone(),
-                    network: network.to_owned(),
-                    name,
-                    virtual_ip: grant["virtualIp"].as_str().unwrap().parse()?,
-                    devices: targets,
-                },
-                directory,
-                subnet: (address.parse()?, prefix.parse()?),
-            };
-            let context = serde_json::json!({
-                "serverUrl": account.server.url, "token": account.token(), "clientId": client,
-                "networkId": network, "authorization": grant, "parentPid": std::process::id(),
-                "packageRoot": backend, "directory": running.directory,
-            });
-            if let Err(error) = prepare(&running.directory, &context) {
-                let _ = std::fs::remove_file(running.directory.join("context.json"));
-                return Err(error);
-            }
-            if let Err(error) = launch(&running.directory) {
-                let _ = std::fs::write(running.directory.join("stop"), b"stop");
-                let _ = std::fs::remove_file(running.directory.join("context.json"));
-                return Err(error);
-            }
+            running.info.virtual_ip = grant["virtualIp"].as_str().unwrap().parse()?;
+            running.info.devices = targets;
+            running.subnet = (address.parse()?, prefix.parse()?);
+            let envelope = zeroize::Zeroizing::new(serde_json::to_vec(&serde_json::json!({
+                "authorization": grant, "issuedAtTick": tick_count(),
+            }))?);
+            std::fs::write(running.directory.join("authorization.tmp"), &*envelope)?;
+            std::fs::rename(
+                running.directory.join("authorization.tmp"),
+                running.directory.join("authorization.json"),
+            )?;
             let deadline = Instant::now() + Duration::from_secs(45);
             while Instant::now() < deadline {
-                match running.status()? {
-                    Some((true, _)) => return Ok(running),
-                    Some((false, error)) => bail!("{error}"),
-                    None => std::thread::sleep(Duration::from_millis(200)),
+                if let Some(status) = running.worker_status()? {
+                    report_progress(progress, status.network_stage());
+                    if status.is_running() {
+                        report_progress(progress, NetworkStage::Connected);
+                        return Ok(());
+                    }
+                    if status.state == "stopped" {
+                        bail!("{}", status.error);
+                    }
                 }
+                std::thread::sleep(Duration::from_millis(200));
             }
-            let _ = running.stop();
             bail!("network_start_timeout")
         })();
         if result.is_err() {
-            let _ = account.request(
-                "/api/client/ssh/disconnect",
-                Some(serde_json::json!({"clientId":client,"networkId":network})),
-            );
+            let _ = running.stop();
+            if authorized {
+                let _ = account.request(
+                    "/api/client/ssh/disconnect",
+                    Some(serde_json::json!({"clientId":client,"networkId":network})),
+                );
+            }
         }
-        result
+        result?;
+        Ok(running)
     }
 
     pub fn refresh_devices(&mut self, devices: &[super::Device]) {
@@ -309,7 +429,7 @@ impl Running {
             .collect();
     }
 
-    pub fn status(&self) -> Result<Option<(bool, String)>> {
+    fn worker_status(&self) -> Result<Option<WorkerStatus>> {
         let path = self.directory.join("status.json");
         if !path.exists() {
             return Ok(None);
@@ -323,24 +443,48 @@ impl Running {
                 .elapsed()
                 .is_ok_and(|elapsed| elapsed > Duration::from_secs(60))
         {
-            return Ok(Some((false, "network_stopped".into())));
+            return Ok(Some(WorkerStatus {
+                state: "unresponsive".into(),
+                stage: "stopping".into(),
+                error: "network_stopped".into(),
+            }));
         }
-        Ok(Some((
-            value["state"] == "running",
-            value["error"]
+        Ok(Some(WorkerStatus {
+            state: value["state"].as_str().unwrap_or("stopped").to_owned(),
+            stage: value["failureStage"]
+                .as_str()
+                .filter(|stage| !stage.is_empty())
+                .or_else(|| value["stage"].as_str())
+                .unwrap_or("preparing")
+                .to_owned(),
+            error: value["error"]
                 .as_str()
                 .filter(|text| !text.is_empty())
                 .unwrap_or("network_stopped")
                 .to_owned(),
-        )))
+        }))
+    }
+
+    pub fn status(&self) -> Result<Option<(bool, String)>> {
+        Ok(self
+            .worker_status()?
+            .map(|status| (status.is_running(), status.error)))
     }
 
     pub fn stop(&mut self) -> Result<()> {
         std::fs::write(self.directory.join("stop"), b"stop")?;
         let deadline = Instant::now() + Duration::from_secs(30);
         while Instant::now() < deadline {
-            if self.status()?.is_some_and(|(running, _)| !running) {
-                for name in ["context.json", "client.toml"] {
+            if self
+                .worker_status()?
+                .is_some_and(|status| status.state == "stopped")
+            {
+                for name in [
+                    "context.json",
+                    "client.toml",
+                    "authorization.json",
+                    "authorization.tmp",
+                ] {
                     let _ = std::fs::remove_file(self.directory.join(name));
                 }
                 return Ok(());
@@ -348,6 +492,17 @@ impl Running {
             std::thread::sleep(Duration::from_millis(100));
         }
         bail!("network_stop_timeout")
+    }
+}
+
+fn tick_count() -> u32 {
+    #[cfg(windows)]
+    {
+        unsafe { windows_sys::Win32::System::SystemInformation::GetTickCount() }
+    }
+    #[cfg(not(windows))]
+    {
+        0
     }
 }
 
@@ -533,6 +688,284 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn worker_status_reports_the_current_startup_stage() {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::write(
+            directory.path().join("status.json"),
+            r#"{"state":"starting","stage":"interface_wait","error":"","elapsedSeconds":1.2}"#,
+        )
+        .unwrap();
+        let running = Running::fixture(
+            Connected::new(
+                "server".into(),
+                "network".into(),
+                "Customer".into(),
+                "10.215.0.2".parse().unwrap(),
+                vec![],
+            ),
+            directory.path().into(),
+        );
+        let status = running.worker_status().unwrap().unwrap();
+        assert_eq!(status.network_stage(), NetworkStage::WaitingForInterface);
+        assert!(!status.is_running());
+        std::fs::write(
+            directory.path().join("status.json"),
+            r#"{"state":"stopped","stage":"stopping","failureStage":"interface_wait","error":"interface_timeout"}"#,
+        ).unwrap();
+        let status = running.worker_status().unwrap().unwrap();
+        assert_eq!(status.network_stage(), NetworkStage::WaitingForInterface);
+        assert_eq!(status.error, "interface_timeout");
+    }
+
+    #[test]
+    fn stop_waits_for_completed_cleanup_instead_of_accepting_starting_or_stopping() {
+        for state in ["starting", "stopping"] {
+            let directory = tempfile::tempdir().unwrap();
+            std::fs::write(
+                directory.path().join("status.json"),
+                format!(r#"{{"state":"{state}"}}"#),
+            )
+            .unwrap();
+            let mut running = Running::fixture(
+                Connected::new(
+                    "server".into(),
+                    "network".into(),
+                    "Customer".into(),
+                    "10.215.0.2".parse().unwrap(),
+                    vec![],
+                ),
+                directory.path().into(),
+            );
+            let path = directory.path().to_path_buf();
+            let worker = std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(150));
+                std::fs::write(path.join("status.tmp"), r#"{"state":"stopped"}"#).unwrap();
+                std::fs::rename(path.join("status.tmp"), path.join("status.json")).unwrap();
+            });
+            running.stop().unwrap();
+            assert_eq!(running.worker_status().unwrap().unwrap().state, "stopped");
+            worker.join().unwrap();
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn worker_preflight_precedes_authorization_and_failed_preflight_never_revokes_a_lease() {
+        for conflict in [false, true] {
+            let root = tempfile::tempdir().unwrap();
+            let directory = root.path().join("worker");
+            std::fs::create_dir(&directory).unwrap();
+            prepare(
+                &directory,
+                &serde_json::json!({
+                    "directory": directory, "token":"fixture-token", "parentPid":std::process::id(),
+                    "packageRoot":root.path(), "serverUrl":"http://127.0.0.1", "clientId":"fixture",
+                    "networkId":"network", "subnet":"10.215.0.0/24",
+                }),
+            )
+            .unwrap();
+            std::fs::write(directory.join("authorization.json"), serde_json::to_vec(&serde_json::json!({
+                "authorization": {"files":{"client.toml":"fixture","network.json":"{}"}, "profileHash":"invalid"},
+                "issuedAtTick":tick_count(),
+            })).unwrap()).unwrap();
+            let worker = include_str!("worker.ps1")
+                .replace("function Adapters {", "function System-Adapters {")
+                .replace("$rpc = New-Object Net.Sockets.TcpListener([Net.IPAddress]::Loopback, 15889)",
+                    "$rpc = [PSCustomObject]@{}; $rpc | Add-Member ScriptMethod Start {}; $rpc | Add-Member ScriptMethod Stop {}")
+                .replace(
+                    "Local\\BaijieRemoteSsh-",
+                    &format!("Local\\ShellLF-Test-{}-", uuid::Uuid::new_v4()),
+                );
+            let setup = r#"
+function Get-FileHash { param($LiteralPath,$Algorithm) [PSCustomObject]@{Hash=$hashes[[IO.Path]::GetFileName($LiteralPath)]} }
+function Adapters { }
+function Get-NetRoute {
+    param($AddressFamily)
+    $prefix = if ($conflict) { '10.215.0.0/24' } else { '192.168.0.0/24' }
+    [PSCustomObject]@{DestinationPrefix=$prefix;InterfaceIndex=42}
+}
+function New-NetFirewallRule { param($Name,$DisplayName,$Program,$Direction,$Action,$Profile) }
+function Remove-NetFirewallRule { param($Name) }
+function Invoke-RestMethod { param($Uri,$Method,$ContentType,$Headers,$Body,$MaximumRedirection,$TimeoutSec) $script:revoked=$true }
+$script:revoked=$false
+"#;
+            let path = directory.to_string_lossy().replace('\'', "''");
+            let test = format!(
+                "{setup}\n$conflict=${conflict}\n. {{\n{worker}\n}} -StateDirectory '{path}'\n"
+            );
+            let test = test
+                + if conflict {
+                    "if ($script:revoked) { throw 'preflight revoked a lease' }\n"
+                } else {
+                    "if (-not $script:revoked) { throw ('grant was not revoked after profile failure: ' + [IO.File]::ReadAllText((Join-Path $StateDirectory 'status.json'))) }\n"
+                };
+            let test_path = root.path().join("worker-test.ps1");
+            std::fs::write(&test_path, test).unwrap();
+            let errors = root.path().join("test-error.txt");
+            let result = powershell(
+                &format!(
+                    "try {{ & ([scriptblock]::Create([IO.File]::ReadAllText('{}'))) }} catch {{ [IO.File]::WriteAllText('{}', $_.ToString() + $_.ScriptStackTrace); exit 1 }}",
+                    test_path.to_string_lossy().replace('\'', "''"),
+                    errors.to_string_lossy().replace('\'', "''")
+                ),
+                &[],
+            );
+            assert!(
+                result.is_ok(),
+                "{}",
+                std::fs::read_to_string(errors).unwrap_or_default()
+            );
+            let status: serde_json::Value = serde_json::from_str(
+                std::fs::read_to_string(directory.join("status.json"))
+                    .unwrap()
+                    .trim_start_matches('\u{feff}'),
+            )
+            .unwrap();
+            assert_eq!(status["state"], "stopped");
+            assert_eq!(
+                status["error"],
+                if conflict {
+                    "route_conflict"
+                } else {
+                    "profile_hash_mismatch"
+                }
+            );
+            let log = std::fs::read_to_string(directory.join("diagnostics.log")).unwrap();
+            if conflict {
+                assert!(!log.contains("authorization"));
+            } else {
+                assert!(log.find("firewall").unwrap() < log.find("authorization").unwrap());
+            }
+            assert!(!directory.join("authorization.json").exists());
+            assert!(!directory.join("context.json").exists());
+            assert!(!log.contains("fixture-token"));
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn adapter_checks_allow_only_our_inactive_routes_and_ready_adapter() {
+        let script = include_str!("worker.ps1");
+        let start = script.find("function Inactive-Route(").unwrap();
+        let end = script.find("function Api(").unwrap();
+        let test = format!(
+            r#"{}
+$route = [PSCustomObject]@{{InterfaceIndex=42}}
+$adapter = [PSCustomObject]@{{Name='bjssh0';Description='Wintun';Index=42;State='Down';Addresses=@('10.215.0.2')}}
+if (-not (Inactive-Route $route @($adapter))) {{ throw 'inactive route rejected' }}
+if (Interface-Ready @($adapter) '10.215.0.2') {{ throw 'inactive adapter accepted' }}
+$adapter.State = 'Up'
+if (Inactive-Route $route @($adapter)) {{ throw 'active route accepted' }}
+if (-not (Interface-Ready @($adapter) '10.215.0.2')) {{ throw 'ready adapter rejected' }}
+if (Interface-Ready @($adapter) '10.215.0.3') {{ throw 'wrong IP accepted' }}
+$adapter.Name = 'another-vpn'
+$adapter.State = 'Down'
+if (Inactive-Route $route @($adapter)) {{ throw 'foreign route accepted' }}
+$adapter.Name = 'bjssh0'
+$adapter.Index = 43
+if (Inactive-Route $route @($adapter)) {{ throw 'wrong interface accepted' }}
+"#,
+            &script[start..end],
+        );
+        powershell(&test, &[]).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn core_output_bursts_do_not_delay_network_startup_or_wait_for_eof() {
+        use base64::Engine as _;
+        let directory = tempfile::tempdir().unwrap();
+        let marker = directory.path().join("ready");
+        let elapsed = directory.path().join("elapsed");
+        let child_script = format!(
+            r#"$line = 'x' * 256
+for ($index = 0; $index -lt 600; $index++) {{
+    [Console]::Out.WriteLine($line)
+    [Console]::Error.WriteLine($line)
+}}
+[IO.File]::WriteAllText('{}', 'ready')
+Start-Sleep -Seconds 30
+"#,
+            marker.to_string_lossy().replace('\'', "''")
+        );
+        let encoded = base64::engine::general_purpose::STANDARD.encode(
+            child_script
+                .encode_utf16()
+                .flat_map(u16::to_le_bytes)
+                .collect::<Vec<_>>(),
+        );
+        let script = include_str!("worker.ps1");
+        let start = script.find("function Read-CoreOutput").unwrap();
+        let end = script.find("function Status(").unwrap();
+        let test = format!(
+            r#"$ErrorActionPreference = 'Stop'
+{}
+$core = New-Object Diagnostics.Process
+$core.StartInfo.FileName = Join-Path $PSHOME 'powershell.exe'
+$core.StartInfo.Arguments = '-NoLogo -NoProfile -NonInteractive -EncodedCommand {encoded}'
+$core.StartInfo.UseShellExecute = $false
+$core.StartInfo.CreateNoWindow = $true
+$core.StartInfo.RedirectStandardOutput = $true
+$core.StartInfo.RedirectStandardError = $true
+$timer = [Diagnostics.Stopwatch]::StartNew()
+try {{
+    if (-not $core.Start()) {{ throw 'fake core did not start' }}
+    $script:outputTask = $null
+    $script:errorTask = $null
+    Read-CoreOutput
+    Start-Sleep -Milliseconds 500
+    do {{
+        Read-CoreOutput
+        if (Test-Path -LiteralPath '{marker}') {{ break }}
+        Start-Sleep -Milliseconds 100
+    }} while ($timer.Elapsed.TotalSeconds -lt 5)
+    [IO.File]::WriteAllText('{elapsed}', $timer.Elapsed.TotalSeconds.ToString('F3', [Globalization.CultureInfo]::InvariantCulture))
+    if (-not (Test-Path -LiteralPath '{marker}')) {{ throw 'core blocked on redirected output before readiness' }}
+    if ($core.HasExited) {{ throw 'test requires a live core with no EOF' }}
+    Read-CoreOutput
+}} finally {{
+    if (-not $core.HasExited) {{ $core.Kill(); $core.WaitForExit() }}
+    $core.Dispose()
+}}
+"#,
+            &script[start..end],
+            marker = marker.to_string_lossy().replace('\'', "''"),
+            elapsed = elapsed.to_string_lossy().replace('\'', "''"),
+        );
+        let result = powershell(&test, &[]);
+        let seconds = std::fs::read_to_string(elapsed).unwrap_or_default();
+        assert!(
+            result.is_ok(),
+            "fake core stalled for {seconds}s: {result:?}"
+        );
+        println!("600 stdout + 600 stderr lines drained; fake core ready in {seconds}s");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_tunnel_descriptions_do_not_block_an_up_adapter_with_the_leased_ip() {
+        let script = include_str!("worker.ps1");
+        let start = script.find("function Interface-Ready(").unwrap();
+        let end = script.find("function Api(").unwrap();
+        let test = format!(
+            r#"{}
+foreach ($description in @('bjssh0 Tunnel #2', 'bjssh0 Tunnel', 'Wintun', 'EasyTier')) {{
+    $adapter = [PSCustomObject]@{{Name='bjssh0';Description=$description;Index=42;State='Up';Addresses=@('10.215.0.2')}}
+    if (-not (Interface-Ready @($adapter) '10.215.0.2')) {{ throw "ready adapter rejected: $description" }}
+    if (Interface-Ready @($adapter) '10.215.0.3') {{ throw 'wrong leased IP accepted' }}
+    $adapter.State = 'Down'
+    if (Interface-Ready @($adapter) '10.215.0.2') {{ throw 'inactive adapter accepted' }}
+    $adapter.State = 'Up'
+    $adapter.Name = 'another-vpn'
+    if (Interface-Ready @($adapter) '10.215.0.2') {{ throw 'foreign adapter accepted' }}
+}}
+"#,
+            &script[start..end],
+        );
+        powershell(&test, &[]).unwrap();
     }
 
     #[cfg(windows)]

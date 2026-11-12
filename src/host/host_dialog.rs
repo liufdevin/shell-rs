@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use gpui_kit::component::{
-    ActiveTheme as _, Icon, IconName, IndexPath, Sizable as _, WindowExt as _,
+    ActiveTheme as _, Disableable as _, Icon, IconName, IndexPath, Sizable as _, WindowExt as _,
     button::{Button, ButtonVariants as _},
     checkbox::Checkbox,
     combobox::{Combobox, ComboboxEvent, ComboboxState},
@@ -276,6 +276,8 @@ pub struct HostForm {
     reconnect_delay: Entity<InputState>,
     terminal_encoding: Entity<SelectState<Vec<SharedString>>>,
     serial_linux_shell: bool,
+    serial_dtr: bool,
+    serial_rts: bool,
     monitor_channel: Entity<SelectState<Vec<SharedString>>>,
     monitor_adb: Entity<InputState>,
     monitor_ssh: Entity<SelectState<Vec<SharedString>>>,
@@ -686,6 +688,7 @@ impl HostForm {
             .new(|cx| SelectState::new(monitor_ssh_labels, selected, window, cx).searchable(true));
 
         let subscriptions = vec![
+            cx.observe(&flow, |_, _, cx| cx.notify()),
             cx.observe(&credential, |_, _, cx| cx.notify()),
             cx.observe(&fields, |_, _, cx| cx.notify()),
             cx.observe(&telnet_credential, |_, _, cx| cx.notify()),
@@ -774,6 +777,8 @@ impl HostForm {
                 .protocol
                 .serial()
                 .is_some_and(|settings| settings.linux_shell),
+            serial_dtr: draft.protocol.serial().is_some_and(|settings| settings.dtr),
+            serial_rts: draft.protocol.serial().is_some_and(|settings| settings.rts),
             monitor_channel,
             monitor_adb,
             monitor_ssh,
@@ -850,6 +855,11 @@ impl HostForm {
         if protocol == ProtocolKind::Serial && self.ports.is_none() {
             self.look_for_ports(window, cx);
         }
+        if protocol == ProtocolKind::Serial {
+            let defaults = SerialSettings::default();
+            self.serial_dtr = defaults.dtr;
+            self.serial_rts = defaults.rts;
+        }
         cx.notify();
     }
 
@@ -903,6 +913,8 @@ impl HostForm {
             device,
             SerialSettings {
                 linux_shell: self.serial_linux_shell,
+                dtr: self.serial_dtr,
+                rts: self.serial_rts,
                 baud,
                 data_bits: row(&self.data_bits)
                     .and_then(|ix| DataBits::ALL.get(ix).copied())
@@ -2044,6 +2056,50 @@ impl HostForm {
                 Field::new()
                     .label(t!("host.dialog.flow_control"))
                     .child(Select::new(&self.flow).id("host-serial-flow").small()),
+            )
+            .child(
+                Field::new().col_span(4).label_indent(false).child(
+                    v_flex()
+                        .gap_2()
+                        .child(
+                            h_flex()
+                                .gap_4()
+                                .child(
+                                    Checkbox::new("host-serial-dtr")
+                                        .small()
+                                        .label(t!("serial.signals.dtr"))
+                                        .checked(self.serial_dtr)
+                                        .on_click(cx.listener(|this, checked, _, cx| {
+                                            this.serial_dtr = *checked;
+                                            cx.notify();
+                                        })),
+                                )
+                                .child(
+                                    Checkbox::new("host-serial-rts")
+                                        .small()
+                                        .label(t!("serial.signals.rts"))
+                                        .checked(self.serial_rts)
+                                        .disabled(
+                                            self.flow.read(cx).selected_index(cx).is_some_and(
+                                                |ix| {
+                                                    FlowControl::ALL.get(ix.row)
+                                                        == Some(&FlowControl::RtsCts)
+                                                },
+                                            ),
+                                        )
+                                        .on_click(cx.listener(|this, checked, _, cx| {
+                                            this.serial_rts = *checked;
+                                            cx.notify();
+                                        })),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(t!("serial.signals.help")),
+                        ),
+                ),
             )
             .child(
                 Field::new().col_span(4).child(
