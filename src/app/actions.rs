@@ -164,6 +164,11 @@ gpui_kit::actions!(
         FocusSearch,
         /// Connect the host selected in the focused host list.
         ConnectSelected,
+        ToggleHostDetails,
+        SelectPreviousHostRow,
+        SelectNextHostRow,
+        CollapseSelectedGroup,
+        ExpandSelectedGroup,
         /// Expand every group in the host tree.
         ExpandAllGroups,
         /// Collapse every group in the host tree.

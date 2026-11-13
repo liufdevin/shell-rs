@@ -1,4 +1,7 @@
 _version: 2
+host.panel.show_details:
+  zh-CN: 显示主机详情
+  en: Show host details
 host.dialog.terminal_encoding:
   zh-CN: 终端编码
   en: Terminal encoding

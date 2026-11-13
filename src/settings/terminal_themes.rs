@@ -182,7 +182,7 @@ fn column(
 }
 
 /// `prefix-light` or `prefix-dark`.
-fn column_id(prefix: &str, mode: ThemeMode) -> ElementId {
+pub(super) fn column_id(prefix: &str, mode: ThemeMode) -> ElementId {
     SharedString::from(format!("{prefix}-{}", mode.name())).into()
 }
 
@@ -286,7 +286,6 @@ fn card(
 /// The sample lines in the terminal font and the theme's colors, framed by
 /// a hairline so a background like the page's still shows its edge.
 fn sample(theme: &TerminalTheme, cx: &App) -> impl IntoElement + use<> {
-    let font = TerminalFont::current(cx);
     v_flex()
         .w_full()
         .px_3()
@@ -295,27 +294,34 @@ fn sample(theme: &TerminalTheme, cx: &App) -> impl IntoElement + use<> {
         .border_1()
         .border_color(cx.theme().border)
         .bg(theme.background())
-        .text_color(theme.foreground())
-        .font_family(font.family(cx))
-        .text_sm()
         .overflow_hidden()
-        .children(SAMPLE.iter().map(|parts| {
-            let mut text = String::new();
-            let mut highlights = Vec::new();
-            for (part, color) in parts.iter() {
-                if let Some(color) = color {
-                    highlights.push((
-                        text.len()..text.len() + part.len(),
-                        HighlightStyle {
-                            color: Some(theme.indexed(*color)),
-                            ..HighlightStyle::default()
-                        },
-                    ));
-                }
-                text.push_str(part);
+        .children(sample_lines(theme, cx))
+}
+
+pub(super) fn sample_lines(theme: &TerminalTheme, cx: &App) -> impl Iterator<Item = Div> + use<> {
+    let family = TerminalFont::current(cx).family(cx);
+    let foreground = theme.foreground();
+    let colors: Vec<_> = (0..16).map(|index| theme.indexed(index)).collect();
+    SAMPLE.iter().map(move |parts| {
+        let mut text = String::new();
+        let mut highlights = Vec::new();
+        for (part, color) in parts.iter() {
+            if let Some(color) = color {
+                highlights.push((
+                    text.len()..text.len() + part.len(),
+                    HighlightStyle {
+                        color: Some(colors[*color as usize]),
+                        ..HighlightStyle::default()
+                    },
+                ));
             }
-            div()
-                .whitespace_nowrap()
-                .child(StyledText::new(text).with_highlights(highlights))
-        }))
+            text.push_str(part);
+        }
+        div()
+            .whitespace_nowrap()
+            .font_family(family.clone())
+            .text_color(foreground)
+            .text_sm()
+            .child(StyledText::new(text).with_highlights(highlights))
+    })
 }

@@ -5,6 +5,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 pub use crate::sync::SyncLocation;
 
 use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 
 use crate::app::{ShortcutOverrides, SnippetShortcuts, ToolKind};
 use crate::explorer::{FileIconStyle, FileSizeFormat, ShowHiddenFiles};
@@ -30,6 +31,8 @@ pub struct AppSettings {
     pub interface: InterfaceSettings,
     /// 外观 → 终端主题.
     pub terminal_theme: TerminalThemeSettings,
+    pub terminal_background: TerminalBackgroundSettings,
+    pub host_details: bool,
     pub terminal_font: TerminalFontSettings,
     /// 终端 → 终端交互.
     pub terminal_interaction: TerminalInteraction,
@@ -351,6 +354,74 @@ impl TerminalThemeSettings {
     }
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TerminalBackgroundSettings {
+    pub light: BackgroundImageSettings,
+    pub dark: BackgroundImageSettings,
+}
+
+impl TerminalBackgroundSettings {
+    pub fn for_mode(&self, mode: ThemeMode) -> &BackgroundImageSettings {
+        match mode {
+            ThemeMode::Light => &self.light,
+            ThemeMode::Dark => &self.dark,
+        }
+    }
+
+    pub fn for_mode_mut(&mut self, mode: ThemeMode) -> &mut BackgroundImageSettings {
+        match mode {
+            ThemeMode::Light => &mut self.light,
+            ThemeMode::Dark => &mut self.dark,
+        }
+    }
+
+    fn normalized(self) -> Self {
+        Self {
+            light: self.light.normalized(),
+            dark: self.dark.normalized(),
+        }
+    }
+}
+
+pub const DEFAULT_BACKGROUND_OPACITY: f32 = 0.3;
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct BackgroundImageSettings {
+    pub enabled: bool,
+    pub image: Option<PathBuf>,
+    pub opacity: f32,
+}
+
+impl Default for BackgroundImageSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            image: None,
+            opacity: DEFAULT_BACKGROUND_OPACITY,
+        }
+    }
+}
+
+impl BackgroundImageSettings {
+    pub fn shown(&self) -> Option<&Path> {
+        self.image.as_deref().filter(|_| self.enabled)
+    }
+
+    fn normalized(self) -> Self {
+        Self {
+            enabled: self.enabled,
+            image: self.image.filter(|image| !image.as_os_str().is_empty()),
+            opacity: if self.opacity.is_finite() {
+                self.opacity.clamp(0., 1.)
+            } else {
+                DEFAULT_BACKGROUND_OPACITY
+            },
+        }
+    }
+}
+
 /// 关键字高亮: whether terminals color their text by the rules, and the
 /// rules, in the order they win where they overlap. Off until the user turns
 /// it on. A file without the rules gets the examples a new installation
@@ -597,6 +668,7 @@ impl AppSettings {
     /// to what the file holds and to every change, so neither a hand-edited
     /// file nor a typed value can give the terminal a size of zero.
     pub fn normalized(mut self) -> Self {
+        self.terminal_background = self.terminal_background.normalized();
         let mut ids = std::collections::HashSet::new();
         self.remote_servers
             .retain(|server| server.validate().is_ok() && ids.insert(server.id.clone()));
@@ -800,6 +872,26 @@ impl Appearance {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn background_defaults_and_invalid_values_are_normalized() {
+        let settings: AppSettings = serde_json::from_str("{}").unwrap();
+        assert!(!settings.host_details);
+        assert_eq!(
+            settings.terminal_background,
+            TerminalBackgroundSettings::default()
+        );
+        let mut settings: AppSettings = serde_json::from_str(r#"{"terminal_background":{"light":{"enabled":true,"image":"","opacity":7},"dark":{"enabled":true,"image":"dark.png","opacity":-1}}}"#).unwrap();
+        settings = settings.normalized();
+        assert!(settings.terminal_background.light.shown().is_none());
+        assert_eq!(settings.terminal_background.light.opacity, 1.);
+        assert_eq!(settings.terminal_background.dark.opacity, 0.);
+        settings.terminal_background.dark.opacity = f32::NAN;
+        assert_eq!(
+            settings.normalized().terminal_background.dark.opacity,
+            DEFAULT_BACKGROUND_OPACITY
+        );
+    }
 
     #[test]
     fn app_lock_cli_access_requires_the_global_switch_and_explicit_permission() {

@@ -2,6 +2,7 @@
 
 mod app_theme;
 mod apply;
+mod background_images;
 mod highlight_rules;
 mod local_shell_editor;
 mod model;
@@ -20,5 +21,6 @@ pub use model::{
     SyncSettings, TerminalFontSettings, TerminalHighlightSettings, TerminalThemeSettings,
     UpdateSettings, WindowSettings,
 };
+pub use model::{BackgroundImageSettings, DEFAULT_BACKGROUND_OPACITY, TerminalBackgroundSettings};
 pub use settings_panel::{SettingsPanel, SettingsPanelEvent};
 pub use store::{SettingsProblem, SettingsStore, SettingsStoreEvent};

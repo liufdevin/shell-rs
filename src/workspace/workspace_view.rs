@@ -38,8 +38,8 @@ use crate::app::{
     RenameExplorer, RenameGroup, RenameTerminal, RestartLocalTerminal, RestoreWindow,
     ReturnDetachedTab, SelectAllTerminal, SendBreak, SendSerialHex, SetFileSizeFormat,
     ShowOrHideApp, StartLocalTerminal, StartTerminalRecording, StopTerminalRecording,
-    ToggleHiddenFiles, ToggleHostPanel, ToggleTerminalFindOption, ToggleTheme, ToolKind, ZoomIn,
-    ZoomOut, ZoomReset, ZoomTerminalIn, ZoomTerminalOut, ZoomTerminalReset,
+    ToggleHiddenFiles, ToggleHostDetails, ToggleHostPanel, ToggleTerminalFindOption, ToggleTheme,
+    ToolKind, ZoomIn, ZoomOut, ZoomReset, ZoomTerminalIn, ZoomTerminalOut, ZoomTerminalReset,
 };
 use crate::app::{
     ClearTerminalLog, DeleteTerminalLog, SetSerialBackspace, ToggleSerialReceiveHex,
@@ -3500,6 +3500,20 @@ impl Workspace {
         });
     }
 
+    fn on_toggle_host_details(
+        &mut self,
+        _: &ToggleHostDetails,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.settings.update(cx, |store, cx| {
+            store.update(
+                |settings| settings.host_details = !settings.host_details,
+                cx,
+            )
+        });
+    }
+
     fn on_focus_search(&mut self, _: &FocusSearch, window: &mut Window, cx: &mut Context<Self>) {
         if !self.dock_area.read(cx).is_dock_open(DockPlacement::Left) {
             self.dock_area.update(cx, |area, cx| {
@@ -4304,6 +4318,7 @@ impl Workspace {
             .on_action(cx.listener(Self::on_install_agent_skill))
             .on_action(cx.listener(Self::on_set_file_size_format))
             .on_action(cx.listener(Self::on_toggle_hidden_files))
+            .on_action(cx.listener(Self::on_toggle_host_details))
             .on_action(cx.listener(Self::on_remove_agent_skill))
             .on_action(cx.listener(Self::on_refresh_cli_integration))
             .on_action(cx.listener(Self::on_check_for_updates))

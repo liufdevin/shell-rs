@@ -3,6 +3,134 @@
 use crate::support::*;
 
 #[gpui_kit::test]
+async fn background_image_controls_follow_appearance_and_preserve_originals(
+    cx: &mut TestAppContext,
+) {
+    use base64::Engine as _;
+    use shellrs::terminal::TerminalBackground;
+    let directory = tempfile::tempdir().unwrap();
+    let picture = directory.path().join("night.png");
+    std::fs::write(&picture, base64::engine::general_purpose::STANDARD.decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aXTkAAAAASUVORK5CYII=").unwrap()).unwrap();
+    let (handle, workspace) = open_workspace(cx);
+    let settings = cx.update(|cx| workspace.read(cx).settings().clone());
+    cx.update(|cx| {
+        settings.update(cx, |store, cx| {
+            store.update(|settings| settings.appearance = Appearance::Dark, cx)
+        })
+    });
+    in_frame(cx, handle, |window, cx| window.click("open-settings", cx));
+    in_frame(cx, handle, |window, cx| {
+        window.within("settings").click("0-0", cx)
+    });
+    for _ in 0..4 {
+        in_frame(cx, handle, |window, cx| {
+            let page = window.find("settings").bounds();
+            window.dispatch_event(
+                gpui_kit::ScrollWheelEvent {
+                    position: point(page.center().x, page.top() + px(60.)),
+                    delta: gpui_kit::ScrollDelta::Pixels(point(px(0.), px(-500.))),
+                    modifiers: Default::default(),
+                    touch_phase: gpui_kit::TouchPhase::Moved,
+                }
+                .to_platform_input(),
+                cx,
+            );
+        });
+    }
+    in_frame(cx, handle, |window, cx| {
+        assert_eq!(window.find("background-image-dark").label(), Some("未选择"));
+        window.click("background-choose-dark", cx);
+    });
+    assert!(cx.did_prompt_for_paths());
+    cx.simulate_path_prompt_response(|_| Some(vec![picture.clone()]));
+    cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
+        TerminalBackground::current(cx).is_some()
+    })
+    .await;
+    cx.update(|cx| {
+        let current = TerminalBackground::current(cx).unwrap();
+        assert_eq!(current.image().as_ref(), picture.as_path());
+        assert_eq!(current.opacity(), 0.3);
+        assert!(
+            settings
+                .read(cx)
+                .settings()
+                .terminal_background
+                .light
+                .image
+                .is_none()
+        );
+    });
+    in_frame(cx, handle, |window, cx| {
+        let bounds = window.find("background-opacity-dark").bounds();
+        click_at(
+            window,
+            point(bounds.left() + bounds.size.width * 0.8, bounds.center().y),
+            Default::default(),
+            cx,
+        );
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
+        settings
+            .read(cx)
+            .settings()
+            .terminal_background
+            .dark
+            .opacity
+            > 0.5
+    })
+    .await;
+    for appearance in [Appearance::Light, Appearance::Dark] {
+        cx.update(|cx| {
+            settings.update(cx, |store, cx| {
+                store.update(|settings| settings.appearance = appearance, cx)
+            })
+        });
+        cx.run_until_parked();
+        cx.update(|cx| {
+            assert_eq!(
+                TerminalBackground::current(cx).is_some(),
+                appearance == Appearance::Dark
+            )
+        });
+    }
+    in_frame(cx, handle, |window, cx| {
+        window
+            .within("settings")
+            .within("group-3")
+            .within("item-0")
+            .click("check", cx)
+    });
+    cx.update(|cx| {
+        assert!(TerminalBackground::current(cx).is_none());
+        assert!(
+            settings
+                .read(cx)
+                .settings()
+                .terminal_background
+                .dark
+                .image
+                .is_some()
+        );
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.click("background-clear-dark", cx)
+    });
+    cx.update(|cx| {
+        assert!(
+            settings
+                .read(cx)
+                .settings()
+                .terminal_background
+                .dark
+                .image
+                .is_none()
+        )
+    });
+    assert!(picture.exists());
+}
+
+#[gpui_kit::test]
 async fn default_start_folder_can_be_chosen_and_reset_from_settings(cx: &mut TestAppContext) {
     let root = tempfile::tempdir().unwrap();
     let (handle, workspace) = open_workspace(cx);

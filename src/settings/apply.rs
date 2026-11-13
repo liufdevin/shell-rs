@@ -2,7 +2,9 @@ use gpui_kit::component::{ActiveTheme as _, Theme, ThemeMode};
 use gpui_kit::*;
 
 use crate::explorer::{FileIconStyle, FileSizeFormat, ShowHiddenFiles};
+use crate::host::ShowHostDetails;
 use crate::i18n::UiLocale;
+use crate::terminal::{BackgroundImage, TerminalBackground};
 use crate::terminal::{
     TerminalColors, TerminalFont, TerminalHighlights, TerminalInteraction, is_font_installed,
 };
@@ -52,6 +54,21 @@ pub fn apply(settings: AppSettings, window: &mut Window, cx: &mut App) {
     if cx.try_global::<TerminalColors>() != Some(&colors) {
         cx.set_global(colors);
         window.refresh();
+    }
+
+    let picture = settings.terminal_background.for_mode(mode);
+    let background = TerminalBackground::new(
+        picture
+            .shown()
+            .map(|image| BackgroundImage::new(image, picture.opacity)),
+    );
+    if cx.try_global::<TerminalBackground>() != Some(&background) {
+        cx.set_global(background);
+        window.refresh();
+    }
+    let details = ShowHostDetails(settings.host_details);
+    if cx.try_global::<ShowHostDetails>() != Some(&details) {
+        cx.set_global(details);
     }
 
     // Text is translated where it is drawn, so a redraw has it in the new

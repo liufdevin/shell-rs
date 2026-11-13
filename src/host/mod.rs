@@ -24,7 +24,7 @@ pub use host_dialog::{
     DeleteHandler, Dependents, HostForm, confirm_delete_host, join_sentences, open_host_dialog,
     open_temporary_connection_dialog,
 };
-pub use host_panel::{HostPanel, host_menu, import_menu_items};
+pub use host_panel::{HostPanel, ShowHostDetails, host_menu, import_menu_items};
 pub use import::{
     ImportHandler, ImportLoad, ImportOutcome, ImportScan, ImportSource, open_import_dialog,
     open_mobaxterm_preview, read_mobaxterm_configuration,

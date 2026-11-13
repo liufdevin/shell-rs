@@ -1,5 +1,6 @@
 //! 终端: shared terminal emulation, transports and Dock panels.
 
+mod background;
 mod box_drawing;
 mod broadcast;
 mod cmder;
@@ -37,6 +38,7 @@ mod timestamps;
 mod transport;
 mod zmodem;
 
+pub use background::{BackgroundImage, TerminalBackground};
 pub(crate) use broadcast::BroadcastSelection;
 pub use cmder::Cmder;
 pub use command_terminal::{SshCommand, command_terminal_factory};

@@ -4,6 +4,122 @@
 use crate::support::*;
 
 #[gpui_kit::test]
+fn host_details_toggle_shows_address_notes_and_variable_height_rows(cx: &mut TestAppContext) {
+    let mut store = HostStore::seed();
+    let draft = store
+        .host(HostId(WEB_01))
+        .unwrap()
+        .draft()
+        .with_notes("机房 A\n\n负责人：张三");
+    store.update_unnotified(HostId(WEB_01), draft);
+    let (handle, workspace) = open_workspace_with_store(cx, store);
+    let collapsed = in_frame(cx, handle, |window, _| {
+        assert!(window.try_find(("host-address", WEB_01)).is_none());
+        assert_eq!(
+            window.find("toggle-host-details").label(),
+            Some("显示主机详情")
+        );
+        window.find(("host-row", WEB_01)).bounds().size.height
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.click("toggle-host-details", cx)
+    });
+    in_frame(cx, handle, |window, _| {
+        assert_eq!(
+            window.find(("host-address", WEB_01)).label(),
+            Some("root@10.0.1.12:22")
+        );
+        assert_eq!(
+            window.find(("host-note", WEB_01)).label(),
+            Some("机房 A · 负责人：张三")
+        );
+        assert!(window.try_find(("host-note", WEB_02)).is_none());
+        let mark = window.find(("host-os", WEB_01)).bounds();
+        let address = window.find(("host-address", WEB_01)).bounds();
+        let note = window.find(("host-note", WEB_01)).bounds();
+        let first = window.find(("host-row", WEB_01)).bounds();
+        let second = window.find(("host-row", WEB_02)).bounds();
+        assert!(address.left() >= mark.right());
+        assert_eq!(address.left(), note.left());
+        assert!(note.top() >= address.bottom() && note.bottom() <= first.bottom());
+        assert!(first.size.height > second.size.height && second.size.height > collapsed);
+        assert!(second.top() >= first.bottom() - px(0.5));
+        assert_eq!(
+            window.find(("group-row", PRODUCTION)).bounds().size.height,
+            collapsed
+        );
+    });
+    assert!(workspace.read_with(cx, |workspace, cx| {
+        workspace.settings().read(cx).settings().host_details
+    }));
+    in_frame(cx, handle, |window, cx| {
+        window.click("toggle-host-details", cx)
+    });
+    in_frame(cx, handle, |window, _| {
+        assert!(window.try_find(("host-address", WEB_01)).is_none());
+        assert_eq!(
+            window.find(("host-row", WEB_01)).bounds().size.height,
+            collapsed
+        );
+    });
+}
+
+#[gpui_kit::test]
+fn host_details_restore_at_startup_without_tooltips_and_tree_arrows_work(cx: &mut TestAppContext) {
+    let mut settings = settings_store();
+    settings.update_unnotified(|settings| settings.host_details = true);
+    let (handle, _) = open_workspace_with_settings_and_tester(
+        cx,
+        HostStore::seed(),
+        settings,
+        Arc::new(FakeConnectionTester::default()),
+    );
+    in_frame(cx, handle, |window, cx| {
+        assert_eq!(
+            window.find(("host-address", WEB_01)).label(),
+            Some("root@10.0.1.12:22")
+        );
+        window.hover(("host-row", WEB_01), cx);
+    });
+    cx.executor().advance_clock(Duration::from_secs(1));
+    cx.run_until_parked();
+    in_frame(cx, handle, |window, cx| {
+        assert!(window.try_find("host-tooltip").is_none());
+        window.click(("host-row", WEB_01), cx);
+        window.press("down", cx);
+    });
+    in_frame(cx, handle, |window, cx| {
+        assert_eq!(window.find(("host-row", WEB_02)).selected(), Some(true));
+        assert_eq!(window.find("host-tree").focused(), Some(true));
+        window.press("up", cx);
+        window.press("up", cx);
+        window.press("up", cx);
+    });
+    in_frame(cx, handle, |window, cx| {
+        assert_eq!(
+            window.find(("group-row", PRODUCTION)).selected(),
+            Some(true)
+        );
+        window.press("left", cx);
+    });
+    in_frame(cx, handle, |window, cx| {
+        assert_eq!(
+            window.find(("group-row", PRODUCTION)).expanded(),
+            Some(false)
+        );
+        assert!(window.try_find(("host-row", WEB_01)).is_none());
+        window.press("right", cx);
+    });
+    in_frame(cx, handle, |window, cx| {
+        assert!(window.find(("host-row", WEB_01)).visible());
+        window.press("up", cx);
+    });
+    in_frame(cx, handle, |window, _| {
+        assert_eq!(window.find(("host-row", DEV_BOX)).selected(), Some(true));
+    });
+}
+
+#[gpui_kit::test]
 async fn serial_hosts_automatically_sort_on_open_insert_and_rename(cx: &mut TestAppContext) {
     use shellrs::host::SerialSettings;
 

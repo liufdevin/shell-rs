@@ -8,6 +8,8 @@ One section per version, titled `## [version]`, optionally followed by a date. E
 
 ### Added
 
+- Ported terminal background images from main, with separate light/dark pictures, enable controls, transparency, previews and clearing. Images are kept in the data directory and cover each terminal split independently.
+- Ported the Show host details toggle beside the host search field, with persistent address/note visibility and variable-height rows while retaining lf's manual host ordering and drag-and-drop behavior.
 - MobaXterm configurations can import hosts and colors together. Appearance reads current and named palettes from `.mobaconf/.ini` with optional host import; host migration offers accompanying palettes. Hosts and colors are selected independently and saved only after confirmation. Xshell palette import and existing host deduplication remain unchanged.
 - Settings → Sync → Migrate hosts supports MobaXterm `.mobaconf`, `.ini`, `.mxtsessions` and single-host `.moba` files. Preview SSH hosts, notes and nested groups before adding them without overwriting saved hosts. Passwords, private keys and recent connections are not imported; interface-only exports explain that they contain no saved hosts.
 - Remote network connections automatically show each device's P2P-direct or relayed path and refresh it in the background about every five seconds, with summaries in the server sidebar and network dialog. Queries do not probe device ports or ICMP or block connection controls, and old paths are not reused after lookup failures, address changes or reconnection.

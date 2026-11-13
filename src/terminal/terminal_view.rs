@@ -2050,6 +2050,15 @@ impl Render for TerminalView {
             // The margin and the part of a cell the grid does not fill are
             // the terminal's too.
             .bg(TerminalColors::current(cx).background())
+            .when_some(
+                super::TerminalBackground::current(cx),
+                |container, picture| {
+                    container.children(super::TerminalBackground::layers(
+                        picture,
+                        TerminalColors::current(cx).background(),
+                    ))
+                },
+            )
             // An I-beam over the text, as in other terminals; the scrollbar
             // and a link under the open key set their own pointer over it.
             .cursor_text()
@@ -2510,6 +2519,7 @@ impl Element for TerminalElement {
         }
 
         let palette = TerminalPalette::new(cx);
+        let left_out = super::TerminalBackground::current(cx).map(|_| palette.background);
         let geometry = TerminalGeometry {
             bounds,
             cell_width,
@@ -2569,6 +2579,7 @@ impl Element for TerminalElement {
                         background_start..column,
                         row_index,
                         background_color.unwrap_or(palette.background),
+                        left_out,
                     );
                     background_start = column;
                     background_color = Some(cell_background);
@@ -2654,6 +2665,7 @@ impl Element for TerminalElement {
                 background_start..row.len(),
                 row_index,
                 background_color.unwrap_or(palette.background),
+                left_out,
             );
             let line = window.text_system().shape_line(
                 text.into(),
@@ -3156,8 +3168,9 @@ fn push_background(
     columns: Range<usize>,
     row: usize,
     color: Hsla,
+    left_out: Option<Hsla>,
 ) {
-    if columns.is_empty() {
+    if columns.is_empty() || left_out == Some(color) {
         return;
     }
     quads.push(fill(
