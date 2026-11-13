@@ -8,7 +8,7 @@ use crate::app::{CatalogIcon, ToggleTerminalBroadcast};
 use crate::i18n::t;
 use gpui_kit::component::dock::{
     BasePanelView, DockArea, DockAreaRenderer, DockContext, DockSkin, DropIndicator, NodeId,
-    PanelState, PanelStyle, TabGroupContext, TabGroupRenderer, TilesRenderer,
+    PanelState, TabGroupContext, TabGroupRenderer, TilesRenderer,
 };
 use gpui_kit::component::{
     ActiveTheme as _, Icon, Selectable as _, Sizable as _,
@@ -80,7 +80,6 @@ pub(super) struct WorkspaceDockSkin {
     // does among others, while the sidebars keep their plain title. The
     // leading one adds the broadcast control. Center bars hide the built-in
     // sidebar toggle, which the workspace title bar provides.
-    center_skin: Rc<DockSkin>,
     /// The center's tab groups, which the workspace keeps in step with the
     /// layout (`set_center_groups`).
     center_groups: Rc<RefCell<Vec<NodeId>>>,
@@ -107,7 +106,6 @@ impl WorkspaceDockSkin {
         let area = cx.new(|cx| {
             let this = Rc::new(Self {
                 skin: DockSkin::new(cx),
-                center_skin: DockSkin::new(cx),
                 center_groups: Rc::default(),
                 broadcast: Rc::default(),
                 target,
@@ -120,8 +118,6 @@ impl WorkspaceDockSkin {
         });
         // The closure above runs before `cx.new` returns.
         let skin = skin.expect("the skin is built inside the constructor");
-        skin.center_skin.set_toggle_button_visible(false, cx);
-        skin.center_skin.set_panel_style(PanelStyle::TabBar, cx);
         (area, skin)
     }
 
@@ -212,10 +208,10 @@ impl DockAreaRenderer for WorkspaceDockSkin {
     fn tab_group_renderer(&self) -> Rc<dyn TabGroupRenderer> {
         Rc::new(WorkspaceTabBar {
             skin: self.skin.tab_group_renderer(),
-            center_skin: self.center_skin.tab_group_renderer(),
             center_groups: self.center_groups.clone(),
             broadcast: self.broadcast.clone(),
             target: self.target.clone(),
+            tabs: super::terminal_tab_bar::TerminalTabBar::default(),
         })
     }
 
@@ -256,8 +252,8 @@ fn wheel_scrolls_tabs(tabs: AnyElement) -> Div {
 /// Add the permanent broadcast toggle ahead of the leading center tab strip.
 /// Dock's renderer still owns tabs, dragging, overflow, menus and focus.
 struct WorkspaceTabBar {
+    tabs: super::terminal_tab_bar::TerminalTabBar,
     skin: Rc<dyn TabGroupRenderer>,
-    center_skin: Rc<dyn TabGroupRenderer>,
     center_groups: Rc<RefCell<Vec<NodeId>>>,
     broadcast: Rc<Cell<TabBarControls>>,
     target: FocusHandle,
@@ -290,13 +286,12 @@ impl TabGroupRenderer for WorkspaceTabBar {
         let state = self.broadcast.get();
         if state.node != Some(group.node()) {
             return if self.center_groups.borrow().contains(&group.node()) {
-                wheel_scrolls_tabs(self.center_skin.render_tab_bar(group, window, cx))
-                    .into_any_element()
+                wheel_scrolls_tabs(self.tabs.render(group, window, cx)).into_any_element()
             } else {
                 self.skin.render_tab_bar(group, window, cx)
             };
         }
-        let tabs = self.center_skin.render_tab_bar(group, window, cx);
+        let tabs = self.tabs.render(group, window, cx);
         h_flex()
             .w_full()
             .bg(cx.theme().tokens.tab_bar)

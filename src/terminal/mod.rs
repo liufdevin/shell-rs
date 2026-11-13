@@ -54,7 +54,7 @@ pub(crate) use environment::strip_launcher_vars;
 pub use exec::{ExecTarget, exec_answer};
 pub use font::{
     DEFAULT_FONT_SIZE, DEFAULT_LINE_HEIGHT, FONT_SIZE_RANGE, LINE_HEIGHT_RANGE, TerminalFont,
-    TerminalFontPreview, is_font_installed, monospace_font_families,
+    TerminalFontPreview, is_font_installed, monospace_font_families, system_font_families,
 };
 pub use highlight::{
     HighlightColor, HighlightRule, HighlightSet, PatternError, TerminalHighlights, default_rules,

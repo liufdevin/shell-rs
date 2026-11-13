@@ -1239,8 +1239,9 @@ fn the_interface_font_size_is_set_on_the_appearance_page(cx: &mut TestAppContext
         window.within("settings").click("0-0", cx)
     });
     in_frame(cx, handle, |window, _| {
+        assert_eq!(appearance_dropdown(window, 2), Some("系统默认".into()));
         assert_eq!(
-            appearance_dropdown(window, 2),
+            appearance_dropdown(window, 3),
             Some(format!("{DEFAULT_INTERFACE_FONT_SIZE}（默认）"))
         )
     });
@@ -1254,7 +1255,7 @@ fn the_interface_font_size_is_set_on_the_appearance_page(cx: &mut TestAppContext
     });
     cx.run_until_parked();
     in_frame(cx, handle, |window, _| {
-        assert_eq!(appearance_dropdown(window, 2).as_deref(), Some("18"))
+        assert_eq!(appearance_dropdown(window, 3).as_deref(), Some("18"))
     });
     cx.update(|cx| assert_eq!(cx.theme().font_size.as_f32(), 18.));
 }

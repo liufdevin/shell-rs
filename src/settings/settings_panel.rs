@@ -34,6 +34,7 @@ use crate::sync::SyncService;
 use crate::terminal::{
     FONT_SIZE_RANGE, LINE_HEIGHT_RANGE, TerminalColors, TerminalCursorStyle, TerminalFont,
     TerminalFontPreview, TerminalHighlights, is_font_installed, monospace_font_families,
+    system_font_families,
 };
 use crate::update::{Phase, Tone, UpdateSnapshot, UpdateStep, Updater, build_info, platform};
 
@@ -44,8 +45,8 @@ use super::shortcuts_editor::{ShortcutsEditor, shortcut_groups};
 use super::sidebar_tools::sidebar_tools_group;
 use super::terminal_themes::{app_follows_item, terminal_theme_item};
 use super::{
-    AppSettings, Choice, INTERFACE_FONT_SIZE_RANGE, NotificationSettings, SettingsStore,
-    WindowSettings,
+    AppSettings, Choice, DEFAULT_INTERFACE_FONT_FAMILY, INTERFACE_FONT_SIZE_RANGE,
+    NotificationSettings, SettingsStore, WindowSettings,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -82,6 +83,7 @@ pub struct SettingsPanel {
     /// The monospace families to choose the terminal font from; empty until
     /// the scan in the background comes back.
     font_families: &'static [SharedString],
+    interface_font_families: &'static [SharedString],
     /// The category last shown, for coming back to it. `Settings` keeps its
     /// choice in element state, which goes while the tab is hidden; its
     /// page header records the category it draws.
@@ -120,11 +122,17 @@ impl SettingsPanel {
         // keeps the answer, so later tabs have it at once.
         let text_system = cx.text_system().clone();
         let font_scan = cx.spawn(async move |this, cx| {
-            let families = cx
-                .background_spawn(async move { monospace_font_families(&text_system) })
+            let (families, interface_families) = cx
+                .background_spawn(async move {
+                    (
+                        monospace_font_families(&text_system),
+                        system_font_families(&text_system),
+                    )
+                })
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.font_families = families;
+                this.interface_font_families = interface_families;
                 cx.notify();
             });
         });
@@ -143,6 +151,7 @@ impl SettingsPanel {
             shortcuts,
             local_shell,
             font_families: &[],
+            interface_font_families: &[],
             shown_category: Rc::default(),
             focus_handle: cx.focus_handle(),
             tab_group: None,
@@ -398,6 +407,12 @@ fn appearance_groups(panel: &SettingsPanel, _: &App) -> Vec<SettingGroup> {
                         |settings, appearance| settings.appearance = appearance,
                     ),
                 ),
+                SettingItem::new(
+                    t!("settings.appearance.font_family"),
+                    interface_font_family_field(panel),
+                )
+                .description(t!("settings.appearance.font_family_description"))
+                .keywords(keywords(t!("settings.appearance.font_family_keywords"))),
                 SettingItem::new(
                     t!("settings.appearance.font_size"),
                     font_size_field(
@@ -1733,6 +1748,52 @@ fn font_family_field(panel: &SettingsPanel, cx: &App) -> SettingField<SharedStri
             let family = (family != unset).then(|| family.to_string());
             writer.update(cx, |store, cx| {
                 store.update(|settings| settings.terminal_font.family = family, cx)
+            });
+        },
+    )
+    .default_value(default_family)
+}
+
+fn interface_font_family_field(panel: &SettingsPanel) -> SettingField<SharedString> {
+    let default_family = SharedString::from(DEFAULT_INTERFACE_FONT_FAMILY);
+    let mut families = vec![default_family.clone()];
+    families.extend(
+        panel
+            .interface_font_families
+            .iter()
+            .filter(|family| *family != &default_family)
+            .cloned(),
+    );
+    let options = families
+        .into_iter()
+        .map(|family| {
+            let label = if family == default_family {
+                t!("settings.appearance.font_family_default")
+            } else {
+                family.clone()
+            };
+            (family, label)
+        })
+        .collect();
+    let (reader, writer) = (panel.store.clone(), panel.store.clone());
+    let unset = default_family.clone();
+    let reader_default = default_family.clone();
+    SettingField::scrollable_dropdown(
+        options,
+        move |cx| {
+            reader
+                .read(cx)
+                .settings()
+                .interface
+                .font_family
+                .clone()
+                .filter(|family| is_font_installed(family, cx))
+                .unwrap_or_else(|| reader_default.clone())
+        },
+        move |family: SharedString, cx| {
+            let family = (family != unset).then_some(family);
+            writer.update(cx, |store, cx| {
+                store.update(|settings| settings.interface.font_family = family, cx)
             });
         },
     )

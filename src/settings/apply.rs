@@ -9,8 +9,8 @@ use crate::terminal::{
     TerminalColors, TerminalFont, TerminalHighlights, TerminalInteraction, is_font_installed,
 };
 
-use super::AppSettings;
 use super::app_theme::{ui_theme, ui_theme_name};
+use super::{AppSettings, DEFAULT_INTERFACE_FONT_FAMILY};
 
 /// Bring the window in line with the settings: the theme chosen for the
 /// appearance, in the app and its terminals, the interface's font size, the
@@ -39,6 +39,18 @@ pub fn apply(settings: AppSettings, window: &mut Window, cx: &mut App) {
         Theme::change(mode, Some(window), cx);
         // The theme change resets the list hover to the theme's own.
         crate::app::deepen_list_hover(cx);
+    }
+
+    let interface_family = settings
+        .interface
+        .font_family
+        .clone()
+        .filter(|family| is_font_installed(family, cx))
+        .unwrap_or_else(|| DEFAULT_INTERFACE_FONT_FAMILY.into());
+    if cx.theme().font_family != interface_family {
+        Theme::global_mut(cx).font_family = interface_family;
+        Theme::sync_base(cx);
+        window.refresh();
     }
 
     // 界面字号: the base font the interface's sizes follow. After the theme,

@@ -8,6 +8,7 @@ One section per version, titled `## [version]`, optionally followed by a date. E
 
 ### Added
 
+- Appearance now offers an interface font chosen from fonts installed on the computer, applied immediately and saved. It follows the system UI font by default and falls back when a saved font is unavailable; terminal text keeps its own font setting.
 - Ported terminal background images from main, with separate light/dark pictures, enable controls, transparency, previews and clearing. Images are kept in the data directory and cover each terminal split independently.
 - Ported the Show host details toggle beside the host search field, with persistent address/note visibility and variable-height rows while retaining lf's manual host ordering and drag-and-drop behavior.
 - MobaXterm configurations can import hosts and colors together. Appearance reads current and named palettes from `.mobaconf/.ini` with optional host import; host migration offers accompanying palettes. Hosts and colors are selected independently and saved only after confirmation. Xshell palette import and existing host deduplication remain unchanged.
@@ -17,6 +18,7 @@ One section per version, titled `## [version]`, optionally followed by a date. E
 
 ### Fixed
 
+- Background terminal output uses a steady red dot to the left of the host icon plus a full-width 1px strip at the actual Dock tab’s top edge, rather than over its inset title content. No flashing, added text or bold labels; fixed positioning keeps dimensions unchanged, and returning or disabling indicators clears both.
 - Shift+Insert now pastes in Windows and Linux terminals instead of sending the Insert escape sequence and displaying `^[[2~`. It uses the existing paste encoding, bracketed-paste and broadcast handling while preserving Ctrl+Shift+V and custom shortcuts.
 - Network checks now show P2P-direct, relayed and unknown device counts in the remote network dialog, with access to per-device path details. Invalidated or expired results are not presented as current paths.
 - Manual host ordering takes priority over automatic name sorting and survives restarts. Each group and the root level remember their own mode, with Sort automatically in the context menu to restore name sorting.

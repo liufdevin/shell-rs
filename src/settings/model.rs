@@ -92,6 +92,8 @@ pub const INTERFACE_FONT_SIZE_RANGE: std::ops::RangeInclusive<f32> = 12.0..=20.0
 /// gpui-kit's own base font, which the interface had before it could change;
 /// on Windows 14, where its body text then is the system's own 9 points.
 pub const DEFAULT_INTERFACE_FONT_SIZE: f32 = if cfg!(windows) { 14.0 } else { 16.0 };
+/// The platform's own interface font, which gpui-kit names this way.
+pub const DEFAULT_INTERFACE_FONT_FAMILY: &str = ".SystemUIFont";
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -107,9 +109,11 @@ impl Default for DeviceLogAppearance {
 }
 
 /// 外观 → 常规.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct InterfaceSettings {
+    /// 界面字体: an installed family, or the platform's system UI font.
+    pub font_family: Option<SharedString>,
     /// 界面字号: the base font in pixels, which the interface's text and
     /// spacing follow. Terminals have their own.
     pub font_size: f32,
@@ -118,6 +122,7 @@ pub struct InterfaceSettings {
 impl Default for InterfaceSettings {
     fn default() -> Self {
         Self {
+            font_family: None,
             font_size: DEFAULT_INTERFACE_FONT_SIZE,
         }
     }
@@ -683,6 +688,8 @@ impl AppSettings {
         self.device_logs.font_size = self.device_logs.font_size.clamp(12, 24);
         // Whole pixels in range; what is not a number gives the default.
         let size = self.interface.font_size;
+        let family = self.interface.font_family.take();
+        self.interface.font_family = family.filter(|family| !family.trim().is_empty());
         self.interface.font_size = if size.is_finite() {
             size.clamp(
                 *INTERFACE_FONT_SIZE_RANGE.start(),
@@ -1069,11 +1076,25 @@ mod tests {
             (f32::NAN, default),
         ] {
             let settings = AppSettings {
-                interface: InterfaceSettings { font_size: written },
+                interface: InterfaceSettings {
+                    font_family: None,
+                    font_size: written,
+                },
                 ..AppSettings::default()
             };
             assert_eq!(settings.normalized().interface.font_size, kept, "{written}");
         }
+        let settings: AppSettings =
+            serde_json::from_str(r#"{"interface":{"font_family":"  ","font_size":16}}"#).unwrap();
+        assert_eq!(settings.normalized().interface.font_family, None);
+        let settings: AppSettings = serde_json::from_str(
+            r#"{"interface":{"font_family":"Noto Sans CJK SC","font_size":16}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            settings.normalized().interface.font_family.as_deref(),
+            Some("Noto Sans CJK SC")
+        );
     }
 
     /// 最大同时传输数量: three unless the file says otherwise, and never

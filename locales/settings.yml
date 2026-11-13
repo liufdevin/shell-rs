@@ -178,6 +178,18 @@ settings.appearance.mode:
 settings.appearance.font_size:
   zh-CN: 界面字号
   en: Interface font size
+settings.appearance.font_family:
+  zh-CN: 界面字体
+  en: Interface font
+settings.appearance.font_family_default:
+  zh-CN: 系统默认
+  en: System default
+settings.appearance.font_family_description:
+  zh-CN: 从系统已安装的字体中选择。终端字体仍在「终端」里单独设置。
+  en: Choose from fonts installed on this computer. Terminal text has its own font under Terminal.
+settings.appearance.font_family_keywords:
+  zh-CN: 字体,界面字体,系统字体,字体族,font,typeface,interface
+  en: font,typeface,interface,system font,font family
 settings.appearance.font_size_description:
   zh-CN: 以像素计，界面的文字和间距随之缩放。终端的字号在「终端」里单独设置。
   en: In pixels. The app’s text and spacing follow it. Terminals have their own font size, under Terminal.
@@ -390,8 +402,8 @@ settings.notifications.tab_output:
   zh-CN: 标签新输出提示
   en: New output indicator
 settings.notifications.tab_output_description:
-  zh-CN: 后台终端有新输出时，在标签左上角显示红点；切回标签后清除。
-  en: Show a red dot at the top left of a background terminal tab when new output arrives. Clear it when you return to the tab.
+  zh-CN: 后台终端有新输出时，显示图标左侧常亮红点，并在整个标签最顶边绘制横跨全宽的 1px 色条；不闪烁、不改变标签尺寸，切回标签后同时清除。
+  en: Show a steady red dot to the left of the icon and a full-width 1px strip along the tab’s top edge. No flashing or tab resizing; returning clears both.
 
 # 终端 › 本地终端.
 settings.local_terminal.title:

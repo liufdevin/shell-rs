@@ -90,6 +90,24 @@ pub fn is_font_installed(family: &str, cx: &App) -> bool {
         .contains(family)
 }
 
+/// The installed font families, alphabetically, except hidden system
+/// families. Loads every family once per process, so call it off the main
+/// thread when the settings page opens.
+pub fn system_font_families(text_system: &TextSystem) -> &'static [SharedString] {
+    static FAMILIES: OnceLock<Vec<SharedString>> = OnceLock::new();
+    FAMILIES.get_or_init(|| {
+        let mut families: Vec<_> = text_system
+            .all_font_names()
+            .into_iter()
+            .filter(|family| !family.starts_with('.') && !family.trim().is_empty())
+            .map(SharedString::from)
+            .collect();
+        families.sort_by_key(|family| family.to_lowercase());
+        families.dedup_by(|left, right| left.eq_ignore_ascii_case(right));
+        families
+    })
+}
+
 /// The installed families fit for a terminal, alphabetically: every letter
 /// as wide as the next, and narrower than a square, which leaves out symbol
 /// fonts such as Webdings drawn on fixed squares. Hidden system families
@@ -101,12 +119,10 @@ pub fn monospace_font_families(text_system: &TextSystem) -> &'static [SharedStri
     static MONOSPACE: OnceLock<Vec<SharedString>> = OnceLock::new();
     MONOSPACE.get_or_init(|| {
         let size = px(16.);
-        text_system
-            .all_font_names()
-            .into_iter()
-            .filter(|family| !family.starts_with('.'))
+        system_font_families(text_system)
+            .iter()
             .filter(|family| {
-                let id = text_system.resolve_font(&font(family.clone()));
+                let id = text_system.resolve_font(&font((*family).clone()));
                 match (
                     text_system.advance(id, size, 'i'),
                     text_system.advance(id, size, 'M'),
@@ -117,7 +133,7 @@ pub fn monospace_font_families(text_system: &TextSystem) -> &'static [SharedStri
                     _ => false,
                 }
             })
-            .map(SharedString::from)
+            .cloned()
             .collect()
     })
 }

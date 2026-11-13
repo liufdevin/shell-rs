@@ -1,4 +1,10 @@
 _version: 2
+workspace.dock.zoom_in:
+  zh-CN: 最大化面板
+  en: Zoom in panel
+workspace.dock.zoom_out:
+  zh-CN: 还原面板
+  en: Restore panel
 workspace.title_bar.new_cmder_terminal:
   zh-CN: 新建 Cmder 终端
   en: New Cmder terminal

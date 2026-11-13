@@ -2039,6 +2039,17 @@ fn print_into(cx: &mut TestAppContext, workspace: &Entity<Workspace>, id: u64, t
 async fn tab_output_indicator_marks_only_unread_background_output(cx: &mut TestAppContext) {
     let (handle, workspace) =
         open_running_local_terminal(cx, Arc::new(FakeTerminalFactory::default())).await;
+    let tab_frame = cx.update(|cx| {
+        (
+            "dock-tab-frame",
+            workspace
+                .read(cx)
+                .local_terminal(LocalTerminalId(1))
+                .unwrap()
+                .entity_id()
+                .as_u64(),
+        )
+    });
     print_into(cx, &workspace, 1, "foreground-output");
     cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
         local_screen(&workspace, cx).contains("foreground-output")
@@ -2068,13 +2079,14 @@ async fn tab_output_indicator_marks_only_unread_background_output(cx: &mut TestA
             store.update(|settings| settings.terminal_font.size = 16., cx)
         })
     });
-    in_frame(cx, handle, |window, _| {
+    let idle_title = in_frame(cx, handle, |window, _| {
         assert!(
             window
                 .within(("local-terminal-tab", 1u64))
                 .try_find("new-output")
                 .is_none()
         );
+        window.find(("local-terminal-tab", 1u64)).bounds()
     });
     print_into(cx, &workspace, 1, "background-output");
     cx.wait_for(handle.into(), Duration::from_secs(3), |window, cx| {
@@ -2085,14 +2097,46 @@ async fn tab_output_indicator_marks_only_unread_background_output(cx: &mut TestA
             .is_some()
     })
     .await;
-    in_frame(cx, handle, |window, cx| {
+    in_frame(cx, handle, |window, _| {
         let dot = window
             .within(("local-terminal-tab", 1u64))
             .find("new-output");
         assert_eq!(dot.label(), Some("有新输出"));
+        assert!(dot.bounds().size.width >= px(6.5));
         let title = window.find(("local-terminal-tab", 1u64)).bounds();
+        let strip = window.within(tab_frame).find("new-output-strip").bounds();
+        let frame = window.find(tab_frame).bounds();
+        assert_eq!(strip.top(), frame.top());
+        assert_eq!(strip.left(), frame.left());
+        assert_eq!(strip.size.width, frame.size.width);
+        assert_eq!(strip.size.height, px(1.));
+        assert!(strip.top() < title.top());
+        assert!(strip.size.width > title.size.width);
+        assert_eq!(title.size, idle_title.size);
+        assert_eq!(title.origin, idle_title.origin);
         assert!(dot.bounds().center().x < title.center().x);
-        assert!(dot.bounds().center().y < title.center().y);
+        assert!(dot.bounds().left() >= title.left());
+        assert!(dot.bounds().top() >= title.top());
+        assert!(dot.bounds().bottom() <= title.bottom());
+    });
+    cx.update(|cx| cx.set_reduce_motion(false));
+    for elapsed in [600, 500] {
+        cx.executor().advance_clock(Duration::from_millis(elapsed));
+        in_frame(cx, handle, |window, _| {
+            let dot = window
+                .within(("local-terminal-tab", 1u64))
+                .find("new-output");
+            assert_eq!(dot.label(), Some("有新输出"));
+            assert!(dot.visible());
+            assert!(window.within(tab_frame).find("new-output-strip").visible());
+            assert_eq!(
+                window.find(("local-terminal-tab", 1u64)).bounds(),
+                idle_title
+            );
+        });
+    }
+    cx.update(|cx| cx.set_reduce_motion(true));
+    in_frame(cx, handle, |window, cx| {
         window.click(("local-terminal-tab", 1u64), cx);
     });
     in_frame(cx, handle, |window, cx| {
@@ -2103,6 +2147,18 @@ async fn tab_output_indicator_marks_only_unread_background_output(cx: &mut TestA
                 .is_none()
         );
         window.click(("local-terminal-tab", 2u64), cx);
+    });
+    in_frame(cx, handle, |window, _| {
+        assert!(
+            window
+                .within(tab_frame)
+                .try_find("new-output-strip")
+                .is_none()
+        );
+        assert_eq!(
+            window.find(("local-terminal-tab", 1u64)).bounds().size,
+            idle_title.size
+        );
     });
     print_into(cx, &workspace, 1, "another-background-output");
     cx.wait_for(handle.into(), Duration::from_secs(3), |window, cx| {
@@ -2335,7 +2391,8 @@ async fn tab_output_indicator_does_not_reappear_for_an_idle_cli_redraw(cx: &mut 
 
 #[gpui_kit::test]
 async fn tab_output_indicator_also_tracks_remote_terminals(cx: &mut TestAppContext) {
-    let (store, host) = one_host_store(AuthKind::Password);
+    let (mut store, host) = one_host_store(AuthKind::Password);
+    store.set_host_os_unnotified(host, Some(HostOs::RedHat));
     let (handle, workspace) =
         open_workspace_with_remote_factory(cx, store, Arc::new(FakeTerminalFactory::default()));
     in_frame(cx, handle, |window, cx| {
@@ -2348,8 +2405,25 @@ async fn tab_output_indicator_also_tracks_remote_terminals(cx: &mut TestAppConte
             .is_some_and(|panel| panel.read(cx).lifecycle(cx) == TerminalLifecycle::Running)
     })
     .await;
+    let tab_frame = cx.update(|cx| {
+        (
+            "dock-tab-frame",
+            workspace
+                .read(cx)
+                .remote_terminal(RemoteTerminalId(1))
+                .unwrap()
+                .entity_id()
+                .as_u64(),
+        )
+    });
     in_frame(cx, handle, |window, cx| {
         window.click("new-local-terminal", cx)
+    });
+    let idle_remote = in_frame(cx, handle, |window, _| {
+        (
+            window.find(("terminal-tab", 1u64)).bounds(),
+            window.find(("terminal-tab-os", 1u64)).bounds(),
+        )
     });
     cx.update(|cx| {
         let terminal = workspace
@@ -2374,6 +2448,24 @@ async fn tab_output_indicator_also_tracks_remote_terminals(cx: &mut TestAppConte
     })
     .await;
     in_frame(cx, handle, |window, cx| {
+        let mark = window.find(("terminal-tab-os", 1u64)).bounds();
+        let badge = window
+            .within(("terminal-tab", 1u64))
+            .find("new-output")
+            .bounds();
+        assert!(badge.right() < mark.left());
+        assert!(badge.size.width >= px(6.5));
+        assert_eq!(
+            window.find(("terminal-tab", 1u64)).bounds().size,
+            idle_remote.0.size
+        );
+        assert_eq!(mark.origin, idle_remote.1.origin);
+        let strip = window.within(tab_frame).find("new-output-strip").bounds();
+        let frame = window.find(tab_frame).bounds();
+        assert_eq!(strip.size.width, frame.size.width);
+        assert_eq!(strip.top(), frame.top());
+        assert_eq!(strip.size.height, px(1.));
+        assert!(strip.size.width > idle_remote.0.size.width);
         window.click(("terminal-tab", 1u64), cx)
     });
     in_frame(cx, handle, |window, _| {
@@ -2381,6 +2473,12 @@ async fn tab_output_indicator_also_tracks_remote_terminals(cx: &mut TestAppConte
             window
                 .within(("terminal-tab", 1u64))
                 .try_find("new-output")
+                .is_none()
+        );
+        assert!(
+            window
+                .within(tab_frame)
+                .try_find("new-output-strip")
                 .is_none()
         );
     });
