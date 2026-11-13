@@ -161,6 +161,7 @@ impl HostStore {
         fn set_group_expanded(id: GroupId, expanded: bool) -> bool;
         fn set_all_groups_expanded(expanded: bool) -> bool;
         fn move_node(source: HostNode, drop: NodeDrop) -> bool;
+        fn automatically_order_hosts(parent: Option<GroupId>) -> bool;
         fn remove_group(id: GroupId) -> Vec<HostId>;
         fn record_connection(id: HostId);
         fn set_host_os(id: HostId, os: Option<HostOs>);

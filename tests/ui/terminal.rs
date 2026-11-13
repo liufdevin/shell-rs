@@ -386,6 +386,49 @@ async fn mouse_buttons_send_enter_and_paste_with_terminal_encoding(cx: &mut Test
     });
 }
 
+#[cfg(not(target_os = "macos"))]
+#[gpui_kit::test]
+async fn shift_insert_pastes_in_local_terminals_and_survives_keymap_rebuilds(
+    cx: &mut TestAppContext,
+) {
+    let factory = Arc::new(FakeTerminalFactory::default());
+    let (handle, workspace) = open_running_local_terminal(cx, factory.clone()).await;
+    in_frame(cx, handle, |window, cx| {
+        cx.write_to_clipboard(ClipboardItem::new_string("中文\r\nsecond".into()));
+        window.click(("local-terminal", 1_u64), cx);
+        window.press("shift-insert", cx);
+    });
+    take_written(cx, handle, &factory, "中文\nsecond").await;
+    in_frame(cx, handle, |window, cx| window.press("ctrl-shift-v", cx));
+    take_written(cx, handle, &factory, "中文\nsecond").await;
+    let settings = cx.update(|cx| workspace.read(cx).settings().clone());
+    cx.update(|cx| {
+        settings.update(cx, |store, cx| {
+            store.update(
+                |settings| {
+                    settings.shortcuts.set(
+                        shellrs::app::Shortcut::find("terminal-paste").unwrap(),
+                        "ctrl-alt-v".into(),
+                    );
+                },
+                cx,
+            )
+        })
+    });
+    in_frame(cx, handle, |window, cx| window.press("shift-insert", cx));
+    take_written(cx, handle, &factory, "中文\nsecond").await;
+    in_frame(cx, handle, |window, cx| window.press("ctrl-alt-v", cx));
+    take_written(cx, handle, &factory, "中文\nsecond").await;
+    in_frame(cx, handle, |window, cx| window.press("insert", cx));
+    take_written(cx, handle, &factory, "\x1b[2~").await;
+    in_frame(cx, handle, |window, cx| {
+        cx.write_to_clipboard(ClipboardItem::new_string(String::new()));
+        window.press("shift-insert", cx);
+        window.press("enter", cx);
+    });
+    take_written(cx, handle, &factory, "\r").await;
+}
+
 fn open_workspace_with_factory(
     cx: &mut TestAppContext,
     factory: Arc<FakeTerminalFactory>,
@@ -783,6 +826,8 @@ async fn exited_local_terminal_keeps_its_tab_and_restarts_fresh(cx: &mut TestApp
         window.press("cmd-v", cx);
         #[cfg(not(target_os = "macos"))]
         window.press("ctrl-shift-v", cx);
+        #[cfg(not(target_os = "macos"))]
+        window.press("shift-insert", cx);
         assert!(factory.written_text().is_empty());
 
         let bounds = window.find(("local-terminal", 1_u64)).bounds();

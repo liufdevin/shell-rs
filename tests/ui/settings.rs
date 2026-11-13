@@ -238,7 +238,7 @@ async fn xshell_schemes_import_apply_update_and_delete_in_settings(cx: &mut Test
         );
         assert_eq!(
             window.find("terminal-scheme-support").label(),
-            Some("当前支持：Xshell (.xcs)")
+            Some("当前支持：Xshell (.xcs)、MobaXterm (.mobaconf/.ini)")
         );
     });
     in_frame(cx, handle, |window, cx| {

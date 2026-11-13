@@ -841,6 +841,17 @@ fn key_bindings(overrides: &ShortcutOverrides) -> Vec<KeyBinding> {
         .collect();
     bindings.extend(fixed_global_bindings());
     bindings.extend(shell_keys_in_terminal(&bindings));
+    #[cfg(not(target_os = "macos"))]
+    if let Some(paste) = Shortcut::find("terminal-paste")
+        && let Some(keys) = overrides.keys(paste)
+        && !same_keys(&keys, "shift-insert")
+    {
+        bindings.push(KeyBinding::new(
+            "shift-insert",
+            PasteTerminal,
+            Some(TERMINAL_KEY_CONTEXT),
+        ));
+    }
     bindings.extend(
         SHORTCUTS
             .iter()
@@ -1240,6 +1251,40 @@ mod tests {
                 )
             })
             .collect()
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn shift_insert_is_a_scoped_paste_alias_and_respects_shortcut_overrides() {
+        let paste = shortcut("terminal-paste");
+        let mut overrides = ShortcutOverrides::default();
+        let paste_keys = |overrides: &ShortcutOverrides| {
+            described(&key_bindings(overrides))
+                .into_iter()
+                .filter(|(_, action, context)| {
+                    action == "shellrs::PasteTerminal"
+                        && context.as_deref() == Some(super::TERMINAL_KEY_CONTEXT)
+                })
+                .map(|(keys, _, _)| keys)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(paste_keys(&overrides), ["shift-insert", "ctrl-shift-v"]);
+        overrides.set(paste, "ctrl-alt-v".into());
+        assert_eq!(paste_keys(&overrides), ["shift-insert", "ctrl-alt-v"]);
+        overrides.set(paste, "shift-insert".into());
+        assert_eq!(paste_keys(&overrides), ["shift-insert"]);
+        overrides.disable(paste);
+        assert!(paste_keys(&overrides).is_empty());
+        overrides.reset(paste);
+        overrides.set(shortcut("terminal-copy"), "shift-insert".into());
+        let bindings = described(&key_bindings(&overrides));
+        let effective = bindings
+            .iter()
+            .rfind(|(keys, _, context)| {
+                keys == "shift-insert" && context.as_deref() == Some(super::TERMINAL_KEY_CONTEXT)
+            })
+            .unwrap();
+        assert_eq!(effective.1, "shellrs::CopyTerminal");
     }
 
     fn position(bindings: &[(String, String, Option<String>)], action: &str) -> usize {

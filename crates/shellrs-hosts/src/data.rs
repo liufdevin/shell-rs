@@ -7,6 +7,8 @@ use std::sync::Arc;
 use gpui_shared_string::SharedString;
 use zeroize::Zeroizing;
 
+mod host_order;
+
 use crate::secrets::{
     NoSecretStore, SecretRef, SecretsUnavailable, SharedSecretStore, TemporarySecretStore,
 };
@@ -65,6 +67,7 @@ pub use sync::{
 /// `sftp://` link (外部连接, the app's `SshLink`) and whose terminals get one
 /// channel alone.
 pub struct HostData {
+    manual_host_order: HashSet<Option<GroupId>>,
     serial_assistants: HashMap<String, crate::SerialAssistant>,
     timestamp_targets: HashSet<String>,
     groups: Vec<HostGroup>,
@@ -342,6 +345,7 @@ impl HostData {
     /// An empty memory-only store.
     pub fn empty() -> Self {
         Self {
+            manual_host_order: HashSet::new(),
             serial_assistants: HashMap::new(),
             timestamp_targets: HashSet::new(),
             groups: Vec::new(),
@@ -457,6 +461,7 @@ impl HostData {
         let sync_state = database.sync_state()?;
         let timestamp_targets = database.timestamp_targets()?;
         let serial_assistants = database.serial_assistants()?;
+        let manual_host_order = database.manual_host_order()?;
         recent.truncate(MAX_RECENT);
         let mut bookmarks: HashMap<_, Vec<String>> = HashMap::new();
         let mut bookmark_meta = HashMap::new();
@@ -477,6 +482,7 @@ impl HostData {
             host.credential = draft.credential;
         }
         Ok(Self {
+            manual_host_order,
             serial_assistants,
             timestamp_targets,
             next_group_id: groups.iter().map(|group| group.id.0).max().unwrap_or(0) + 1,
@@ -1037,7 +1043,7 @@ impl HostData {
         if let Some(host) = self.host(copy) {
             self.persist(Change::DuplicateHost, |db| db.insert_host(host));
             self.persist(Change::HostOrder, |db| {
-                db.save_tree_order(&self.groups, &self.hosts)
+                db.save_tree_order(&self.groups, &self.hosts, &self.manual_host_order)
             });
         }
         self.changed();
@@ -1767,7 +1773,7 @@ impl HostData {
             return false;
         }
         self.persist(Change::MoveHostNode, |db| {
-            db.save_tree_order(&self.groups, &self.hosts)
+            db.save_tree_order(&self.groups, &self.hosts, &self.manual_host_order)
         });
         self.changed();
         true
@@ -1836,14 +1842,17 @@ impl HostData {
                     None => None,
                 };
                 let siblings = self
-                    .hosts
-                    .iter()
-                    .filter(|s| s.group == parent)
-                    .map(|s| (s.sort_order, s.id))
+                    .hosts_in_order(parent)
+                    .into_iter()
+                    .enumerate()
+                    .map(|(order, host)| (order as i64, host.id))
                     .collect();
                 let Some(ids) = reordered(siblings, id, target, after) else {
                     return false;
                 };
+                if target.is_some() {
+                    self.manual_host_order.insert(parent);
+                }
                 for host in &mut self.hosts {
                     let before = (host.group, host.sort_order);
                     if host.id == id {
@@ -1897,6 +1906,8 @@ impl HostData {
         let mut doomed = self.descendant_groups(id);
         doomed.push(id);
         self.groups.retain(|group| !doomed.contains(&group.id));
+        self.manual_host_order
+            .retain(|parent| parent.is_none_or(|id| !doomed.contains(&id)));
         self.sync_revision += 1;
         // As the database's `ON DELETE CASCADE` does.
         self.snippets.retain(|snippet| match snippet.scope {
@@ -3581,7 +3592,7 @@ mod tests {
         let mut store = HostData::seed();
         let web = HostNode::Host(HostId(1));
         let db = HostNode::Host(HostId(3));
-        assert!(store.move_node_unnotified(db, NodeDrop::Before(web)));
+        assert!(store.move_node_unnotified(db, NodeDrop::After(web)));
         let mut production: Vec<_> = store
             .hosts()
             .iter()
@@ -3590,9 +3601,9 @@ mod tests {
         production.sort_by_key(|host| host.sort_order);
         assert_eq!(
             production.iter().map(|host| host.id).collect::<Vec<_>>(),
-            [HostId(3), HostId(1), HostId(2)]
+            [HostId(1), HostId(3), HostId(2)]
         );
-        assert!(!store.move_node_unnotified(db, NodeDrop::Before(web)));
+        assert!(!store.move_node_unnotified(db, NodeDrop::After(web)));
 
         assert!(store.move_node_unnotified(web, NodeDrop::Into(GroupId(2))));
         assert_eq!(store.host(HostId(1)).unwrap().group, Some(GroupId(2)));

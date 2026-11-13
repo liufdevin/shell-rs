@@ -11,8 +11,10 @@ use gpui_kit::*;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 
+mod mobaxterm;
 mod xshell;
 
+pub(crate) use mobaxterm::parse_schemes as parse_mobaxterm_schemes;
 pub use xshell::import_xshell_schemes;
 
 /// A built-in theme. Its colors are `0xrrggbb`: data, like a picture's, not

@@ -9,3 +9,5 @@
 .claude/settings.local.json
 /baijie-remote-ssh-cmd-demo/
 /baijie-remote-ssh-cmd-source/
+# Personal MobaXterm exports can contain hostnames and usernames.
+MobaXterm configuration*.mobaconf

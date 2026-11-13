@@ -101,16 +101,25 @@ impl TerminalTransport for LocalPtyTransport {
             .context(t!("terminal.pty.writer_failed"))?;
 
         let output_events = events.clone();
+        let startup_ready = Arc::new(AtomicBool::new(!cfg!(windows)));
+        #[cfg(windows)]
+        let output_ready = startup_ready.clone();
         let wrote = Arc::new(AtomicBool::new(false));
         let output_seen = wrote.clone();
         let reader_thread = thread::Builder::new()
             .name("shellrs-pty-reader".into())
             .spawn(move || {
+                #[cfg(windows)]
+                let mut startup = super::conpty_startup::ConPtyStartup::default();
                 let mut buffer = [0_u8; 8192];
                 loop {
                     match reader.read(&mut buffer) {
                         Ok(0) => break,
                         Ok(count) => {
+                            #[cfg(windows)]
+                            if startup.observe(&buffer[..count]) {
+                                output_ready.store(true, Ordering::Release);
+                            }
                             output_seen.store(true, Ordering::Relaxed);
                             if !send_event(
                                 &output_events,
@@ -138,11 +147,29 @@ impl TerminalTransport for LocalPtyTransport {
 
         send_event(&events, TerminalTransportEvent::Started);
         let mut shutting_down = false;
+        let mut pending_size = None;
+        let resize = |size| {
+            if let Err(error) = pair.master.resize(to_pty_size(size)) {
+                send_event(
+                    &events,
+                    TerminalTransportEvent::Failed(
+                        t!("terminal.pty.resize_error", error = error).into(),
+                    ),
+                );
+            }
+        };
         // The shell's folder as last said, and when it was last read.
         let mut folder: Option<PathBuf> = None;
         let mut looked: Option<Instant> = None;
         let exit = loop {
-            match commands.recv_timeout(Duration::from_millis(20)) {
+            let command = commands.recv_timeout(Duration::from_millis(20));
+            if !shutting_down
+                && startup_ready.load(Ordering::Acquire)
+                && let Some(size) = pending_size.take()
+            {
+                resize(size);
+            }
+            match command {
                 Ok(
                     TerminalTransportCommand::Write(bytes)
                     | TerminalTransportCommand::WriteData(bytes),
@@ -159,13 +186,10 @@ impl TerminalTransport for LocalPtyTransport {
                     }
                 }
                 Ok(TerminalTransportCommand::Resize(size)) if !shutting_down => {
-                    if let Err(error) = pair.master.resize(to_pty_size(size)) {
-                        send_event(
-                            &events,
-                            TerminalTransportEvent::Failed(
-                                t!("terminal.pty.resize_error", error = error).into(),
-                            ),
-                        );
+                    if startup_ready.load(Ordering::Acquire) {
+                        resize(size);
+                    } else {
+                        pending_size = Some(size);
                     }
                 }
                 Ok(TerminalTransportCommand::Shutdown)
@@ -574,6 +598,147 @@ mod tests {
 
         commands.send(TerminalTransportCommand::Shutdown).unwrap();
         worker.join().unwrap().unwrap();
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::*;
+    use alacritty_terminal::event::{Event, EventListener};
+    use alacritty_terminal::index::{Column, Line};
+    use alacritty_terminal::term::Config;
+    use alacritty_terminal::vte::ansi::{Processor, StdSyncHandler};
+
+    #[derive(Clone)]
+    struct Replies(mpsc::Sender<TerminalTransportCommand>);
+
+    impl EventListener for Replies {
+        fn send_event(&self, event: Event) {
+            if let Event::PtyWrite(reply) = event {
+                self.0
+                    .send(TerminalTransportCommand::Write(reply.into_bytes()))
+                    .ok();
+            }
+        }
+    }
+
+    #[test]
+    fn initial_resize_reaches_local_and_cmder_shells_before_bottom_row_input() {
+        let directory = tempfile::tempdir().unwrap();
+        let script = directory.path().join("size.ps1");
+        std::fs::write(
+            &script,
+            "[Console]::WriteLine('__PTY_READY__')\n\
+             [void][Console]::ReadLine()\n\
+             [Console]::WriteLine('__PTY_SIZE__' + [Console]::WindowWidth + 'x' + [Console]::WindowHeight)\n\
+             foreach ($row in 1..60) { [Console]::WriteLine('ROW:{0}' -f $row) }\n\
+             [Console]::WriteLine('__PTY_BOTTOM__')\n\
+             $value = [Console]::ReadLine()\n\
+             [Console]::WriteLine('__PTY_INPUT__' + $value)\n\
+             [Console]::WriteLine('__PTY_WAIT__')\n\
+             [void][Console]::ReadLine()\n",
+        )
+        .unwrap();
+        let shell = format!(
+            "powershell.exe -NoLogo -NoProfile -NonInteractive -File {}",
+            super::super::quote_word(&script.to_string_lossy())
+        );
+        let cmder = directory.path().join("Cmder with spaces");
+        std::fs::create_dir_all(cmder.join("vendor")).unwrap();
+        std::fs::write(
+            cmder.join("vendor/init.bat"),
+            format!("@echo off\r\n{shell}\r\nexit\r\n"),
+        )
+        .unwrap();
+        for shell in [LocalShell::new(&shell), LocalShell::cmder(cmder)] {
+            let transport = LocalPtyTransportProvider
+                .factory_for(&LocalLaunch::new(shell))
+                .create();
+            let (commands, receiver) = mpsc::channel();
+            let (sender, events) = async_channel::unbounded();
+            let size = TerminalSize::new(135, 34, 8, 16);
+            commands
+                .send(TerminalTransportCommand::Resize(TerminalSize::new(
+                    100, 30, 8, 16,
+                )))
+                .unwrap();
+            commands
+                .send(TerminalTransportCommand::Resize(size))
+                .unwrap();
+            let worker =
+                thread::spawn(move || transport.run(TerminalSize::DEFAULT, receiver, sender));
+            let mut term =
+                alacritty_terminal::Term::new(Config::default(), &size, Replies(commands.clone()));
+            let mut processor: Processor<StdSyncHandler> = Processor::new();
+            let deadline = Instant::now() + Duration::from_secs(15);
+            let mut output = Vec::new();
+            let mut ready = false;
+            let mut typed = false;
+            let mut done = false;
+            let input = "x".repeat(100);
+            while Instant::now() < deadline {
+                match events.try_recv() {
+                    Ok(TerminalTransportEvent::Output(bytes)) => {
+                        processor.advance(&mut term, &bytes);
+                        output.extend(bytes);
+                        let text = String::from_utf8_lossy(&output);
+                        if !ready && text.contains("__PTY_READY__") {
+                            ready = true;
+                            commands
+                                .send(TerminalTransportCommand::Write(b"\r".to_vec()))
+                                .unwrap();
+                        }
+                        if !typed && text.contains("__PTY_BOTTOM__") {
+                            typed = true;
+                            commands
+                                .send(TerminalTransportCommand::Write(
+                                    format!("{input}\r").into_bytes(),
+                                ))
+                                .unwrap();
+                        }
+                        if text.contains("__PTY_WAIT__")
+                            && term.grid().cursor.point.line == Line(33)
+                            && term.grid().cursor.point.column == Column(0)
+                        {
+                            done = true;
+                            break;
+                        }
+                    }
+                    Ok(TerminalTransportEvent::Failed(error)) => panic!("{error}"),
+                    Ok(_) => {}
+                    Err(async_channel::TryRecvError::Empty) => {
+                        thread::sleep(Duration::from_millis(5))
+                    }
+                    Err(async_channel::TryRecvError::Closed) => break,
+                }
+            }
+            commands.send(TerminalTransportCommand::Shutdown).ok();
+            let shutdown = Instant::now() + Duration::from_secs(5);
+            while !worker.is_finished() && Instant::now() < shutdown {
+                while events.try_recv().is_ok() {}
+                thread::sleep(Duration::from_millis(5));
+            }
+            assert!(worker.is_finished(), "local terminal did not stop");
+            worker.join().unwrap().unwrap();
+            let text = String::from_utf8_lossy(&output);
+            assert!(done, "{text}");
+            assert!(text.contains("__PTY_SIZE__135x34"), "{text}");
+            assert_eq!(term.grid().cursor.point.line, Line(33));
+            assert_eq!(term.grid().cursor.point.column, Column(0));
+            let screen: String = (0..34)
+                .map(|row| {
+                    let text: String = (&term.grid()[Line(row)])
+                        .into_iter()
+                        .map(|cell| cell.c)
+                        .collect();
+                    format!("{}\n", text.trim_end())
+                })
+                .collect();
+            assert!(
+                screen.contains(&format!("__PTY_INPUT__{input}")),
+                "{screen}"
+            );
+        }
     }
 }
 

@@ -4,6 +4,7 @@
 
 mod dialog;
 mod known_hosts;
+mod mobaxterm;
 mod plan;
 mod ssh_config;
 mod xshell;
@@ -12,7 +13,8 @@ use std::fs::File;
 use std::io::{self, Read as _};
 use std::path::{Path, PathBuf};
 
-pub use dialog::{ImportHandler, ImportOutcome, open_import_dialog};
+pub use dialog::{ImportHandler, ImportOutcome, open_import_dialog, open_mobaxterm_preview};
+pub use mobaxterm::read as read_mobaxterm_configuration;
 use plan::{ImportRow, RowAuth, apply_import, import_rows, plan_import};
 
 use super::{DEFAULT_KEY_FILES, DEFAULT_USER, SSH_PORT};
@@ -25,15 +27,21 @@ pub enum ImportSource {
     /// `~/.ssh/known_hosts`: the hosts OpenSSH has connected to.
     KnownHosts,
     Xshell,
+    MobaXterm,
 }
 
 impl ImportSource {
+    fn is_migration(self) -> bool {
+        matches!(self, Self::Xshell | Self::MobaXterm)
+    }
+
     /// The file the source reads in the SSH directory.
     pub fn default_path(self, ssh_dir: &Path) -> PathBuf {
         ssh_dir.join(match self {
             ImportSource::SshConfig => "config",
             ImportSource::KnownHosts => "known_hosts",
             ImportSource::Xshell => "Sessions",
+            ImportSource::MobaXterm => "MobaXterm.ini",
         })
     }
 }
@@ -68,6 +76,24 @@ pub struct ImportScan {
     /// known_hosts entries whose names are hashed, so cannot be read back.
     pub hashed: usize,
     pub skipped: usize,
+    schemes: Vec<crate::terminal::TerminalTheme>,
+    scheme_error: Option<String>,
+}
+
+impl ImportScan {
+    pub fn merge(&mut self, other: Self) {
+        self.candidates.extend(other.candidates);
+        self.hashed += other.hashed;
+        self.skipped += other.skipped;
+        self.schemes.extend(other.schemes);
+        if other.scheme_error.is_some() {
+            self.scheme_error = other.scheme_error;
+        }
+    }
+
+    pub fn add_schemes(&mut self, schemes: Vec<crate::terminal::TerminalTheme>) {
+        self.schemes.extend(schemes);
+    }
 }
 
 /// The outcome of reading a source's file.
@@ -88,6 +114,9 @@ const MAX_FILE_SIZE: u64 = 16 * 1024 * 1024;
 pub fn read_source(source: ImportSource, path: &Path, ssh_dir: &Path) -> ImportLoad {
     if source == ImportSource::Xshell {
         return xshell::read_paths(&[path.to_path_buf()]);
+    }
+    if source == ImportSource::MobaXterm {
+        return mobaxterm::read(path);
     }
     let text = match read_capped(path) {
         Ok(text) => text,
@@ -111,12 +140,11 @@ pub fn read_source(source: ImportSource, path: &Path, ssh_dir: &Path) -> ImportL
                 .collect();
             ImportScan {
                 candidates,
-                hashed: 0,
-                skipped: 0,
+                ..ImportScan::default()
             }
         }
         ImportSource::KnownHosts => known_hosts::parse(&text),
-        ImportSource::Xshell => unreachable!(),
+        ImportSource::Xshell | ImportSource::MobaXterm => unreachable!(),
     };
     scan.candidates.retain(|candidate| !is_git_host(candidate));
     ImportLoad::Loaded(scan)

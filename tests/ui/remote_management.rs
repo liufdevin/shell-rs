@@ -8,7 +8,7 @@ use shellrs::{
     },
     secrets::{InMemorySecretStore, SecretRef, SecretStore},
 };
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicUsize};
 
 #[gpui_kit::test]
 async fn remote_login_edit_prefills_saved_password_and_opt_out_removes_it(cx: &mut TestAppContext) {
@@ -115,9 +115,48 @@ struct FakeRemote {
     offline: AtomicBool,
     slow_connect: AtomicBool,
     connect_progress: Mutex<Option<NetworkProgress>>,
+    fail_diagnostic: AtomicBool,
+    diagnostic_transport: Mutex<Option<shellrs::remote::Transport>>,
+    stale_diagnostic: AtomicBool,
+    hold_paths: AtomicBool,
+    fail_paths: AtomicBool,
+    path_calls: AtomicUsize,
 }
 
 impl Backend for FakeRemote {
+    fn paths(&self, connection: &Connected) -> anyhow::Result<shellrs::remote::PathSnapshot> {
+        let transport = self
+            .diagnostic_transport
+            .lock()
+            .unwrap()
+            .unwrap_or(shellrs::remote::Transport::Direct);
+        let routes: Vec<_> = connection
+            .devices
+            .iter()
+            .map(|target| {
+                serde_json::json!({
+                    "ipv4":target.virtual_ip,
+                    "path_len":match transport {
+                        shellrs::remote::Transport::Direct => Some(1),
+                        shellrs::remote::Transport::Relay => Some(2),
+                        shellrs::remote::Transport::Unknown => None,
+                    }
+                })
+            })
+            .collect();
+        let snapshot = shellrs::remote::PathSnapshot::from_core(connection, &routes, &[]);
+        self.path_calls.fetch_add(1, Ordering::SeqCst);
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while self.hold_paths.load(Ordering::SeqCst) && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        anyhow::ensure!(
+            !self.fail_paths.load(Ordering::SeqCst),
+            "fixture_rpc_unavailable"
+        );
+        Ok(snapshot)
+    }
+
     fn perform(&self, operation: Operation) -> Reply {
         let mut reply = Reply::default();
         match operation {
@@ -263,6 +302,49 @@ impl Backend for FakeRemote {
             }
             Operation::Disconnect | Operation::Shutdown => *self.active.lock().unwrap() = None,
             Operation::Poll => {}
+            Operation::Diagnose(server, selected) => {
+                self.calls
+                    .lock()
+                    .unwrap()
+                    .push(format!("diagnose:{server}:{}", selected.join(",")));
+                if self.fail_diagnostic.load(Ordering::SeqCst) {
+                    reply.error = Some("diagnostic_failed".into());
+                } else if let Some(active) = self
+                    .active
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .filter(|active| active.server == server)
+                {
+                    let mut local = shellrs::remote::LocalDiagnostic::default();
+                    local.adapter_ready = true;
+                    local.core_running = true;
+                    local.rpc_ready = true;
+                    let mut devices: Vec<shellrs::remote::DeviceDiagnostic> = active.devices.iter().filter(|target| selected.is_empty() || selected.contains(&target.device_id)).map(|target| {
+                        serde_json::from_value(serde_json::json!({
+                            "deviceId": target.device_id, "virtualIp": target.virtual_ip,
+                            "tcp22": {"status":"open", "latencyMs":12.4},
+                            "icmp": {"status":"timeout", "latencyMs":null},
+                            "path": {"transport":"direct", "hops":1, "routeLatencyMs":11.0, "tunnelProtocol":"udp"}
+                        })).unwrap()
+                    }).collect();
+                    if let Some(transport) = *self.diagnostic_transport.lock().unwrap() {
+                        for device in &mut devices {
+                            device.path.transport = transport;
+                            device.path.hops = match transport {
+                                shellrs::remote::Transport::Direct => Some(1),
+                                shellrs::remote::Transport::Relay => Some(2),
+                                shellrs::remote::Transport::Unknown => None,
+                            };
+                        }
+                    }
+                    let mut report = shellrs::remote::DiagnosticReport::new(active, local, devices);
+                    if self.stale_diagnostic.load(Ordering::SeqCst) {
+                        report.checked_at = 0;
+                    }
+                    reply.diagnostics = Some(report);
+                }
+            }
             _ => panic!("credential operations must not reach the network backend"),
         }
         reply.connection = self.active.lock().unwrap().clone();
@@ -278,6 +360,340 @@ fn dispatch(cx: &mut TestAppContext, handle: WindowHandle<Root>, command: Comman
     in_frame(cx, handle, |window, cx| {
         window.click("remote-search", cx);
         window.dispatch_action(Box::new(RemoteAction(command)), cx);
+    });
+}
+
+#[gpui_kit::test]
+async fn remote_paths_load_on_connect_refresh_without_diagnostics_and_discard_old_connections(
+    cx: &mut TestAppContext,
+) {
+    let (handle, workspace) = open_workspace_with_store(cx, HostStore::empty());
+    cx.simulate_window_resize(handle.into(), size(px(1100.), px(850.)));
+    let backend = Arc::new(FakeRemote::default());
+    backend.hold_paths.store(true, Ordering::SeqCst);
+    let server = Server::new(
+        "Test".into(),
+        "https://example.test".into(),
+        "operator".into(),
+    );
+    let service = cx.update(|cx| workspace.read(cx).remote_management().clone());
+    cx.update(|cx| service.update(cx, |service, cx| service.set_backend(backend.clone(), cx)));
+    in_frame(cx, handle, |window, cx| {
+        window.click("show-remote-management", cx)
+    });
+    dispatch(
+        cx,
+        handle,
+        Command::SaveLogin(server.clone(), Secret::new("test password"), false),
+    );
+    cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
+        service.read(cx).is_logged_in(&server.id)
+    })
+    .await;
+    dispatch(
+        cx,
+        handle,
+        Command::ConnectServer(server.id.clone(), "one".into()),
+    );
+    cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
+        !service.read(cx).is_busy() && backend.path_calls.load(Ordering::SeqCst) > 0
+    })
+    .await;
+    dispatch(cx, handle, Command::Networks(server.id.clone()));
+    in_frame(cx, handle, |window, _| {
+        assert!(
+            window
+                .find("remote-current-paths")
+                .label()
+                .unwrap()
+                .contains("正在查询")
+        );
+        assert!(enabled(&window.find("remote-disconnect")));
+    });
+    backend.hold_paths.store(false, Ordering::SeqCst);
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window
+            .find("remote-current-paths")
+            .label()
+            .is_some_and(|label| label.contains("P2P 直连 1 台"))
+    })
+    .await;
+    let count = backend.path_calls.load(Ordering::SeqCst);
+    cx.executor().advance_clock(Duration::from_secs(3));
+    cx.run_until_parked();
+    assert_eq!(backend.path_calls.load(Ordering::SeqCst), count);
+    *backend.diagnostic_transport.lock().unwrap() = Some(shellrs::remote::Transport::Relay);
+    cx.executor().advance_clock(Duration::from_secs(3));
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, cx| {
+        !service.read(cx).is_busy()
+            && window
+                .find("remote-current-paths")
+                .label()
+                .is_some_and(|label| label.contains("P2P 直连 0 台 · 中继 1 台"))
+    })
+    .await;
+    in_frame(cx, handle, |window, cx| {
+        window.click("remote-view-device-paths", cx)
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window.try_find("remote-device-path-board-00").is_some()
+    })
+    .await;
+    in_frame(cx, handle, |window, _| {
+        assert!(
+            window
+                .find("remote-device-path-board-00")
+                .label()
+                .unwrap()
+                .contains("中继（2 跳）")
+        );
+        assert!(window.try_find("remote-network-diagnostic").is_none());
+    });
+    backend.fail_paths.store(true, Ordering::SeqCst);
+    cx.executor().advance_clock(Duration::from_secs(6));
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window
+            .find("remote-current-paths")
+            .label()
+            .is_some_and(|label| label.contains("中继 0 台 · 未确定 1 台"))
+    })
+    .await;
+    backend.fail_paths.store(false, Ordering::SeqCst);
+    backend.hold_paths.store(true, Ordering::SeqCst);
+    let count = backend.path_calls.load(Ordering::SeqCst);
+    cx.executor().advance_clock(Duration::from_secs(6));
+    cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
+        backend.path_calls.load(Ordering::SeqCst) > count && !service.read(cx).is_busy()
+    })
+    .await;
+    dispatch(cx, handle, Command::DisconnectServer(server.id.clone()));
+    cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
+        service.read(cx).connection().is_none()
+    })
+    .await;
+    in_frame(cx, handle, |window, _| {
+        assert!(window.try_find("remote-current-paths").is_none())
+    });
+    *backend.diagnostic_transport.lock().unwrap() = Some(shellrs::remote::Transport::Direct);
+    dispatch(
+        cx,
+        handle,
+        Command::ConnectServer(server.id.clone(), "one".into()),
+    );
+    cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
+        service.read(cx).connection().is_some() && !service.read(cx).is_busy()
+    })
+    .await;
+    assert!(service.read_with(cx, |service, _| service.paths(&server.id).is_none()));
+    backend.hold_paths.store(false, Ordering::SeqCst);
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, cx| {
+        !service.read(cx).is_busy()
+            && window
+                .find("remote-current-paths")
+                .label()
+                .is_some_and(|label| label.contains("P2P 直连 1 台 · 中继 0 台"))
+    })
+    .await;
+    assert!(
+        !backend
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|call| call.starts_with("diagnose:"))
+    );
+    dispatch(cx, handle, Command::DisconnectServer(server.id.clone()));
+    cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
+        service.read(cx).connection().is_none()
+    })
+    .await;
+    let count = backend.path_calls.load(Ordering::SeqCst);
+    cx.executor().advance_clock(Duration::from_secs(10));
+    cx.run_until_parked();
+    assert_eq!(backend.path_calls.load(Ordering::SeqCst), count);
+}
+
+#[gpui_kit::test]
+async fn remote_diagnostics_show_tcp_path_and_separate_latencies_and_clear_on_network_change(
+    cx: &mut TestAppContext,
+) {
+    let (handle, workspace) = open_workspace_with_store(cx, HostStore::empty());
+    cx.simulate_window_resize(handle.into(), size(px(1100.), px(850.)));
+    let backend = Arc::new(FakeRemote::default());
+    let server = Server::new(
+        "Test".into(),
+        "https://example.test".into(),
+        "operator".into(),
+    );
+    let service = cx.update(|cx| workspace.read(cx).remote_management().clone());
+    cx.update(|cx| service.update(cx, |service, cx| service.set_backend(backend.clone(), cx)));
+    in_frame(cx, handle, |window, cx| {
+        window.click("show-remote-management", cx)
+    });
+    dispatch(
+        cx,
+        handle,
+        Command::SaveLogin(server.clone(), Secret::new("test password"), false),
+    );
+    cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
+        service.read(cx).is_logged_in(&server.id)
+    })
+    .await;
+    dispatch(cx, handle, Command::Devices(server.id.clone()));
+    in_frame(cx, handle, |window, cx| {
+        assert!(!enabled(&window.find("remote-diagnose")));
+        assert!(!enabled(&window.find("remote-diagnose-board-00")));
+        window.press("escape", cx);
+    });
+    dispatch(
+        cx,
+        handle,
+        Command::ConnectServer(server.id.clone(), "one".into()),
+    );
+    cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
+        service.read(cx).connection().is_some() && !service.read(cx).is_busy()
+    })
+    .await;
+    assert!(
+        !backend
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|call| call.starts_with("diagnose:"))
+    );
+    dispatch(cx, handle, Command::Networks(server.id.clone()));
+    in_frame(cx, handle, |window, _| {
+        assert!(window.try_find("remote-network-paths").is_none());
+    });
+    for (transport, expected) in [
+        (
+            shellrs::remote::Transport::Relay,
+            "P2P 直连 0 台 · 中继 1 台 · 未确定 0 台",
+        ),
+        (
+            shellrs::remote::Transport::Unknown,
+            "P2P 直连 0 台 · 中继 0 台 · 未确定 1 台",
+        ),
+        (
+            shellrs::remote::Transport::Direct,
+            "P2P 直连 1 台 · 中继 0 台 · 未确定 0 台",
+        ),
+    ] {
+        *backend.diagnostic_transport.lock().unwrap() = Some(transport);
+        in_frame(cx, handle, |window, cx| window.click("remote-diagnose", cx));
+        cx.wait_for(handle.into(), Duration::from_secs(3), |window, cx| {
+            !service.read(cx).is_busy()
+                && window
+                    .try_find("remote-network-paths")
+                    .is_some_and(|paths| {
+                        paths.label().is_some_and(|label| label.contains(expected))
+                    })
+        })
+        .await;
+        in_frame(cx, handle, |window, _| {
+            let paths = window.find("remote-network-paths");
+            assert!(paths.visible());
+            assert!(paths.bounds().bottom() <= window.find("remote-catalog-search").bounds().top());
+            assert!(paths.bounds().left() >= window.find("remote-catalog-dialog").bounds().left());
+        });
+    }
+    backend.stale_diagnostic.store(true, Ordering::SeqCst);
+    in_frame(cx, handle, |window, cx| window.click("remote-diagnose", cx));
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, cx| {
+        !service.read(cx).is_busy()
+            && window
+                .find("remote-network-paths")
+                .label()
+                .is_some_and(|label| label.contains("过期") && !label.contains("P2P 直连 1"))
+    })
+    .await;
+    backend.stale_diagnostic.store(false, Ordering::SeqCst);
+    in_frame(cx, handle, |window, cx| {
+        window.click("remote-view-device-paths", cx)
+    });
+    in_frame(cx, handle, |window, cx| window.click("remote-diagnose", cx));
+    cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
+        service.read(cx).diagnostics(&server.id).is_some()
+    })
+    .await;
+    in_frame(cx, handle, |window, _| {
+        let local = window.find("remote-network-diagnostic");
+        assert!(local.label().unwrap().contains("虚拟网卡：就绪"));
+        assert!(local.label().unwrap().contains("组网核心：就绪"));
+        let result = window.find("remote-device-diagnostic-board-00");
+        let label = result.label().unwrap();
+        assert!(label.contains("TCP 22：可达"), "{label}");
+        assert!(
+            label.contains("直连") && label.contains("ICMP RTT：超时"),
+            "{label}"
+        );
+        assert!(
+            label.contains("TCP 建立：12.4 ms") && label.contains("路由估算：11.0 ms"),
+            "{label}"
+        );
+        assert!(enabled(&window.find("remote-ssh-board-00")));
+        assert!(result.bounds().left() >= window.find("remote-catalog-dialog").bounds().left());
+        assert!(window.find("remote-page-next").bounds().bottom() <= px(850.));
+    });
+    backend.fail_diagnostic.store(true, Ordering::SeqCst);
+    in_frame(cx, handle, |window, cx| {
+        window.click("remote-diagnose-board-00", cx)
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, cx| {
+        !service.read(cx).is_busy()
+            && window
+                .find("remote-status")
+                .label()
+                .is_some_and(|label| label.contains("网络检测未完成"))
+    })
+    .await;
+    assert!(service.read_with(cx, |service, _| service.connection().is_some()));
+    in_frame(cx, handle, |window, _| {
+        assert!(
+            window
+                .try_find("remote-device-diagnostic-board-00")
+                .is_none()
+        )
+    });
+    backend.fail_diagnostic.store(false, Ordering::SeqCst);
+    in_frame(cx, handle, |window, cx| {
+        window.click("remote-diagnose-board-00", cx)
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
+        service.read(cx).diagnostics(&server.id).is_some()
+    })
+    .await;
+    backend.moved.store(true, Ordering::SeqCst);
+    in_frame(cx, handle, |window, cx| window.click("remote-refresh", cx));
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window
+            .find("remote-device-diagnostic-board-00")
+            .label()
+            .is_some_and(|label| label.contains("地址已变化"))
+    })
+    .await;
+    in_frame(cx, handle, |window, _| {
+        let label = window
+            .find("remote-network-paths")
+            .label()
+            .unwrap()
+            .to_owned();
+        assert!(
+            label.contains("P2P 直连 0 台") && label.contains("已失效 1 台"),
+            "{label}"
+        );
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.click("remote-disconnect", cx)
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
+        service.read(cx).connection().is_none()
+    })
+    .await;
+    in_frame(cx, handle, |window, _| {
+        assert!(window.try_find("remote-network-diagnostic").is_none());
+        assert!(!enabled(&window.find("remote-diagnose")));
     });
 }
 

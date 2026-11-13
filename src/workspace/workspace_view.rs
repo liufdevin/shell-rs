@@ -3258,6 +3258,17 @@ impl Workspace {
         }
     }
 
+    fn on_automatically_order_hosts(
+        &mut self,
+        action: &crate::app::AutomaticallyOrderHosts,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.store.update(cx, |store, cx| {
+            store.automatically_order_hosts(action.parent, cx);
+        });
+    }
+
     fn on_delete_host(&mut self, action: &DeleteHost, window: &mut Window, cx: &mut Context<Self>) {
         let id = action.0;
         // Saved hosts only: one opened from a link goes with its tabs.
@@ -4244,11 +4255,13 @@ impl Workspace {
             .on_action(cx.listener(Self::on_edit_host))
             .on_action(cx.listener(Self::on_duplicate_host))
             .on_action(cx.listener(Self::on_move_host_node))
+            .on_action(cx.listener(Self::on_automatically_order_hosts))
             .on_action(cx.listener(Self::on_delete_host))
             .on_action(cx.listener(Self::on_new_host_in_group))
             .on_action(cx.listener(Self::on_new_group))
             .on_action(cx.listener(Self::on_import_ssh_config))
             .on_action(cx.listener(Self::on_import_xshell))
+            .on_action(cx.listener(Self::on_import_mobaxterm))
             .on_action(cx.listener(Self::on_import_terminal_schemes))
             .on_action(cx.listener(Self::on_remove_terminal_scheme))
             .on_action(cx.listener(Self::on_import_known_hosts))

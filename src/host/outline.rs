@@ -5,7 +5,7 @@ use std::collections::HashSet;
 use gpui_kit::SharedString;
 use gpui_kit::component::tree::TreeItem;
 
-use super::{GroupId, Host, HostGroup, HostId, HostNode};
+use super::{GroupId, Host, HostData, HostGroup, HostId, HostNode};
 
 /// Case-insensitive match on name, host or user.
 pub fn matches_query(host: &Host, query: &str) -> bool {
@@ -25,22 +25,21 @@ fn group_matches_query(group: &HostGroup, query: &str) -> bool {
 }
 
 /// Build the nested tree. Each level lists its subgroups first, then the
-/// hosts that belong to it in natural, case-insensitive name order; hosts
+/// hosts that belong to it in manual or natural, case-insensitive name order; hosts
 /// with no group sit at the root beside
 /// the top-level groups. A non-empty query keeps the matching hosts and
 /// the matching groups with everything in them, drops the groups left
 /// without either, and expands what remains; otherwise `expanded` decides
 /// which groups are open.
 pub fn host_tree_items(
-    groups: &[HostGroup],
-    hosts: &[Host],
+    store: &HostData,
     query: &str,
     expanded: &HashSet<GroupId>,
 ) -> Vec<TreeItem> {
     let filtering = !query.trim().is_empty();
     let level = Level {
-        groups,
-        hosts,
+        groups: store.groups(),
+        store,
         query,
         filtering,
         expanded,
@@ -51,7 +50,7 @@ pub fn host_tree_items(
 /// The first host the query itself matches, in the order the tree lists
 /// them: what Enter in the search field connects. A host shown only because
 /// its group matched does not count.
-pub fn first_matching_host(groups: &[HostGroup], hosts: &[Host], query: &str) -> Option<HostId> {
+pub fn first_matching_host(store: &HostData, query: &str) -> Option<HostId> {
     fn first(items: &[TreeItem], hosts: &[Host], query: &str) -> Option<HostId> {
         items.iter().find_map(|item| {
             match HostNode::parse(&item.id)? {
@@ -65,14 +64,14 @@ pub fn first_matching_host(groups: &[HostGroup], hosts: &[Host], query: &str) ->
             .or_else(|| first(&item.children, hosts, query))
         })
     }
-    let items = host_tree_items(groups, hosts, query, &HashSet::new());
-    first(&items, hosts, query)
+    let items = host_tree_items(store, query, &HashSet::new());
+    first(&items, store.hosts(), query)
 }
 
 /// What every level of the tree is built from.
 struct Level<'a> {
     groups: &'a [HostGroup],
-    hosts: &'a [Host],
+    store: &'a HostData,
     query: &'a str,
     filtering: bool,
     expanded: &'a HashSet<GroupId>,
@@ -116,59 +115,15 @@ fn items_under(
                 .children(children),
         );
     }
-    let mut child_hosts: Vec<_> = level
-        .hosts
-        .iter()
-        .filter(|s| s.group == parent && (everything || matches_query(s, level.query)))
-        .map(|host| (host, host.name.to_lowercase()))
-        .collect();
-    child_hosts.sort_by(|(a, a_name), (b, b_name)| {
-        natural_name_order(a_name, b_name)
-            .then_with(|| (a.sort_order, a.id).cmp(&(b.sort_order, b.id)))
-    });
     items.extend(
-        child_hosts
+        level
+            .store
+            .hosts_in_order(parent)
             .into_iter()
-            .map(|(host, _)| TreeItem::new(HostNode::Host(host.id).id(), host.name.clone())),
+            .filter(|host| everything || matches_query(host, level.query))
+            .map(|host| TreeItem::new(HostNode::Host(host.id).id(), host.name.clone())),
     );
     items
-}
-
-/// Compare lowercase names without bounding the size of their numeric parts.
-fn natural_name_order(a: &str, b: &str) -> std::cmp::Ordering {
-    let (mut a, mut b) = (a.as_bytes(), b.as_bytes());
-    while let (Some(left), Some(right)) = (a.first(), b.first()) {
-        let order = if left.is_ascii_digit() && right.is_ascii_digit() {
-            let a_end = a
-                .iter()
-                .position(|c| !c.is_ascii_digit())
-                .unwrap_or(a.len());
-            let b_end = b
-                .iter()
-                .position(|c| !c.is_ascii_digit())
-                .unwrap_or(b.len());
-            let a_start = a[..a_end].iter().position(|c| *c != b'0').unwrap_or(a_end);
-            let b_start = b[..b_end].iter().position(|c| *c != b'0').unwrap_or(b_end);
-            let a_number = &a[a_start..a_end];
-            let b_number = &b[b_start..b_end];
-            let order = a_number
-                .len()
-                .cmp(&b_number.len())
-                .then_with(|| a_number.cmp(b_number));
-            a = &a[a_end..];
-            b = &b[b_end..];
-            order
-        } else {
-            let order = left.cmp(right);
-            a = &a[1..];
-            b = &b[1..];
-            order
-        };
-        if !order.is_eq() {
-            return order;
-        }
-    }
-    a.len().cmp(&b.len())
 }
 
 /// Groups flattened depth first, each labelled by its full path (e.g.
@@ -239,7 +194,7 @@ mod tests {
         }
         let mut store = HostData::load(HostDatabase::open(&path).unwrap()).unwrap();
         let children = |store: &HostData| {
-            host_tree_items(store.groups(), store.hosts(), "", &all_groups(store))[0]
+            host_tree_items(store, "", &all_groups(store))[0]
                 .children
                 .clone()
         };
@@ -257,10 +212,7 @@ mod tests {
             labels(&children(&store)),
             ["nested", "COM2", "COM3", "COM4", "COM5", "COM6", "COM10"]
         );
-        assert_eq!(
-            first_matching_host(store.groups(), store.hosts(), "COM"),
-            Some(id)
-        );
+        assert_eq!(first_matching_host(&store, "COM"), Some(id));
         let mut draft = store.host(id).unwrap().draft();
         draft.name = "COM7".into();
         store.update(id, draft);
@@ -274,7 +226,7 @@ mod tests {
             ["nested", "COM3", "COM4", "COM5", "COM6", "COM10"]
         );
         store.move_node(HostNode::Host(id), NodeDrop::Root);
-        let items = host_tree_items(store.groups(), store.hosts(), "", &all_groups(&store));
+        let items = host_tree_items(&store, "", &all_groups(&store));
         assert_eq!(labels(&items), ["com", "COM7"]);
     }
 
@@ -300,7 +252,7 @@ mod tests {
                 None,
             ));
         }
-        let items = host_tree_items(store.groups(), store.hosts(), "", &HashSet::new());
+        let items = host_tree_items(&store, "", &HashSet::new());
         assert_eq!(
             labels(&items),
             [
@@ -314,11 +266,44 @@ mod tests {
                 "机10"
             ]
         );
-        assert!(
-            natural_name_order("com999999999999999999999", "com1000000000000000000000").is_lt()
+    }
+
+    #[test]
+    fn manual_order_is_used_by_search_and_enter() {
+        let mut store = HostData::empty();
+        let first = store.insert(HostDraft::serial(
+            "COM1",
+            "COM1",
+            SerialSettings::default(),
+            None,
+        ));
+        let second = store.insert(HostDraft::serial(
+            "COM2",
+            "COM2",
+            SerialSettings::default(),
+            None,
+        ));
+        store.insert(HostDraft::serial(
+            "COM3",
+            "COM3",
+            SerialSettings::default(),
+            None,
+        ));
+        assert!(store.move_node(
+            HostNode::Host(second),
+            NodeDrop::Before(HostNode::Host(first))
+        ));
+        assert_eq!(
+            labels(&host_tree_items(&store, "COM", &HashSet::new())),
+            ["COM2", "COM1", "COM3"]
         );
-        assert!(natural_name_order("com00", "com0").is_eq());
-        assert!(natural_name_order("com", "com0").is_lt());
+        assert_eq!(first_matching_host(&store, "COM"), Some(second));
+        assert_eq!(
+            labels(&host_tree_items(&store, "COM1", &HashSet::new())),
+            ["COM1"]
+        );
+        store.automatically_order_hosts(None);
+        assert_eq!(first_matching_host(&store, "COM"), Some(first));
     }
 
     #[test]
@@ -333,7 +318,7 @@ mod tests {
     #[test]
     fn empty_query_keeps_every_group_and_host() {
         let store = HostStore::seed();
-        let items = host_tree_items(store.groups(), store.hosts(), "", &all_groups(&store));
+        let items = host_tree_items(&store, "", &all_groups(&store));
         assert_eq!(items.len(), 3);
         let total: usize = items.iter().map(|g| g.children.len()).sum();
         assert_eq!(total, 6);
@@ -343,21 +328,21 @@ mod tests {
     #[test]
     fn collapsed_groups_follow_the_expanded_set() {
         let store = HostStore::seed();
-        let items = host_tree_items(store.groups(), store.hosts(), "", &HashSet::new());
+        let items = host_tree_items(&store, "", &HashSet::new());
         assert!(items.iter().all(|g| !g.is_expanded()));
     }
 
     #[test]
     fn query_matches_host_and_user_case_insensitively() {
         let store = HostStore::seed();
-        let by_host = host_tree_items(store.groups(), store.hosts(), "10.0.9", &HashSet::new());
+        let by_host = host_tree_items(&store, "10.0.9", &HashSet::new());
         let names: Vec<_> = by_host
             .iter()
             .flat_map(|g| g.children.iter().map(|c| c.label.to_string()))
             .collect();
         assert_eq!(names, ["qa-runner", "staging-api"]);
 
-        let by_user = host_tree_items(store.groups(), store.hosts(), "POSTGRES", &HashSet::new());
+        let by_user = host_tree_items(&store, "POSTGRES", &HashSet::new());
         assert_eq!(by_user.len(), 1);
         assert_eq!(by_user[0].children[0].label.as_ref(), "db-01");
     }
@@ -365,7 +350,7 @@ mod tests {
     #[test]
     fn query_drops_groups_without_matches_and_expands_the_rest() {
         let store = HostStore::seed();
-        let items = host_tree_items(store.groups(), store.hosts(), "dev", &HashSet::new());
+        let items = host_tree_items(&store, "dev", &HashSet::new());
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].label.as_ref(), "开发");
         assert!(items[0].is_expanded());
@@ -396,7 +381,7 @@ mod tests {
     #[test]
     fn subgroups_nest_and_ungrouped_hosts_sit_at_the_root() {
         let store = nested_store();
-        let items = host_tree_items(store.groups(), store.hosts(), "", &all_groups(&store));
+        let items = host_tree_items(&store, "", &all_groups(&store));
         // A top-level group, then the host that belongs to no group.
         assert_eq!(labels(&items), ["生产", "jump"]);
         // Inside 生产: the subgroup first, then its own host.
@@ -407,7 +392,7 @@ mod tests {
     #[test]
     fn a_match_deep_in_the_tree_keeps_its_whole_ancestor_chain() {
         let store = nested_store();
-        let items = host_tree_items(store.groups(), store.hosts(), "db-01", &HashSet::new());
+        let items = host_tree_items(&store, "db-01", &HashSet::new());
         assert_eq!(labels(&items), ["生产"]);
         assert!(items[0].is_expanded());
         assert_eq!(labels(&items[0].children), ["数据库"]);
@@ -445,14 +430,14 @@ mod tests {
     #[test]
     fn a_query_matching_a_group_lists_all_of_it() {
         let store = nested_store();
-        let items = host_tree_items(store.groups(), store.hosts(), "生产", &HashSet::new());
+        let items = host_tree_items(&store, "生产", &HashSet::new());
         assert_eq!(labels(&items), ["生产"]);
         assert!(items[0].is_expanded());
         assert_eq!(labels(&items[0].children), ["数据库", "web-01"]);
         assert_eq!(labels(&items[0].children[0].children), ["db-01"]);
 
         // A subgroup: its ancestors for the way there, but not their hosts.
-        let items = host_tree_items(store.groups(), store.hosts(), "数据库", &HashSet::new());
+        let items = host_tree_items(&store, "数据库", &HashSet::new());
         assert_eq!(labels(&items), ["生产"]);
         assert_eq!(labels(&items[0].children), ["数据库"]);
         assert_eq!(labels(&items[0].children[0].children), ["db-01"]);
@@ -463,21 +448,15 @@ mod tests {
         let store = nested_store();
         let id = |name: &str| store.hosts().iter().find(|h| h.name == name).unwrap().id;
         // In the tree, 数据库's db-01 comes before 生产's own web-01.
-        assert_eq!(
-            first_matching_host(store.groups(), store.hosts(), "-01"),
-            Some(id("db-01"))
-        );
+        assert_eq!(first_matching_host(&store, "-01"), Some(id("db-01")));
         // Hosts listed only because their group matched are not chosen.
-        assert_eq!(
-            first_matching_host(store.groups(), store.hosts(), "生产"),
-            None
-        );
+        assert_eq!(first_matching_host(&store, "生产"), None);
     }
 
     #[test]
     fn a_query_matching_only_a_root_host_drops_every_group() {
         let store = nested_store();
-        let items = host_tree_items(store.groups(), store.hosts(), "jump", &HashSet::new());
+        let items = host_tree_items(&store, "jump", &HashSet::new());
         assert_eq!(labels(&items), ["jump"]);
     }
 }

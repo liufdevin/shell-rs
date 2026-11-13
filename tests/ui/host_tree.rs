@@ -89,6 +89,76 @@ async fn serial_hosts_automatically_sort_on_open_insert_and_rename(cx: &mut Test
 }
 
 #[gpui_kit::test]
+fn manual_host_order_survives_reopening_and_automatic_order_can_be_saved(cx: &mut TestAppContext) {
+    use shellrs::host::{HostData, SerialSettings};
+
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("hosts.db");
+    let mut data = HostData::load(HostDatabase::open(&path).unwrap()).unwrap();
+    let group = data.insert_group(GroupDraft::new("com", None));
+    let ids: Vec<_> = ["COM3", "COM5", "COM4", "COM10"]
+        .into_iter()
+        .map(|name| {
+            data.insert(HostDraft::serial(
+                name,
+                name,
+                SerialSettings::default(),
+                Some(group),
+            ))
+        })
+        .collect();
+    drop(data);
+    let store = HostStore::load(HostDatabase::open(&path).unwrap()).unwrap();
+    let (handle, _) = open_workspace_with_store(cx, store);
+    in_frame(cx, handle, |window, cx| {
+        window
+            .within("host-tree")
+            .drag_to(("host-row", ids[0].0), ("host-row", ids[2].0), cx);
+    });
+    let store = HostStore::load(HostDatabase::open(&path).unwrap()).unwrap();
+    assert!(store.hosts_manually_ordered(Some(group)));
+    let (reopened, workspace) = open_workspace_with_store(cx, store);
+    in_frame(cx, reopened, |window, cx| {
+        let rows = [ids[2], ids[0], ids[1], ids[3]];
+        for pair in rows.windows(2) {
+            assert!(
+                window.find(("host-row", pair[0].0)).bounds().top()
+                    < window.find(("host-row", pair[1].0)).bounds().top()
+            );
+        }
+        window.click(("host-row", ids[0].0), cx);
+        window.dispatch_action(
+            Box::new(shellrs::app::AutomaticallyOrderHosts::new(Some(group))),
+            cx,
+        );
+    });
+    in_frame(cx, reopened, |window, _| {
+        assert!(
+            window.find(("host-row", ids[0].0)).bounds().top()
+                < window.find(("host-row", ids[2].0)).bounds().top()
+        );
+    });
+    workspace.read_with(cx, |workspace, cx| {
+        assert!(
+            !workspace
+                .store()
+                .read(cx)
+                .hosts_manually_ordered(Some(group))
+        );
+    });
+    let store = HostStore::load(HostDatabase::open(&path).unwrap()).unwrap();
+    assert!(!store.hosts_manually_ordered(Some(group)));
+    assert_eq!(
+        store
+            .hosts_in_order(Some(group))
+            .iter()
+            .map(|host| host.id)
+            .collect::<Vec<_>>(),
+        [ids[0], ids[2], ids[1], ids[3]]
+    );
+}
+
+#[gpui_kit::test]
 fn search_filters_the_tree(cx: &mut TestAppContext) {
     let (handle, _) = open_workspace(cx);
 
@@ -359,7 +429,9 @@ fn dragging_a_host_into_a_group_updates_the_host_tree(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-fn hosts_keep_name_order_when_dragged_onto_peers_and_groups_can_nest(cx: &mut TestAppContext) {
+fn hosts_keep_manual_order_when_dragged_onto_peers_and_can_restore_automatic_order(
+    cx: &mut TestAppContext,
+) {
     let (handle, workspace) = open_workspace(cx);
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
@@ -384,7 +456,8 @@ fn hosts_keep_name_order_when_dragged_onto_peers_and_groups_can_nest(cx: &mut Te
         let db = store.host(HostId(DB_01)).unwrap();
         let web = store.host(HostId(WEB_01)).unwrap();
         let web02 = store.host(HostId(2)).unwrap();
-        assert!(web.sort_order < web02.sort_order && web02.sort_order < db.sort_order);
+        assert!(web.sort_order < db.sort_order && db.sort_order < web02.sort_order);
+        assert!(store.hosts_manually_ordered(Some(GroupId(PRODUCTION))));
     });
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
@@ -397,11 +470,34 @@ fn hosts_keep_name_order_when_dragged_onto_peers_and_groups_can_nest(cx: &mut Te
             Some("1 台主机")
         );
         assert!(
-            window.find(("host-row", DB_01)).bounds().top()
-                < window.find(("host-row", WEB_01)).bounds().top()
+            window.find(("host-row", WEB_01)).bounds().top()
+                < window.find(("host-row", DB_01)).bounds().top()
         );
     })
     .unwrap();
+    in_frame(cx, handle, |window, cx| {
+        window.click(("host-row", WEB_01), cx);
+        window.dispatch_action(
+            Box::new(shellrs::app::AutomaticallyOrderHosts::new(Some(GroupId(
+                PRODUCTION,
+            )))),
+            cx,
+        );
+    });
+    in_frame(cx, handle, |window, _| {
+        assert!(
+            window.find(("host-row", DB_01)).bounds().top()
+                < window.find(("host-row", WEB_01)).bounds().top()
+        );
+    });
+    workspace.read_with(cx, |workspace, cx| {
+        assert!(
+            !workspace
+                .store()
+                .read(cx)
+                .hosts_manually_ordered(Some(GroupId(PRODUCTION)))
+        );
+    });
 }
 
 #[gpui_kit::test]

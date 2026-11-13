@@ -34,6 +34,16 @@ function Read-CoreOutput {
 }
 
 function Status([string]$State, [string]$Stage) {
+    $corePid = 0
+    $coreTicks = '0'
+    if ($State -in @('starting','running') -and $coreStarted -and $null -ne $core) {
+        try {
+            if (-not $core.HasExited) {
+                $corePid = $core.Id
+                $coreTicks = $core.StartTime.ToUniversalTime().Ticks.ToString()
+            }
+        } catch {}
+    }
     if ($Stage -ne $script:lastStage -or $State -eq 'stopped') {
         [IO.File]::AppendAllText((Join-Path $StateDirectory 'diagnostics.log'),
             ('[{0:N1}s] {1} {2} {3}' -f $clock.Elapsed.TotalSeconds, $State, $Stage, $failure) + [Environment]::NewLine)
@@ -45,6 +55,8 @@ function Status([string]$State, [string]$Stage) {
         error=$failure
         failureStage=$failedStage
         elapsedSeconds=[Math]::Round($clock.Elapsed.TotalSeconds, 1)
+        corePid=$corePid
+        coreStartedTicks=$coreTicks
     } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $StateDirectory 'status.tmp') -Encoding UTF8
     Move-Item -LiteralPath (Join-Path $StateDirectory 'status.tmp') -Destination (Join-Path $StateDirectory 'status.json') -Force
 }

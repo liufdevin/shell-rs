@@ -16,6 +16,7 @@ pub enum Operation {
     RememberLogin(Server, crate::cli::Secret, bool),
     Forget(String),
     Refresh(String),
+    Diagnose(String, Vec<String>),
     Resolve(String, String, String, Option<u64>),
     Connect(String, String),
     Disconnect,
@@ -27,6 +28,7 @@ pub enum Operation {
 #[derive(Default)]
 #[non_exhaustive]
 pub struct Reply {
+    pub diagnostics: Option<super::DiagnosticReport>,
     pub catalog: Option<(String, Catalog)>,
     pub connection: Option<Connected>,
     pub logged_out: Option<String>,
@@ -39,6 +41,10 @@ pub struct Reply {
 
 pub trait Backend: Send + Sync + 'static {
     fn perform(&self, operation: Operation) -> Reply;
+
+    fn paths(&self, connection: &Connected) -> anyhow::Result<super::PathSnapshot> {
+        Ok(super::PathSnapshot::from_core(connection, &[], &[]))
+    }
 
     fn progress(&self) -> Option<NetworkProgress> {
         None
@@ -146,6 +152,23 @@ impl State {
             }
             Operation::Refresh(id) => {
                 self.refresh(&id, reply)?;
+            }
+            Operation::Diagnose(server, selected) => {
+                self.refresh(&server, reply)?;
+                let running = self
+                    .running
+                    .as_ref()
+                    .filter(|running| running.info.server == server)
+                    .ok_or_else(|| anyhow::anyhow!("device_unavailable"))?;
+                let mut report = super::diagnostics::check(running, &selected)?;
+                self.refresh(&server, reply)?;
+                let running = self
+                    .running
+                    .as_ref()
+                    .filter(|running| report.is_current(&running.info))
+                    .ok_or_else(|| anyhow::anyhow!("network_stopped"))?;
+                report.revalidate(&running.info, &self.accounts[&server].catalog);
+                reply.diagnostics = Some(report);
             }
             Operation::Resolve(server, device, user, terminal) => {
                 self.refresh(&server, reply)?;
@@ -302,6 +325,26 @@ impl shellrs_ssh::EndpointResolver for SystemBackend {
 }
 
 impl Backend for SystemBackend {
+    fn paths(&self, connection: &Connected) -> anyhow::Result<super::PathSnapshot> {
+        if connection.devices.is_empty() {
+            return Ok(super::PathSnapshot::from_core(connection, &[], &[]));
+        }
+        let directory = {
+            let state = self.0.lock().unwrap();
+            let running = state
+                .running
+                .as_ref()
+                .filter(|running| {
+                    running.info.server == connection.server
+                        && running.info.network == connection.network
+                        && running.info.virtual_ip == connection.virtual_ip
+                })
+                .ok_or_else(|| anyhow::anyhow!("network_stopped"))?;
+            running.directory().to_path_buf()
+        };
+        super::diagnostics::query_paths(connection, &directory)
+    }
+
     fn perform(&self, operation: Operation) -> Reply {
         *self.1.lock().unwrap() = match &operation {
             Operation::Connect(..) => Some(NetworkProgress::new(NetworkStage::Preparing)),
@@ -312,9 +355,10 @@ impl Backend for SystemBackend {
         let mut reply = Reply::default();
         let account_id = match &operation {
             Operation::Login(server, _) => Some(server.id.clone()),
-            Operation::Refresh(id) | Operation::Connect(id, _) | Operation::Resolve(id, ..) => {
-                Some(id.clone())
-            }
+            Operation::Refresh(id)
+            | Operation::Connect(id, _)
+            | Operation::Resolve(id, ..)
+            | Operation::Diagnose(id, _) => Some(id.clone()),
             Operation::Poll => state
                 .running
                 .as_ref()
@@ -369,6 +413,13 @@ pub(super) struct ServiceStatus {
 }
 
 pub struct Service {
+    paths: Option<super::PathSnapshot>,
+    path_generation: u64,
+    path_checked: Option<Instant>,
+    path_pending: bool,
+    path_task: Option<Task<()>>,
+    pub(super) diagnostics: Option<super::DiagnosticReport>,
+    pub(super) diagnosing: bool,
     pub(super) backend: Option<Arc<dyn Backend>>,
     pub(super) catalogs: HashMap<String, Catalog>,
     pub(super) connection: Option<Connected>,
@@ -387,6 +438,13 @@ impl EventEmitter<Event> for Service {}
 impl Service {
     pub fn new(cx: &mut Context<Self>) -> Self {
         let mut service = Self {
+            paths: None,
+            path_generation: 0,
+            path_checked: None,
+            path_pending: false,
+            path_task: None,
+            diagnostics: None,
+            diagnosing: false,
             backend: None,
             catalogs: HashMap::new(),
             connection: None,
@@ -404,6 +462,7 @@ impl Service {
                 cx.background_executor().timer(Duration::from_secs(1)).await;
                 if this
                     .update(cx, |this, cx| {
+                        this.refresh_paths(cx);
                         if !this.busy && this.connection.is_some() {
                             this.run(Operation::Poll, cx);
                         }
@@ -443,6 +502,91 @@ impl Service {
         self.catalogs.contains_key(server)
     }
 
+    pub fn diagnostics(&self, server: &str) -> Option<&super::DiagnosticReport> {
+        self.diagnostics.as_ref().filter(|report| {
+            report.server == server
+                && self
+                    .connection
+                    .as_ref()
+                    .is_some_and(|connection| report.is_current(connection))
+        })
+    }
+
+    pub fn paths(&self, server: &str) -> Option<&super::PathSnapshot> {
+        self.paths.as_ref().filter(|snapshot| {
+            !snapshot.is_stale()
+                && self.connection.as_ref().is_some_and(|connection| {
+                    connection.server == server && snapshot.is_current(connection)
+                })
+        })
+    }
+
+    fn invalidate_paths(&mut self) {
+        self.paths = None;
+        self.path_checked = None;
+        self.path_generation = self.path_generation.wrapping_add(1);
+    }
+
+    fn refresh_paths(&mut self, cx: &mut Context<Self>) {
+        if self.busy
+            || self.path_pending
+            || self.path_checked.is_some_and(|checked| {
+                cx.background_executor()
+                    .now()
+                    .saturating_duration_since(checked)
+                    < super::paths::REFRESH_INTERVAL
+            })
+        {
+            return;
+        }
+        let (Some(connection), Some(backend)) = (self.connection.clone(), self.backend.clone())
+        else {
+            return;
+        };
+        self.path_pending = true;
+        let generation = self.path_generation;
+        let fallback = super::PathSnapshot::from_core(&connection, &[], &[]);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let worker = std::thread::Builder::new()
+            .name("shelllf-remote-paths".into())
+            .spawn(move || {
+                let snapshot = backend
+                    .paths(&connection)
+                    .unwrap_or_else(|_| super::PathSnapshot::from_core(&connection, &[], &[]));
+                let _ = sender.send(snapshot);
+            });
+        self.path_task = Some(cx.spawn(async move |this, cx| {
+            let snapshot = loop {
+                match receiver.try_recv() {
+                    Ok(snapshot) => break snapshot,
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => break fallback,
+                    Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                }
+                if worker.is_err() {
+                    break fallback;
+                }
+                cx.background_executor()
+                    .timer(Duration::from_millis(100))
+                    .await;
+            };
+            let _ = this.update(cx, |this, cx| {
+                this.path_pending = false;
+                if this.path_generation == generation
+                    && this
+                        .connection
+                        .as_ref()
+                        .is_some_and(|connection| snapshot.is_current(connection))
+                {
+                    this.paths = Some(snapshot);
+                    this.path_checked = Some(cx.background_executor().now());
+                } else {
+                    this.path_checked = None;
+                }
+                cx.notify();
+            });
+        }));
+    }
+
     pub fn ssh_target(&self, server: &str, device: &str) -> Option<(String, String)> {
         if self.busy || !self.is_logged_in(server) {
             return None;
@@ -479,6 +623,7 @@ impl Service {
             return;
         };
         let polling = matches!(operation, Operation::Poll);
+        self.diagnosing = matches!(operation, Operation::Diagnose(..));
         let server_id = match &operation {
             Operation::Login(server, _)
             | Operation::SavedLogin(server)
@@ -488,6 +633,7 @@ impl Service {
             | Operation::Logout(id)
             | Operation::Forget(id)
             | Operation::Resolve(id, ..) => Some(id.clone()),
+            Operation::Diagnose(id, _) => Some(id.clone()),
             _ => self.connection.as_ref().map(|active| active.server.clone()),
         };
         let network_progress = matches!(operation, Operation::Connect(..))
@@ -510,12 +656,23 @@ impl Service {
                 _ => false,
             };
             if changing {
+                self.diagnostics = None;
+                self.invalidate_paths();
                 cx.emit(Event::NetworkChanging);
+            }
+            if self.diagnosing {
+                self.diagnostics = None;
             }
             self.status = network_progress
                 .as_ref()
                 .map(network_progress_message)
-                .unwrap_or_else(|| crate::i18n::t!("remote.working").to_string());
+                .unwrap_or_else(|| {
+                    if self.diagnosing {
+                        crate::i18n::t!("remote.diagnostic.working").to_string()
+                    } else {
+                        crate::i18n::t!("remote.working").to_string()
+                    }
+                });
             self.status_error = false;
             if let Some(id) = &server_id {
                 self.statuses.insert(
@@ -584,6 +741,7 @@ impl Service {
             };
             let _ = this.update(cx, |this, cx| {
                 this.busy = false;
+                this.diagnosing = false;
                 this.pending_server = None;
                 let moved = this.connection.as_ref().and_then(|old| {
                     let new = reply.connection.as_ref()?;
@@ -619,11 +777,45 @@ impl Service {
                     this.connection = reply.connection;
                 }
                 let catalog_refreshed = reply.catalog.is_some();
+                let diagnosed = reply.diagnostics.is_some();
                 if let Some((id, catalog)) = reply.catalog {
                     this.catalogs.insert(id, catalog);
                 }
                 if let Some(id) = reply.logged_out {
                     this.catalogs.remove(&id);
+                }
+                if changed {
+                    this.diagnostics = None;
+                }
+                if changed
+                    || this.paths.as_ref().is_some_and(|snapshot| {
+                        this.connection
+                            .as_ref()
+                            .is_none_or(|connection| !snapshot.is_current(connection))
+                    })
+                {
+                    this.invalidate_paths();
+                }
+                if let Some(report) = reply.diagnostics
+                    && this
+                        .connection
+                        .as_ref()
+                        .is_some_and(|connection| report.is_current(connection))
+                    && this.is_logged_in(&report.server)
+                {
+                    this.diagnostics = Some(report);
+                }
+                if let Some(report) = &mut this.diagnostics {
+                    if let Some(connection) = this
+                        .connection
+                        .as_ref()
+                        .filter(|connection| report.is_current(connection))
+                        && let Some(catalog) = this.catalogs.get(&report.server)
+                    {
+                        report.revalidate(connection, catalog);
+                    } else {
+                        this.diagnostics = None;
+                    }
                 }
                 let failed = reply.error.is_some();
                 if let Some(error) = reply.error {
@@ -642,7 +834,11 @@ impl Service {
                     }
                     this.status_error = true;
                 } else if !polling || catalog_refreshed {
-                    this.status = crate::i18n::t!("remote.ready").to_string();
+                    this.status = if diagnosed {
+                        crate::i18n::t!("remote.diagnostic.completed").to_string()
+                    } else {
+                        crate::i18n::t!("remote.ready").to_string()
+                    };
                     this.status_error = false;
                 }
                 if let Some(id) = server_id
@@ -674,6 +870,7 @@ impl Service {
                     cx.emit(Event::NetworkChanged);
                 }
                 cx.emit(Event::Updated);
+                this.refresh_paths(cx);
                 cx.notify();
             });
         }));

@@ -1275,6 +1275,7 @@ impl HostData {
             Kind::Group => {
                 if let Some(&group_id) = ids.groups.get(id) {
                     self.groups.retain(|group| group.id != group_id);
+                    self.manual_host_order.remove(&Some(group_id));
                     writes.push(Write::DeleteGroup(group_id));
                 }
             }

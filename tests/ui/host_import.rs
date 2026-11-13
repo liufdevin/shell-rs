@@ -228,6 +228,398 @@ async fn xshell_file_selection_and_cancel_leave_existing_data_untouched(cx: &mut
     });
 }
 
+fn mobaxterm_bookmark(user: &str) -> String {
+    let mut fields = vec![""; 36];
+    fields[0] = "0";
+    fields[1] = "server.example.test";
+    fields[2] = "2222";
+    fields[3] = user;
+    fields[7] = "DO_NOT_EXECUTE";
+    fields[14] = "C:\\not-imported-private-key.ppk";
+    fields[19] = "0";
+    format!(
+        "#109#{}#MobaFont%12#0#导入备注__DIEZE__1#-1",
+        fields.join("%")
+    )
+}
+
+#[gpui_kit::test]
+async fn mobaxterm_combined_import_selects_hosts_and_colors_independently(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("combined.mobaconf");
+    let colors = include_str!("../fixtures/mobaxterm/colors.ini");
+    std::fs::write(
+        &path,
+        format!(
+            "{colors}\n[Bookmarks]\nSubRep=生产\\华东\napp={}\n",
+            mobaxterm_bookmark("deploy")
+        ),
+    )
+    .unwrap();
+    let (handle, workspace) = open_workspace_with_store(cx, HostStore::empty());
+    let settings = cx.update(|cx| workspace.read(cx).settings().clone());
+    in_frame(cx, handle, |window, cx| window.click("open-settings", cx));
+    in_frame(cx, handle, |window, cx| {
+        window.within("settings").click("0-0", cx)
+    });
+    for import_hosts in [false, true] {
+        in_frame(cx, handle, |window, cx| {
+            window.click("import-terminal-schemes", cx)
+        });
+        cx.simulate_path_prompt_response(|_| Some(vec![path.clone()]));
+        cx.wait_for(handle.into(), Duration::from_secs(4), |window, _| {
+            window.try_find("moba-import-schemes").is_some()
+        })
+        .await;
+        assert!(settings.read_with(cx, |store, _| {
+            store.settings().terminal_theme.imported.is_empty()
+        }));
+        assert!(cx.update(|cx| workspace.read(cx).store().read(cx).hosts().is_empty()));
+        in_frame(cx, handle, |window, cx| {
+            assert_eq!(window.find("moba-import-hosts").checked(), Some(false));
+            assert_eq!(window.find("moba-import-schemes").checked(), Some(true));
+            if import_hosts {
+                window.click("moba-import-hosts", cx);
+                window.click("moba-import-schemes", cx);
+            } else {
+                window.press("escape", cx);
+            }
+        });
+        if !import_hosts {
+            wait_for_dialog_to_close(cx, handle).await;
+            continue;
+        }
+        in_frame(cx, handle, |window, cx| window.click("commit", cx));
+        wait_for_dialog_to_close(cx, handle).await;
+    }
+    assert_eq!(
+        cx.update(|cx| workspace.read(cx).store().read(cx).hosts().len()),
+        1
+    );
+    assert!(settings.read_with(cx, |store, _| {
+        store.settings().terminal_theme.imported.is_empty()
+    }));
+    in_frame(cx, handle, |window, cx| {
+        window.within("settings").click("0-6", cx)
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.click("import-mobaxterm", cx)
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.click("import-choose-file", cx)
+    });
+    cx.simulate_path_prompt_response(|_| Some(vec![path.clone()]));
+    cx.wait_for(handle.into(), Duration::from_secs(4), |window, _| {
+        window.try_find("moba-import-schemes").is_some()
+    })
+    .await;
+    in_frame(cx, handle, |window, cx| {
+        assert_eq!(window.find("moba-import-hosts").checked(), Some(true));
+        assert_eq!(window.find("moba-import-schemes").checked(), Some(false));
+        assert!(!enabled(&window.find("commit")));
+        window.click("moba-import-schemes", cx);
+    });
+    in_frame(cx, handle, |window, cx| window.click("commit", cx));
+    wait_for_dialog_to_close(cx, handle).await;
+    assert_eq!(
+        settings.read_with(cx, |store, _| store
+            .settings()
+            .terminal_theme
+            .imported
+            .len()),
+        3
+    );
+    assert_eq!(
+        cx.update(|cx| workspace.read(cx).store().read(cx).hosts().len()),
+        1
+    );
+    in_frame(cx, handle, |window, cx| {
+        window.within("settings").click("0-0", cx)
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.click("import-terminal-schemes", cx)
+    });
+    std::fs::write(
+        &path,
+        format!(
+            "{}\n[Bookmarks]\nother={}\n",
+            colors.replace("ForegroundColour=236,236,236", "ForegroundColour=1,2,3"),
+            mobaxterm_bookmark("another-user")
+        ),
+    )
+    .unwrap();
+    cx.simulate_path_prompt_response(|_| Some(vec![path.clone()]));
+    cx.wait_for(handle.into(), Duration::from_secs(4), |window, _| {
+        window.try_find("moba-import-schemes").is_some()
+    })
+    .await;
+    in_frame(cx, handle, |window, cx| window.click("commit", cx));
+    wait_for_dialog_to_close(cx, handle).await;
+    assert_eq!(
+        cx.update(|cx| workspace.read(cx).store().read(cx).hosts().len()),
+        1
+    );
+    assert_eq!(
+        settings.read_with(cx, |store, _| store
+            .settings()
+            .terminal_theme
+            .imported
+            .len()),
+        3
+    );
+    let theme = settings.read_with(cx, |store, _| {
+        store
+            .settings()
+            .terminal_theme
+            .imported
+            .iter()
+            .find(|theme| theme.key() == "mobaxterm-current")
+            .unwrap()
+            .clone()
+    });
+    assert_eq!(
+        theme.foreground(),
+        gpui_kit::Hsla::from(gpui_kit::rgb(0x010203))
+    );
+    in_frame(cx, handle, |window, cx| {
+        window.within("settings").click("0-6", cx)
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.click("import-mobaxterm", cx)
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.click("import-choose-file", cx)
+    });
+    cx.simulate_path_prompt_response(|_| Some(vec![path.clone()]));
+    cx.wait_for(handle.into(), Duration::from_secs(4), |window, _| {
+        window.try_find("moba-import-schemes").is_some()
+    })
+    .await;
+    in_frame(cx, handle, |window, cx| {
+        assert_eq!(window.find("moba-import-hosts").checked(), Some(true));
+        window.click("moba-import-schemes", cx);
+    });
+    std::fs::remove_file(&path).unwrap();
+    in_frame(cx, handle, |window, cx| window.click("commit", cx));
+    wait_for_dialog_to_close(cx, handle).await;
+    assert_eq!(
+        cx.update(|cx| workspace.read(cx).store().read(cx).hosts().len()),
+        2
+    );
+    assert_eq!(
+        settings.read_with(cx, |store, _| store
+            .settings()
+            .terminal_theme
+            .imported
+            .len()),
+        3
+    );
+    cx.update(|cx| {
+        settings.update(cx, |store, cx| {
+            store.update(
+                |settings| {
+                    settings.appearance = Appearance::Dark;
+                },
+                cx,
+            )
+        })
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.within("settings").click("0-0", cx)
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.click("terminal-theme-mobaxterm-current", cx)
+    });
+    cx.update(|cx| {
+        let current = shellrs::terminal::TerminalColors::current(cx);
+        assert_eq!(current.key(), "mobaxterm-current");
+        assert_eq!(
+            current.foreground(),
+            gpui_kit::Hsla::from(gpui_kit::rgb(0x010203))
+        );
+    });
+}
+
+#[gpui_kit::test]
+async fn mobaxterm_malformed_colors_warn_but_do_not_prevent_host_only_import(
+    cx: &mut TestAppContext,
+) {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("broken.ini");
+    std::fs::write(
+        &path,
+        format!(
+            "[Colors]\nForegroundColour=broken\n[Bookmarks]\napp={}\n",
+            mobaxterm_bookmark("deploy")
+        ),
+    )
+    .unwrap();
+    let (handle, workspace) = open_workspace_with_store(cx, HostStore::empty());
+    in_frame(cx, handle, |window, cx| window.click("open-settings", cx));
+    in_frame(cx, handle, |window, cx| {
+        window.within("settings").click("0-6", cx)
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.click("import-mobaxterm", cx)
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.click("import-choose-file", cx)
+    });
+    cx.simulate_path_prompt_response(|_| Some(vec![path]));
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window.try_find("moba-scheme-error").is_some()
+    })
+    .await;
+    in_frame(cx, handle, |window, cx| {
+        assert!(window.try_find("moba-import-schemes").is_none());
+        assert!(enabled(&window.find("commit")));
+        window.click("commit", cx);
+    });
+    wait_for_dialog_to_close(cx, handle).await;
+    assert_eq!(
+        cx.update(|cx| workspace.read(cx).store().read(cx).hosts().len()),
+        1
+    );
+}
+
+#[gpui_kit::test]
+async fn mobaxterm_import_from_sync_previews_and_persists_hosts_without_passwords_or_keys(
+    cx: &mut TestAppContext,
+) {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("MobaXterm.mobaconf");
+    let text = format!(
+        "[Passwords]\nssh=DO_NOT_IMPORT_PASSWORD\n[Bookmarks_1]\nSubRep=生产\\华东\nImgNum=41\napp={}\nexisting={}\nunsupported={}\n",
+        mobaxterm_bookmark("deploy"),
+        mobaxterm_bookmark("root"),
+        mobaxterm_bookmark("ops").replacen("#109#0%", "#91#4%", 1)
+    );
+    let mut utf16 = vec![0xff, 0xfe];
+    utf16.extend(text.encode_utf16().flat_map(u16::to_le_bytes));
+    std::fs::write(&path, utf16).unwrap();
+    let database = directory.path().join("hosts.db");
+    let mut store = HostStore::load(HostDatabase::open(&database).unwrap()).unwrap();
+    let existing = store.insert_unnotified(HostDraft::new(
+        "已有主机",
+        "server.example.test",
+        2222,
+        "root",
+        AuthKind::Password,
+        None,
+    ));
+    HostDatabase::open(&database)
+        .unwrap()
+        .insert_host(store.host(existing).unwrap())
+        .unwrap();
+    let (handle, workspace) = open_workspace_with_store(cx, store);
+    in_frame(cx, handle, |window, cx| window.click("open-settings", cx));
+    in_frame(cx, handle, |window, cx| {
+        window.within("settings").click("0-6", cx)
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.click("import-mobaxterm", cx)
+    });
+    in_frame(cx, handle, |window, cx| {
+        assert!(!enabled(&window.find("commit")));
+        assert!(window.try_find("import-choose-folder").is_none());
+        window.click("import-choose-file", cx);
+    });
+    assert!(cx.did_prompt_for_paths());
+    cx.simulate_path_prompt_response(|_| Some(vec![path]));
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window.try_find(("import-address", 0usize)).is_some()
+    })
+    .await;
+    in_frame(cx, handle, |window, _| {
+        assert_eq!(window.find(("import-name", 0usize)).value(), Some("app"));
+        assert_eq!(
+            window.find(("import-group", 0usize)).value(),
+            Some("生产/华东")
+        );
+        assert_eq!(window.find(("import-user", 0usize)).value(), Some("deploy"));
+        assert_eq!(
+            window.find(("import-port", 0usize)).label(),
+            Some("SSH 2222")
+        );
+        assert_eq!(window.find(("import-auth", 0usize)).label(), Some("密码"));
+        assert_eq!(
+            window.find(("import-status", 1usize)).label(),
+            Some("已存在")
+        );
+        assert_eq!(
+            window.find("import-counts").label(),
+            Some("共 2 台 · 1 台已存在 · 已选 1 台")
+        );
+        assert!(
+            window
+                .find("import-note")
+                .label()
+                .unwrap()
+                .contains("已跳过 1 个")
+        );
+    });
+    assert_eq!(
+        cx.update(|cx| workspace.read(cx).store().read(cx).hosts().len()),
+        1
+    );
+    in_frame(cx, handle, |window, cx| window.click("commit", cx));
+    wait_for_dialog_to_close(cx, handle).await;
+    let reloaded = HostStore::load(HostDatabase::open(&database).unwrap()).unwrap();
+    assert_eq!(reloaded.hosts().len(), 2);
+    assert_eq!(reloaded.groups().len(), 2);
+    let imported = reloaded
+        .hosts()
+        .iter()
+        .find(|host| host.name.as_ref() == "app")
+        .unwrap();
+    assert_eq!(imported.notes.as_ref(), "导入备注#1");
+    assert_eq!(imported.user.as_ref(), "deploy");
+    assert_eq!(reloaded.group_path(imported.group.unwrap()), "生产 / 华东");
+    assert!(reloaded.credentials().is_empty());
+    let saved = format!("{:?}", reloaded.hosts());
+    assert!(
+        !saved.contains("DO_NOT_IMPORT_PASSWORD")
+            && !saved.contains("DO_NOT_EXECUTE")
+            && !saved.contains("private-key.ppk")
+    );
+}
+
+#[gpui_kit::test]
+async fn mobaxterm_interface_only_export_explains_missing_hosts_and_cancel_changes_nothing(
+    cx: &mut TestAppContext,
+) {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("interface.mobaconf");
+    std::fs::write(&path, format!("[Misc]\nLastSession=recent|{}\n[ImportExportSpecials]\nExportedSettings=MobaXterm interface settings\n", mobaxterm_bookmark("root"))).unwrap();
+    let (handle, workspace) = open_workspace_with_store(cx, HostStore::empty());
+    in_frame(cx, handle, |window, cx| window.click("open-settings", cx));
+    in_frame(cx, handle, |window, cx| {
+        window.within("settings").click("0-6", cx)
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.click("import-mobaxterm", cx)
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.click("import-choose-file", cx)
+    });
+    cx.simulate_path_prompt_response(|_| Some(vec![path]));
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window.try_find("import-empty").is_some_and(|empty| {
+            empty
+                .label()
+                .is_some_and(|label| label.contains("仅导出“界面设置”"))
+        })
+    })
+    .await;
+    in_frame(cx, handle, |window, cx| {
+        assert!(!enabled(&window.find("commit")));
+        assert!(window.try_find(("import-address", 0usize)).is_none());
+        window.press("escape", cx);
+    });
+    wait_for_dialog_to_close(cx, handle).await;
+    assert!(cx.update(|cx| workspace.read(cx).store().read(cx).hosts().is_empty()));
+}
+
 #[gpui_kit::test]
 async fn hosts_from_ssh_config_are_added_with_their_groups_and_keys(cx: &mut TestAppContext) {
     let home = ssh_home(&[

@@ -45,6 +45,7 @@ gpui_kit::actions!(
         /// Open the import dialog for the hosts `~/.ssh/known_hosts` names.
         ImportKnownHosts,
         ImportXshell,
+        ImportMobaXterm,
         ImportTerminalSchemes,
         /// Open a new local login-shell terminal.
         NewLocalTerminal,
@@ -481,6 +482,19 @@ id_actions! {
 pub struct MoveHostNode {
     pub source: HostNode,
     pub destination: NodeDrop,
+}
+
+#[derive(Action, Clone, PartialEq, Eq)]
+#[action(namespace = shellrs, no_json)]
+#[non_exhaustive]
+pub struct AutomaticallyOrderHosts {
+    pub parent: Option<GroupId>,
+}
+
+impl AutomaticallyOrderHosts {
+    pub fn new(parent: Option<GroupId>) -> Self {
+        Self { parent }
+    }
 }
 
 /// A row of 项目 dropped where it goes: a group among the groups, a

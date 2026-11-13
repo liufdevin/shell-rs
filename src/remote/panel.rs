@@ -9,7 +9,7 @@ use crate::{
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     component::{
-        ActiveTheme as _, Icon, IconName, Sizable as _,
+        ActiveTheme as _, Icon, IconName, Sizable as _, WindowExt as _,
         button::Button,
         h_flex,
         input::{Input, InputState},
@@ -34,6 +34,7 @@ pub enum Command {
     Devices(String),
     Networks(String),
     RefreshServer(String),
+    Diagnose(String, Vec<String>),
     ConnectServer(String, String),
     DisconnectServer(String),
     LogoutServer(String),
@@ -215,6 +216,30 @@ impl RemotePanel {
             Command::RefreshServer(id) => self
                 .service
                 .update(cx, |service, cx| service.run(Operation::Refresh(id), cx)),
+            Command::Diagnose(id, devices) => {
+                if self
+                    .service
+                    .read(cx)
+                    .connection()
+                    .is_some_and(|active| active.server == id)
+                {
+                    if !window.has_active_dialog(cx)
+                        && let Some(server) = self.server(&id, cx)
+                    {
+                        super::catalog_dialog::open(
+                            server,
+                            false,
+                            self.service.clone(),
+                            self.dispatch.clone(),
+                            window,
+                            cx,
+                        );
+                    }
+                    self.service.update(cx, |service, cx| {
+                        service.run(Operation::Diagnose(id, devices), cx)
+                    });
+                }
+            }
             Command::ConnectServer(id, network) => {
                 if self
                     .service
@@ -425,6 +450,14 @@ impl Render for RemotePanel {
                         }
                     }),
             );
+            if let Some(active) = active {
+                rows = rows.child(div().px_3().child(super::diagnostic_view::current_paths(
+                    format!("remote-sidebar-paths-{}", server.id),
+                    active,
+                    service.paths(&server.id),
+                    cx,
+                )));
+            }
             if let Some(status) = status.filter(|status| status.failed || status.progress.is_some())
             {
                 let progress = status.progress.is_some();
@@ -534,6 +567,11 @@ fn server_menu(
                 busy,
             ))
             .item(item(
+                t!("remote.diagnostic.check_network"),
+                Command::Diagnose(id.into(), vec![]),
+                busy || !connected,
+            ))
+            .item(item(
                 t!("remote.logout"),
                 Command::LogoutServer(id.into()),
                 busy,
@@ -579,6 +617,8 @@ pub(super) fn describe(code: &str) -> SharedString {
         "credential_save" => "remote.error.credential_save",
         "credential_delete" => "remote.error.credential_delete",
         "device_unavailable" => "remote.device_unavailable",
+        "diagnostic_failed" => "remote.diagnostic.failed",
+        "diagnostic_too_many" => "remote.diagnostic.too_many",
         "http_404" => "remote.error.api_version",
         _ => "remote.error.failed",
     };

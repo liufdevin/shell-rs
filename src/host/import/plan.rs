@@ -394,8 +394,7 @@ mod tests {
     fn scan(candidates: Vec<ImportCandidate>) -> ImportScan {
         ImportScan {
             candidates,
-            hashed: 0,
-            skipped: 0,
+            ..ImportScan::default()
         }
     }
 

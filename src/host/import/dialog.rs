@@ -40,6 +40,13 @@ pub struct ImportOutcome {
     /// Whether some of it did not reach the database: that is reported on
     /// its own, so the import does not also claim success.
     pub failed: bool,
+    schemes: Vec<crate::terminal::TerminalTheme>,
+}
+
+impl ImportOutcome {
+    pub fn take_schemes(&mut self) -> Vec<crate::terminal::TerminalTheme> {
+        std::mem::take(&mut self.schemes)
+    }
 }
 
 /// What runs once an import has been written.
@@ -63,8 +70,51 @@ pub fn open_import_dialog(
     cx: &mut App,
 ) {
     let view = cx.new(|cx| ImportDialog::new(source, ssh_dir, store, window, cx));
+    show_import_dialog(source, view, on_imported, return_focus, window, cx);
+}
+
+pub fn open_mobaxterm_preview(
+    scan: super::ImportScan,
+    store: Entity<HostStore>,
+    on_imported: ImportHandler,
+    return_focus: FocusHandle,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let view = cx.new(|cx| {
+        let mut view = ImportDialog::new(ImportSource::MobaXterm, None, store, window, cx);
+        view.loaded(ImportLoad::Loaded(scan), cx);
+        view.preloaded = true;
+        view.include_hosts = false;
+        view.include_schemes = !view.schemes.is_empty();
+        view
+    });
+    show_import_dialog(
+        ImportSource::MobaXterm,
+        view,
+        on_imported,
+        return_focus,
+        window,
+        cx,
+    );
+}
+
+fn show_import_dialog(
+    source: ImportSource,
+    view: Entity<ImportDialog>,
+    on_imported: ImportHandler,
+    return_focus: FocusHandle,
+    window: &mut Window,
+    cx: &mut App,
+) {
     window.open_dialog(cx, move |dialog, window, cx| {
-        let count = view.read(cx).import_count();
+        let state = view.read(cx);
+        let count = state.import_count();
+        let schemes = if state.include_schemes {
+            state.schemes.len()
+        } else {
+            0
+        };
         let viewport = window.viewport_size();
         let return_focus = return_focus.clone();
         dialog
@@ -72,6 +122,7 @@ pub fn open_import_dialog(
                 ImportSource::SshConfig => t!("host.import.title.ssh_config"),
                 ImportSource::KnownHosts => t!("host.import.title.known_hosts"),
                 ImportSource::Xshell => t!("host.import.title.xshell"),
+                ImportSource::MobaXterm => t!("host.import.title.mobaxterm"),
             })
             .w(rems(72.)
                 .to_pixels(window.rem_size())
@@ -87,8 +138,16 @@ pub fn open_import_dialog(
                         DialogAction::new().child(
                             Button::new("commit")
                                 .primary()
-                                .label(tn!("host.import.commit", count))
-                                .disabled(count == 0),
+                                .label(if schemes > 0 {
+                                    t!(
+                                        "host.import.mobaxterm.commit",
+                                        hosts = count,
+                                        schemes = schemes
+                                    )
+                                } else {
+                                    tn!("host.import.commit", count)
+                                })
+                                .disabled(count == 0 && schemes == 0),
                         ),
                     ),
             )
@@ -130,6 +189,11 @@ struct RowEditors {
 }
 
 pub struct ImportDialog {
+    schemes: Vec<crate::terminal::TerminalTheme>,
+    scheme_error: Option<String>,
+    include_hosts: bool,
+    include_schemes: bool,
+    preloaded: bool,
     source: ImportSource,
     ssh_dir: Option<PathBuf>,
     /// The file read: the source's own in `ssh_dir`, or one the user chose.
@@ -168,10 +232,15 @@ impl ImportDialog {
                 });
             }
         });
-        let path = (source != ImportSource::Xshell)
+        let path = (!source.is_migration())
             .then(|| ssh_dir.as_deref().map(|dir| source.default_path(dir)))
             .flatten();
         let mut this = Self {
+            schemes: Vec::new(),
+            scheme_error: None,
+            include_hosts: true,
+            include_schemes: false,
+            preloaded: false,
             source,
             ssh_dir,
             path,
@@ -196,6 +265,11 @@ impl ImportDialog {
     fn load(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.rows.clear();
         self.editors.clear();
+        self.schemes.clear();
+        self.scheme_error = None;
+        self.include_hosts = true;
+        self.include_schemes = false;
+        self.preloaded = false;
         let Some(path) = self.path.clone() else {
             self.state = LoadState::Missing;
             cx.notify();
@@ -229,6 +303,8 @@ impl ImportDialog {
         self.state = match load {
             ImportLoad::Loaded(scan) => {
                 self.rows = import_rows(&scan, self.store.read(cx));
+                self.schemes = scan.schemes;
+                self.scheme_error = scan.scheme_error;
                 LoadState::Loaded {
                     hashed: scan.hashed,
                     skipped: scan.skipped,
@@ -256,6 +332,7 @@ impl ImportDialog {
                 ImportSource::KnownHosts => t!("host.import.choose_prompt.known_hosts"),
                 ImportSource::Xshell if directory => t!("host.import.choose_prompt.xshell_folder"),
                 ImportSource::Xshell => t!("host.import.choose_prompt.xshell"),
+                ImportSource::MobaXterm => t!("host.import.choose_prompt.mobaxterm"),
             }),
         });
         self._choose = Some(cx.spawn_in(window, async move |this, cx| {
@@ -278,7 +355,11 @@ impl ImportDialog {
 
     /// How many hosts the commit button would import.
     fn import_count(&self) -> usize {
-        self.rows.iter().filter(|row| row.will_import()).count()
+        if self.include_hosts {
+            self.rows.iter().filter(|row| row.will_import()).count()
+        } else {
+            0
+        }
     }
 
     fn selectable_count(&self) -> usize {
@@ -292,8 +373,22 @@ impl ImportDialog {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        if self.import_count() == 0 {
+        if self.import_count() == 0 && (!self.include_schemes || self.schemes.is_empty()) {
             return false;
+        }
+        if self.import_count() == 0 {
+            on_imported(
+                ImportOutcome {
+                    source: self.source,
+                    hosts: 0,
+                    credentials: 0,
+                    failed: false,
+                    schemes: self.schemes.clone(),
+                },
+                window,
+                cx,
+            );
+            return true;
         }
         let plan = match plan_import(&self.rows, self.store.read(cx)) {
             Ok(plan) => plan,
@@ -311,6 +406,11 @@ impl ImportDialog {
                 hosts: imported.hosts,
                 credentials: imported.credentials,
                 failed: !imported.failures.is_empty(),
+                schemes: if self.include_schemes {
+                    self.schemes.clone()
+                } else {
+                    Vec::new()
+                },
             },
             window,
             cx,
@@ -462,6 +562,7 @@ impl ImportDialog {
             ImportSource::SshConfig => t!("host.import.note.ssh_config"),
             ImportSource::KnownHosts => t!("host.import.note.known_hosts"),
             ImportSource::Xshell => t!("host.import.note.xshell"),
+            ImportSource::MobaXterm => t!("host.import.note.mobaxterm"),
         }];
         if let LoadState::Loaded { hashed, .. } = self.state
             && hashed > 0
@@ -486,10 +587,12 @@ impl ImportDialog {
     fn render_source(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let path = match &self.path {
             Some(path) => path.to_string_lossy().into_owned(),
+            None if self.preloaded => t!("host.import.mobaxterm.selected_files").to_string(),
             None => match self.source {
                 ImportSource::SshConfig => "~/.ssh/config".to_string(),
                 ImportSource::KnownHosts => "~/.ssh/known_hosts".to_string(),
                 ImportSource::Xshell => t!("host.import.xshell.choose_source").to_string(),
+                ImportSource::MobaXterm => t!("host.import.mobaxterm.choose_source").to_string(),
             },
         };
         let source = t!("host.import.source", path = path);
@@ -580,7 +683,7 @@ impl ImportDialog {
                 t!("host.import.column.name"),
                 t!("host.import.column.group"),
                 t!("host.import.column.address"),
-                if self.source == ImportSource::Xshell {
+                if self.source.is_migration() {
                     t!("host.import.column.protocol_port")
                 } else {
                     t!("host.import.column.port")
@@ -711,7 +814,7 @@ impl ImportDialog {
             .tooltip(move |window, cx| Tooltip::new(full_address.clone()).build(window, cx))
             .child(row.candidate.address.clone())
             .into_any_element();
-        let port_text = if self.source == ImportSource::Xshell {
+        let port_text = if self.source.is_migration() {
             format!(
                 "{} {}",
                 row.candidate.options.protocol.as_str().to_uppercase(),
@@ -766,6 +869,9 @@ impl ImportDialog {
             LoadState::Missing if self.source == ImportSource::Xshell && self.path.is_none() => {
                 Some(t!("host.import.xshell.choose_source"))
             }
+            LoadState::Missing if self.source == ImportSource::MobaXterm && self.path.is_none() => {
+                Some(t!("host.import.mobaxterm.choose_source"))
+            }
             LoadState::Missing => Some(t!(
                 "host.import.missing",
                 path = self
@@ -776,6 +882,8 @@ impl ImportDialog {
                         ImportSource::SshConfig => "~/.ssh/config".to_string(),
                         ImportSource::KnownHosts => "~/.ssh/known_hosts".to_string(),
                         ImportSource::Xshell => t!("host.import.xshell.choose_source").to_string(),
+                        ImportSource::MobaXterm =>
+                            t!("host.import.mobaxterm.choose_source").to_string(),
                     })
             )),
             LoadState::Failed(error) => Some(t!("host.import.failed", error = error)),
@@ -783,6 +891,7 @@ impl ImportDialog {
                 ImportSource::SshConfig => t!("host.import.empty.ssh_config"),
                 ImportSource::KnownHosts => t!("host.import.empty.known_hosts"),
                 ImportSource::Xshell => t!("host.import.empty.xshell"),
+                ImportSource::MobaXterm => t!("host.import.empty.mobaxterm"),
             }),
             LoadState::Loaded { .. } => None,
         };
@@ -846,7 +955,68 @@ impl Render for ImportDialog {
             .gap_3()
             .child(self.render_note(cx))
             .child(self.render_source(cx))
-            .child(self.render_table(window, cx))
+            .when(
+                self.source == ImportSource::MobaXterm
+                    && matches!(self.state, LoadState::Loaded { .. }),
+                |view| {
+                    view.child(
+                        v_flex()
+                            .gap_2()
+                            .child(
+                                Checkbox::new("moba-import-hosts")
+                                    .label(t!(
+                                        "host.import.mobaxterm.include_hosts",
+                                        count = self.rows.len()
+                                    ))
+                                    .checked(self.include_hosts)
+                                    .disabled(self.rows.is_empty())
+                                    .on_click(cx.listener(|this, checked, _, cx| {
+                                        this.include_hosts = *checked;
+                                        cx.notify();
+                                    })),
+                            )
+                            .when(!self.schemes.is_empty(), |view| {
+                                view.child(
+                                    Checkbox::new("moba-import-schemes")
+                                        .label(t!(
+                                            "host.import.mobaxterm.include_schemes",
+                                            count = self.schemes.len()
+                                        ))
+                                        .checked(self.include_schemes)
+                                        .on_click(cx.listener(|this, checked, _, cx| {
+                                            this.include_schemes = *checked;
+                                            cx.notify();
+                                        })),
+                                )
+                                .child(
+                                    div()
+                                        .text_sm()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child(
+                                            self.schemes
+                                                .iter()
+                                                .map(|theme| theme.name())
+                                                .collect::<Vec<_>>()
+                                                .join(" · "),
+                                        ),
+                                )
+                            })
+                            .when_some(self.scheme_error.as_ref(), |view, error| {
+                                view.child(
+                                    div()
+                                        .id("moba-scheme-error")
+                                        .test_support()
+                                        .text_sm()
+                                        .text_color(cx.theme().danger)
+                                        .child(t!("settings.theme.import_failed", error = error)),
+                                )
+                            }),
+                    )
+                },
+            )
+            .when(self.include_hosts || self.rows.is_empty(), |view| {
+                view.child(self.render_table(window, cx))
+            })
     }
 }
 

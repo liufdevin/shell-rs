@@ -41,7 +41,7 @@ fn from_sql(id: i64) -> u64 {
 /// command snippets, 15 the serial hosts, 16 the Telnet hosts, 17 each
 /// host's right sidebar, 18 the saved local terminals, 19 their titles, 20
 /// what sync needs, 21 each host's local connection log.
-const SCHEMA_VERSION: i64 = 30;
+const SCHEMA_VERSION: i64 = 31;
 
 /// The whole schema, as a new database gets it.
 ///
@@ -112,6 +112,11 @@ const SCHEMA_VERSION: i64 = 30;
 /// the same place (`a_column_added_later_matches_the_schema`). A CHECK
 /// cannot be changed that way: the table is made again (see `add_telnet`).
 const SCHEMA: &str = "\
+CREATE TABLE manual_host_order (
+    scope INTEGER PRIMARY KEY,
+    group_id INTEGER UNIQUE REFERENCES groups(id) ON DELETE CASCADE,
+    CHECK (scope = COALESCE(group_id, 0))
+) STRICT;
 CREATE TABLE serial_assistants (
     target TEXT PRIMARY KEY NOT NULL,
     host_id INTEGER REFERENCES hosts(id) ON DELETE CASCADE,
@@ -309,7 +314,7 @@ enum Step {
 ///
 /// A step is history: it says what that version's change was, and stays as
 /// written when `SCHEMA` changes again.
-const STEPS: [(i64, Step); 17] = [
+const STEPS: [(i64, Step); 18] = [
     (
     13,
     // The command snippets.
@@ -429,6 +434,7 @@ COMMIT;",
     (27, Step::Sql("BEGIN; CREATE TABLE IF NOT EXISTS serial_assistants (target TEXT PRIMARY KEY NOT NULL, host_id INTEGER REFERENCES hosts(id) ON DELETE CASCADE, value TEXT NOT NULL) STRICT; PRAGMA user_version = 28; COMMIT;")),
     (28, Step::Code(add_serial_signals)),
     (29, Step::Sql("BEGIN; UPDATE hosts SET serial_dtr = 1, serial_rts = 1 WHERE protocol = 'serial'; PRAGMA user_version = 30; COMMIT;")),
+    (30, Step::Sql("BEGIN; CREATE TABLE IF NOT EXISTS manual_host_order (scope INTEGER PRIMARY KEY, group_id INTEGER UNIQUE REFERENCES groups(id) ON DELETE CASCADE, CHECK (scope = COALESCE(group_id, 0))) STRICT; PRAGMA user_version = 31; COMMIT;")),
 ];
 
 fn add_serial_signals(connection: &Connection) -> rusqlite::Result<()> {
@@ -763,6 +769,17 @@ impl std::error::Error for OpenError {
 }
 
 impl HostDatabase {
+    pub fn manual_host_order(&self) -> rusqlite::Result<HashSet<Option<GroupId>>> {
+        self.connection
+            .prepare("SELECT group_id FROM manual_host_order")?
+            .query_map([], |row| {
+                Ok(row
+                    .get::<_, Option<i64>>(0)?
+                    .map(|id| GroupId(from_sql(id))))
+            })?
+            .collect()
+    }
+
     pub fn serial_assistants(&self) -> rusqlite::Result<HashMap<String, crate::SerialAssistant>> {
         self.connection
             .prepare("SELECT target, value FROM serial_assistants")?
@@ -1515,7 +1532,12 @@ impl HostDatabase {
     }
 
     /// Save one drag as a unit, including parent changes and sibling order.
-    pub fn save_tree_order(&self, groups: &[HostGroup], hosts: &[Host]) -> rusqlite::Result<()> {
+    pub fn save_tree_order(
+        &self,
+        groups: &[HostGroup],
+        hosts: &[Host],
+        manual_host_order: &HashSet<Option<GroupId>>,
+    ) -> rusqlite::Result<()> {
         self.atomically(|connection| {
             let mut update_group = connection.prepare(
                 "UPDATE groups SET parent_id = ?2, sort_order = ?3, edited_ms = ?4 WHERE id = ?1",
@@ -1538,6 +1560,14 @@ impl HostDatabase {
                     host.sort_order,
                     to_sql(host.edited_ms),
                 ])?;
+            }
+            connection.execute("DELETE FROM manual_host_order", [])?;
+            for parent in manual_host_order {
+                let group = parent.map(|id| to_sql(id.0));
+                connection.execute(
+                    "INSERT INTO manual_host_order (scope, group_id) VALUES (?1, ?2)",
+                    params![group.unwrap_or(0), group],
+                )?;
             }
             Ok(())
         })
@@ -2249,6 +2279,25 @@ mod tests {
         assert!(data.hosts.is_empty());
         assert!(data.recent.is_empty());
         assert!(data.forwards.is_empty());
+    }
+
+    #[test]
+    fn version_30_defaults_to_automatic_host_order_without_changing_positions() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("ordering.db");
+        let database = HostDatabase::open(&path).unwrap();
+        database.insert_group(&group(1, "com", None)).unwrap();
+        let mut saved = host(1, "COM3", Some(1));
+        saved.sort_order = 7;
+        database.insert_host(&saved).unwrap();
+        database
+            .connection
+            .execute_batch("DROP TABLE manual_host_order; PRAGMA user_version = 30;")
+            .unwrap();
+        drop(database);
+        let database = HostDatabase::open(&path).unwrap();
+        assert!(database.manual_host_order().unwrap().is_empty());
+        assert_eq!(database.load().unwrap().hosts[0].sort_order, 7);
     }
 
     #[test]
@@ -4102,7 +4151,8 @@ PRAGMA user_version = 21;",
             data.groups[1].sort_order = 0;
             data.hosts[0].group = Some(GroupId(2));
             data.hosts[1].sort_order = 0;
-            db.save_tree_order(&data.groups, &data.hosts).unwrap();
+            db.save_tree_order(&data.groups, &data.hosts, &HashSet::new())
+                .unwrap();
         }
         let data = HostDatabase::open(&path).unwrap().load().unwrap();
         assert_eq!(data.groups[1].parent, Some(GroupId(1)));

@@ -2,6 +2,90 @@ _version: 2
 remote.title:
   zh-CN: 远程管理
   en: Remote management
+remote.diagnostic.check_network:
+  zh-CN: 检测当前网络
+  en: Check current network
+remote.diagnostic.check_device:
+  zh-CN: 检测
+  en: Check
+remote.diagnostic.working:
+  zh-CN: 正在检测网卡、核心、设备端口和路径…
+  en: Checking the adapter, core, device ports and routes…
+remote.diagnostic.completed:
+  zh-CN: 检测完成，请查看各项结果。
+  en: Check complete. Review the individual results.
+remote.diagnostic.help:
+  zh-CN: 检测只在本机显示，不执行 SSH 认证或上传数据。ICMP 不响应不代表 TCP 22 不可达。
+  en: Results stay on this computer. Checks do not authenticate SSH or upload data. No ICMP reply does not mean TCP port 22 is unreachable.
+remote.diagnostic.local:
+  zh-CN: "虚拟网卡：%{adapter} · 组网核心：%{core} · RPC：%{rpc} · 检测时间：%{time} · %{count} 台设备"
+  en: "Virtual adapter: %{adapter} · Network core: %{core} · RPC: %{rpc} · Checked: %{time} · %{count} devices"
+remote.diagnostic.device:
+  zh-CN: "TCP 22：%{tcp} · 检测时路径：%{path} · ICMP RTT：%{icmp} · TCP 建立：%{tcp_ms} · 路由估算：%{route_ms} · %{protocol}"
+  en: "TCP 22: %{tcp} · Path when checked: %{path} · ICMP RTT: %{icmp} · TCP connect: %{tcp_ms} · Route estimate: %{route_ms} · %{protocol}"
+remote.path.summary:
+  zh-CN: "当前路径：P2P 直连 %{direct} 台 · 中继 %{relay} 台 · 未确定 %{unknown} 台（约每 5 秒自动更新）"
+  en: "Current paths: P2P direct %{direct} · Relayed %{relay} · Unknown %{unknown} (updates about every 5 seconds)"
+remote.path.querying:
+  zh-CN: 正在查询连接路径…
+  en: Querying connection paths…
+remote.path.device:
+  zh-CN: "当前路径：%{path}"
+  en: "Current path: %{path}"
+remote.diagnostic.paths:
+  zh-CN: "本次检测路径：P2P 直连 %{direct} 台 · 中继 %{relay} 台 · 未确定 %{unknown} 台 · 已失效 %{invalid} 台"
+  en: "Paths checked: P2P direct %{direct} · Relayed %{relay} · Unknown %{unknown} · Invalidated %{invalid}"
+remote.diagnostic.no_paths:
+  zh-CN: 没有可检测的远端设备，暂无 P2P/中继路径。
+  en: No remote devices to check. No P2P or relayed paths available.
+remote.diagnostic.view_devices:
+  zh-CN: 查看设备路径…
+  en: View device paths…
+remote.diagnostic.ok:
+  zh-CN: 就绪
+  en: Ready
+remote.diagnostic.unavailable:
+  zh-CN: 未就绪
+  en: Not ready
+remote.diagnostic.stale:
+  zh-CN: 检测结果已过期，请重新检测。
+  en: These results have expired. Run the check again.
+remote.diagnostic.address_changed:
+  zh-CN: 设备地址已变化，请重新检测。
+  en: The device address changed. Run the check again.
+remote.diagnostic.offline:
+  zh-CN: 设备已离线，原检测结果已撤销。
+  en: The device is offline. Previous results have been cleared.
+remote.diagnostic.direct:
+  zh-CN: P2P 直连
+  en: P2P direct
+remote.diagnostic.relay:
+  zh-CN: "中继（%{hops} 跳）"
+  en: "Relay (%{hops} hops)"
+remote.diagnostic.unknown_path:
+  zh-CN: 路径未确定
+  en: Path unknown
+remote.diagnostic.not_tested:
+  zh-CN: 未检测
+  en: Not checked
+remote.diagnostic.open:
+  zh-CN: 可达
+  en: Reachable
+remote.diagnostic.refused:
+  zh-CN: 拒绝连接
+  en: Connection refused
+remote.diagnostic.timeout:
+  zh-CN: 超时
+  en: Timed out
+remote.diagnostic.error:
+  zh-CN: 检测失败
+  en: Check failed
+remote.diagnostic.failed:
+  zh-CN: 网络检测未完成，请检查组件和本机网络后重试。
+  en: The network check did not finish. Check the components and local network, then retry.
+remote.diagnostic.too_many:
+  zh-CN: 一次最多检测 100 台设备，请使用设备行上的「检测」分别检测。
+  en: Check up to 100 devices at a time. Use Check on a device row to check it individually.
 remote.search:
   zh-CN: 搜索服务器名称、账号或地址
   en: Search server names, accounts or addresses

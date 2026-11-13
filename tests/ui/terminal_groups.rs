@@ -316,6 +316,28 @@ async fn a_terminal_that_cannot_take_the_command_says_so(cx: &mut TestAppContext
     assert_eq!(fixture.local.written_text(), "");
 }
 
+#[cfg(not(target_os = "macos"))]
+#[gpui_kit::test]
+async fn shift_insert_pastes_to_remote_terminals_once_with_each_targets_paste_mode(
+    cx: &mut TestAppContext,
+) {
+    let fixture = open(cx).await;
+    let handle = fixture.handle;
+    select_pair(cx, handle);
+    in_frame(cx, handle, |window, cx| {
+        window.click("broadcast-keys", cx);
+        cx.write_to_clipboard(ClipboardItem::new_string("中文\r\nsecond".into()));
+        window.click(("terminal", INITIAL_WEB_TERMINAL), cx);
+        window.press("shift-insert", cx);
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(2), |_, _| {
+        fixture.web.written_text() == "\x1b[200~中文\nsecond\x1b[201~"
+            && fixture.staging.written_text() == "中文\nsecond"
+    })
+    .await;
+    assert!(fixture.local.written_text().is_empty());
+}
+
 #[gpui_kit::test]
 async fn shared_keys_reach_every_checked_terminal_in_its_own_mode(cx: &mut TestAppContext) {
     let fixture = open(cx).await;

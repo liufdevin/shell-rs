@@ -21,10 +21,10 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::app::{
-    CatalogIcon, CollapseAllGroups, ConnectGroup, ConnectHost, ConnectSelected, CopyHostAddress,
-    CopyHostId, DeleteGroup, DeleteHost, DuplicateHost, EditHost, ExpandAllGroups,
-    HOST_PANEL_CONTEXT, ImportKnownHosts, ImportSshConfig, MoveHostNode, NewChildGroup, NewGroup,
-    NewHost, NewHostInGroup, OpenExplorer, RenameGroup,
+    AutomaticallyOrderHosts, CatalogIcon, CollapseAllGroups, ConnectGroup, ConnectHost,
+    ConnectSelected, CopyHostAddress, CopyHostId, DeleteGroup, DeleteHost, DuplicateHost, EditHost,
+    ExpandAllGroups, HOST_PANEL_CONTEXT, ImportKnownHosts, ImportSshConfig, MoveHostNode,
+    NewChildGroup, NewGroup, NewHost, NewHostInGroup, OpenExplorer, RenameGroup,
 };
 
 use crate::i18n::{UiLocale, t, tn};
@@ -73,7 +73,7 @@ impl HostPanel {
                 .filter(|group| group.expanded)
                 .map(|group| group.id)
                 .collect();
-            let items = host_tree_items(read.groups(), read.hosts(), "", &expanded);
+            let items = host_tree_items(read, "", &expanded);
             (
                 expanded,
                 read.groups().iter().map(|group| group.id).collect(),
@@ -202,7 +202,7 @@ impl HostPanel {
     fn rebuild_tree(&mut self, cx: &mut Context<Self>) {
         let items = {
             let store = self.store.read(cx);
-            host_tree_items(store.groups(), store.hosts(), &self.query, &self.expanded)
+            host_tree_items(store, &self.query, &self.expanded)
         };
         let selected_id = self
             .tree_state
@@ -266,7 +266,7 @@ impl HostPanel {
 
     fn connect_first_match(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let store = self.store.read(cx);
-        let first = first_matching_host(store.groups(), store.hosts(), &self.query);
+        let first = first_matching_host(store, &self.query);
         if let Some(id) = first {
             window.dispatch_action(Box::new(ConnectHost(id)), cx);
         }
@@ -769,10 +769,9 @@ fn valid_drop(
     }
     match source {
         HostNode::Host(_) => match destination {
-            // Hosts within a level are always sorted by name. Dragging a host
-            // changes its group, not its position among its siblings.
             NodeDrop::Root => true,
             NodeDrop::Into(group) => parents.contains_key(&group),
+            NodeDrop::Before(HostNode::Host(_)) | NodeDrop::After(HostNode::Host(_)) => true,
             _ => false,
         },
         HostNode::Group(id) => {
@@ -863,7 +862,12 @@ pub fn host_menu(menu: PopupMenu, host: &Host) -> PopupMenu {
 }
 
 fn build_context_menu(node: Option<HostNode>, store: &HostStore, menu: PopupMenu) -> PopupMenu {
-    match node {
+    let parent = match node {
+        Some(HostNode::Host(id)) => store.host(id).and_then(|host| host.group),
+        Some(HostNode::Group(id)) => Some(id),
+        None => None,
+    };
+    let menu = match node {
         Some(HostNode::Host(id)) => match store.host(id) {
             Some(host) => host_menu(menu, host),
             None => menu,
@@ -921,7 +925,13 @@ fn build_context_menu(node: Option<HostNode>, store: &HostStore, menu: PopupMenu
             )
             .separator(),
         ),
-    }
+    };
+    menu.when(store.hosts_manually_ordered(parent), |menu| {
+        menu.separator().menu(
+            t!("host.menu.automatic_order"),
+            Box::new(AutomaticallyOrderHosts::new(parent)),
+        )
+    })
 }
 
 /// The import commands, one per source: under the blank space's menu and

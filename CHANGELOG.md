@@ -4,6 +4,22 @@
 
 One section per version, titled `## [version]`, optionally followed by a date. Each section is written in English here and in Chinese in [CHANGELOG.zh.md](CHANGELOG.zh.md), in the same change. The release workflow (`.github/workflows/release.yml`) takes the section with the tag’s version, as it is, for the GitHub release. The website’s changelog shows this file in English and Japanese and CHANGELOG.zh.md in Chinese (ShellRS’s update dialog opens it with What’s new). Written in Markdown, for users.
 
+## [0.1.21]
+
+### Added
+
+- MobaXterm configurations can import hosts and colors together. Appearance reads current and named palettes from `.mobaconf/.ini` with optional host import; host migration offers accompanying palettes. Hosts and colors are selected independently and saved only after confirmation. Xshell palette import and existing host deduplication remain unchanged.
+- Settings → Sync → Migrate hosts supports MobaXterm `.mobaconf`, `.ini`, `.mxtsessions` and single-host `.moba` files. Preview SSH hosts, notes and nested groups before adding them without overwriting saved hosts. Passwords, private keys and recent connections are not imported; interface-only exports explain that they contain no saved hosts.
+- Remote network connections automatically show each device's P2P-direct or relayed path and refresh it in the background about every five seconds, with summaries in the server sidebar and network dialog. Queries do not probe device ports or ICMP or block connection controls, and old paths are not reused after lookup failures, address changes or reconnection.
+- Remote management offers on-demand checks of the virtual adapter, owned EasyTier core and RPC, device TCP port 22, direct or relayed paths and tunnel protocols. ICMP RTT, TCP connection time and route estimates are shown separately. Results stay local, expire after three minutes and are invalidated when a device address or network changes; checks do not authenticate SSH or upload reports.
+
+### Fixed
+
+- Shift+Insert now pastes in Windows and Linux terminals instead of sending the Insert escape sequence and displaying `^[[2~`. It uses the existing paste encoding, bracketed-paste and broadcast handling while preserving Ctrl+Shift+V and custom shortcuts.
+- Network checks now show P2P-direct, relayed and unknown device counts in the remote network dialog, with access to per-device path details. Invalidated or expired results are not presented as current paths.
+- Manual host ordering takes priority over automatic name sorting and survives restarts. Each group and the root level remember their own mode, with Sort automatically in the context menu to restore name sorting.
+- Windows local and Cmder terminals wait for the ConPTY startup cursor handshake before applying the latest size, preventing input from jumping to the middle of the screen or wrapping at an outdated width after scrolling to the bottom, including in WSL.
+
 ## [0.1.19]
 
 ### Added

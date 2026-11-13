@@ -16,8 +16,8 @@ use shellrs_sync::RemoteDevice;
 
 use super::settings_panel::keywords;
 use crate::app::{
-    CatalogIcon, ChangeSyncLogin, ChangeSyncPassword, ImportXshell, RemoveSyncDevice, ReviewSync,
-    SetUpS3Sync, SetUpSync, SetUpWebDavSync, SyncNow, TurnOffSync,
+    CatalogIcon, ChangeSyncLogin, ChangeSyncPassword, ImportMobaXterm, ImportXshell,
+    RemoveSyncDevice, ReviewSync, SetUpS3Sync, SetUpSync, SetUpWebDavSync, SyncNow, TurnOffSync,
 };
 use crate::host::ErrorMessage as _;
 use crate::i18n::{t, tn};
@@ -68,14 +68,27 @@ pub(super) fn sync_groups(sync: &Entity<SyncService>, cx: &App) -> Vec<SettingGr
 fn import_group() -> SettingGroup {
     SettingGroup::new()
         .title(t!("settings.sync.import"))
-        .items([command_item(
-            t!("settings.sync.import_xshell"),
-            t!("settings.sync.import_xshell_description"),
-            ("import-xshell", t!("settings.sync.import_xshell_button")),
-            false,
-            || Box::new(ImportXshell),
-        )
-        .keywords(keywords(t!("settings.sync.import_keywords")))])
+        .items([
+            command_item(
+                t!("settings.sync.import_xshell"),
+                t!("settings.sync.import_xshell_description"),
+                ("import-xshell", t!("settings.sync.import_xshell_button")),
+                false,
+                || Box::new(ImportXshell),
+            )
+            .keywords(keywords(t!("settings.sync.import_keywords"))),
+            command_item(
+                t!("settings.sync.import_mobaxterm"),
+                t!("settings.sync.import_mobaxterm_description"),
+                (
+                    "import-mobaxterm",
+                    t!("settings.sync.import_mobaxterm_button"),
+                ),
+                false,
+                || Box::new(ImportMobaXterm),
+            )
+            .keywords(keywords(t!("settings.sync.import_mobaxterm_keywords"))),
+        ])
 }
 
 /// Sync is off: what it does, and the two places it can go through.

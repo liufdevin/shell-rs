@@ -97,7 +97,7 @@ impl CatalogDialog {
             .label(label)
             .disabled(disabled)
             .on_click(move |_, window, cx| {
-                if matches!(&command, Command::Ssh { .. }) {
+                if matches!(&command, Command::Ssh { .. } | Command::Devices(_)) {
                     window.close_dialog(cx);
                 }
                 dispatch.dispatch_action(&RemoteAction(command.clone()), window, cx);
@@ -122,6 +122,7 @@ impl Render for CatalogDialog {
             .child(
                 h_flex()
                     .gap_3()
+                    .flex_wrap()
                     .items_center()
                     .child(
                         div()
@@ -131,6 +132,27 @@ impl Render for CatalogDialog {
                             .font_weight(FontWeight::MEDIUM)
                             .truncate()
                             .child(self.server.name.clone()),
+                    )
+                    .when(self.networks, |row| {
+                        row.child(
+                            self.action(
+                                "remote-view-device-paths",
+                                t!("remote.diagnostic.view_devices"),
+                                Command::Devices(self.server.id.clone()),
+                                busy || catalog.is_none(),
+                            )
+                            .ghost(),
+                        )
+                    })
+                    .child(
+                        self.action(
+                            "remote-diagnose",
+                            t!("remote.diagnostic.check_network"),
+                            Command::Diagnose(self.server.id.clone(), vec![]),
+                            busy || active.is_none(),
+                        )
+                        .outline()
+                        .tooltip(t!("remote.diagnostic.help")),
                     )
                     .child(
                         self.action(
@@ -161,7 +183,8 @@ impl Render for CatalogDialog {
                 t!("remote.device_help")
             }));
         if let Some(status) = service.statuses.get(&self.server.id) {
-            let progress = status.progress.is_some();
+            let progress = status.progress.is_some()
+                || (service.diagnosing && service.pending_server.as_ref() == Some(&self.server.id));
             body = body.child(
                 h_flex()
                     .id("remote-status")
@@ -181,6 +204,19 @@ impl Render for CatalogDialog {
                     })
                     .child(status.message.clone()),
             );
+        }
+        let paths = service.paths(&self.server.id);
+        if let Some(active) = active {
+            body = body.child(super::diagnostic_view::current_paths(
+                "remote-current-paths",
+                active,
+                paths,
+                cx,
+            ));
+        }
+        let diagnostic = service.diagnostics(&self.server.id);
+        if let Some(report) = diagnostic {
+            body = body.child(super::diagnostic_view::summary(report, cx));
         }
         if let Some(catalog) = catalog {
             body = body.child(
@@ -315,6 +351,12 @@ impl Render for CatalogDialog {
                     let allowed = service
                         .ssh_target(&self.server.id, &device.device_id)
                         .is_some();
+                    let connected = active.is_some_and(|active| {
+                        active.devices.iter().any(|target| {
+                            target.device_id == device.device_id
+                                && Some(target.virtual_ip) == device.virtual_ip
+                        })
+                    });
                     rows = rows.child(
                         h_flex()
                             .id(SharedString::from(format!(
@@ -375,7 +417,43 @@ impl Render for CatalogDialog {
                                                 "remote.device_id",
                                                 id = device.device_id.clone()
                                             )),
+                                    )
+                                    .when(connected, |view| {
+                                        view.child(super::diagnostic_view::current_device(
+                                            &device.device_id,
+                                            device.virtual_ip.and_then(|address| {
+                                                paths.and_then(|snapshot| {
+                                                    snapshot.route(&device.device_id, address)
+                                                })
+                                            }),
+                                            cx,
+                                        ))
+                                    })
+                                    .children(diagnostic.and_then(|report| {
+                                        report
+                                            .devices
+                                            .iter()
+                                            .find(|result| result.device_id == device.device_id)
+                                            .map(|result| {
+                                                super::diagnostic_view::device(
+                                                    result,
+                                                    report.is_stale(),
+                                                    cx,
+                                                )
+                                            })
+                                    })),
+                            )
+                            .child(
+                                self.action(
+                                    format!("remote-diagnose-{}", device.device_id),
+                                    t!("remote.diagnostic.check_device"),
+                                    Command::Diagnose(
+                                        self.server.id.clone(),
+                                        vec![device.device_id.clone()],
                                     ),
+                                    busy || !allowed,
+                                )
+                                .ghost(),
                             )
                             .child(
                                 self.action(

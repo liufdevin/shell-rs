@@ -274,6 +274,9 @@ pub(super) fn client_id(root: &Path) -> Result<String> {
 }
 
 impl Running {
+    pub(super) fn directory(&self) -> &Path {
+        &self.directory
+    }
     #[cfg(test)]
     pub(super) fn fixture(info: Connected, directory: PathBuf) -> Self {
         Self {
@@ -544,7 +547,12 @@ pub(super) fn verify_backend(root: &Path) -> Result<()> {
 }
 
 #[cfg(windows)]
-fn powershell(script: &str, input: &[u8]) -> Result<()> {
+pub(super) fn powershell(script: &str, input: &[u8]) -> Result<()> {
+    powershell_timeout(script, input, Duration::from_secs(120))
+}
+
+#[cfg(windows)]
+pub(super) fn powershell_timeout(script: &str, input: &[u8], timeout: Duration) -> Result<()> {
     use base64::Engine as _;
     use std::os::windows::ffi::OsStringExt as _;
     use std::{
@@ -580,7 +588,7 @@ fn powershell(script: &str, input: &[u8]) -> Result<()> {
     let mut stdin = child.stdin.take().unwrap();
     stdin.write_all(input)?;
     drop(stdin);
-    let deadline = Instant::now() + Duration::from_secs(120);
+    let deadline = Instant::now() + timeout;
     loop {
         if let Some(status) = child.try_wait()? {
             ensure!(status.success(), "network_launch_cancelled");
@@ -613,6 +621,14 @@ fn launch(directory: &Path) -> Result<()> {
     powershell(include_str!("launch.ps1"), &input)
 }
 
+#[cfg(not(windows))]
+pub(super) fn powershell(_: &str, _: &[u8]) -> Result<()> {
+    bail!("unsupported_platform")
+}
+#[cfg(not(windows))]
+pub(super) fn powershell_timeout(_: &str, _: &[u8], _: Duration) -> Result<()> {
+    bail!("unsupported_platform")
+}
 #[cfg(not(windows))]
 fn prepare(_: &Path, _: &serde_json::Value) -> Result<()> {
     bail!("unsupported_platform")

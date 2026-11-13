@@ -4,6 +4,8 @@ mod box_drawing;
 mod broadcast;
 mod cmder;
 mod command_terminal;
+#[cfg(any(windows, test))]
+mod conpty_startup;
 mod directory;
 mod directory_setup;
 mod encoding;
@@ -86,6 +88,7 @@ pub use terminal_view::{
     ComposePaneShown, TERMINAL_FIND_KEY_CONTEXT, TERMINAL_KEY_CONTEXT, TerminalMenuItems,
     TerminalView,
 };
+pub(crate) use theme::parse_mobaxterm_schemes;
 pub use theme::{TerminalColors, TerminalTheme, import_xshell_schemes};
 pub use timestamps::LineTimestamp;
 pub(crate) use transport::MONITOR_PAUSED;

@@ -102,6 +102,18 @@ settings.sync.import_xshell_button:
 settings.sync.import_keywords:
   zh-CN: Xshell xsh xts zip 导入 迁移 主机
   en: Xshell xsh xts zip import migration hosts
+settings.sync.import_mobaxterm:
+  zh-CN: MobaXterm 配置
+  en: MobaXterm configuration
+settings.sync.import_mobaxterm_description:
+  zh-CN: 从 .mobaconf、MobaXterm.ini、.mxtsessions 或 .moba 文件预览并导入 SSH 主机与目录分组。无需开启云同步。
+  en: Preview and import SSH hosts and folder groups from .mobaconf, MobaXterm.ini, .mxtsessions or .moba files. Cloud sync is not required.
+settings.sync.import_mobaxterm_button:
+  zh-CN: 从 MobaXterm 导入…
+  en: Import from MobaXterm…
+settings.sync.import_mobaxterm_keywords:
+  zh-CN: MobaXterm mobaconf ini mxtsessions moba 导入 迁移 主机
+  en: MobaXterm mobaconf ini mxtsessions moba import migration hosts
 settings.category.application:
   zh-CN: 应用
   en: General
@@ -134,14 +146,14 @@ settings.theme.import:
   zh-CN: 导入配色方案…
   en: Import color scheme…
 settings.theme.import_supported:
-  zh-CN: "当前支持：Xshell (.xcs)"
-  en: "Currently supports: Xshell (.xcs)"
+  zh-CN: "当前支持：Xshell (.xcs)、MobaXterm (.mobaconf/.ini)"
+  en: "Supports: Xshell (.xcs), MobaXterm (.mobaconf/.ini)"
 settings.theme.import_supported_tooltip:
-  zh-CN: 目前可导入 Xshell 导出的 .xcs 配色方案，后续会支持其他终端软件的配色方案。
-  en: You can currently import .xcs color schemes exported by Xshell. Support for other terminal apps will be added later.
+  zh-CN: 支持 Xshell .xcs，以及 MobaXterm 配置中的当前配色和命名配色。MobaXterm 配置若包含主机，可在同一弹窗选择是否一并导入。
+  en: Imports Xshell .xcs schemes and current or named colors from MobaXterm configurations. If hosts are present, choose whether to import them in the same dialog.
 settings.theme.import_description:
-  zh-CN: 支持 .xcs 文件，一个文件可包含多个方案。导入后按背景明暗分栏，点击方案立即应用；同名方案再次导入会更新。
-  en: Import .xcs files containing one or more schemes. Schemes are grouped by background brightness; choose one to apply it immediately. Importing the same name updates it.
+  zh-CN: 支持 .xcs、MobaXterm .mobaconf/.ini，一个文件可包含多个方案。MobaXterm 导入前可分别选择主机和配色，取消不保存。导入后按背景明暗分栏，点击方案立即应用；同来源同名方案再次导入会更新。
+  en: Supports .xcs and MobaXterm .mobaconf/.ini files with multiple schemes. Choose hosts and colors separately before importing MobaXterm; canceling saves nothing. Schemes are grouped by background brightness and applied when selected. Importing the same name from the same source updates it.
 settings.theme.remove:
   zh-CN: 删除导入的配色方案
   en: Delete imported color scheme
@@ -690,8 +702,8 @@ settings.shortcuts.reset:
   en: Restore default
 
 settings.theme.keywords:
-  zh-CN: 主题,终端主题,配色,颜色,浅色,深色,Xshell,xcs,导入
-  en: theme,terminal theme,color scheme,color,light,dark,Xshell,xcs,import
+  zh-CN: 主题,终端主题,配色,颜色,浅色,深色,Xshell,xcs,MobaXterm,mobaconf,ini,导入
+  en: theme,terminal theme,color scheme,color,light,dark,Xshell,xcs,MobaXterm,mobaconf,ini,import
 settings.theme.app_follows:
   zh-CN: 界面跟随主题
   en: Match interface to theme

@@ -8,13 +8,22 @@ use gpui_kit::component::{WindowExt as _, notification::Notification};
 use gpui_kit::*;
 
 use crate::analytics::Counter;
-use crate::app::{ImportKnownHosts, ImportSshConfig, ImportXshell};
-use crate::host::{ImportOutcome, ImportSource, open_import_dialog};
-use crate::i18n::tn;
+use crate::app::{ImportKnownHosts, ImportMobaXterm, ImportSshConfig, ImportXshell};
+use crate::host::{ImportOutcome, ImportScan, ImportSource, open_import_dialog};
+use crate::i18n::{t, tn};
 
 use super::workspace_view::Workspace;
 
 impl Workspace {
+    pub(super) fn on_import_mobaxterm(
+        &mut self,
+        _: &ImportMobaXterm,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_import(ImportSource::MobaXterm, window, cx);
+    }
+
     pub(super) fn on_import_xshell(
         &mut self,
         _: &ImportXshell,
@@ -56,7 +65,7 @@ impl Workspace {
                     .ok();
             },
         );
-        let return_focus = if source == ImportSource::Xshell {
+        let return_focus = if matches!(source, ImportSource::Xshell | ImportSource::MobaXterm) {
             self.settings_tab()
                 .map(|panel| panel.read(cx).focus_handle(cx))
                 .unwrap_or_else(|| self.host_panel.read(cx).focus_handle(cx))
@@ -74,16 +83,56 @@ impl Workspace {
         );
     }
 
+    pub(super) fn preview_mobaxterm(
+        &mut self,
+        scan: ImportScan,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let workspace = cx.entity().downgrade();
+        let on_imported = Rc::new(move |outcome, window: &mut Window, cx: &mut App| {
+            _ = workspace.update(cx, |workspace, cx| workspace.imported(outcome, window, cx));
+        });
+        let focus = self
+            .settings_tab()
+            .map(|panel| panel.read(cx).focus_handle(cx))
+            .unwrap_or_else(|| self.host_panel.read(cx).focus_handle(cx));
+        crate::host::open_mobaxterm_preview(
+            scan,
+            self.store.clone(),
+            on_imported,
+            focus,
+            window,
+            cx,
+        );
+    }
+
     /// Count an import and say what it added. A write that failed has
     /// said so already; success is not claimed on top of it.
-    fn imported(&mut self, outcome: ImportOutcome, window: &mut Window, cx: &mut Context<Self>) {
+    fn imported(
+        &mut self,
+        mut outcome: ImportOutcome,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let schemes = outcome.take_schemes();
+        if !schemes.is_empty() {
+            let count = schemes.len();
+            self.settings().update(cx, |store, cx| {
+                store.update(|settings| settings.terminal_theme.import(schemes), cx)
+            });
+            window.push_notification(
+                Notification::success(t!("settings.theme.imported", count = count)),
+                cx,
+            );
+        }
         if outcome.hosts == 0 {
             return;
         }
         match outcome.source {
             ImportSource::SshConfig => self.count(Counter::ImportSshConfig),
             ImportSource::KnownHosts => self.count(Counter::ImportKnownHosts),
-            ImportSource::Xshell => {}
+            ImportSource::Xshell | ImportSource::MobaXterm => {}
         }
         if outcome.failed {
             return;
