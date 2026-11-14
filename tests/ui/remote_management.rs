@@ -121,6 +121,8 @@ struct FakeRemote {
     hold_paths: AtomicBool,
     fail_paths: AtomicBool,
     path_calls: AtomicUsize,
+    hold_poll: AtomicBool,
+    poll_calls: AtomicUsize,
 }
 
 impl Backend for FakeRemote {
@@ -301,7 +303,14 @@ impl Backend for FakeRemote {
                 }
             }
             Operation::Disconnect | Operation::Shutdown => *self.active.lock().unwrap() = None,
-            Operation::Poll => {}
+            Operation::Poll => {
+                self.poll_calls.fetch_add(1, Ordering::SeqCst);
+                let deadline = std::time::Instant::now() + Duration::from_secs(5);
+                while self.hold_poll.load(Ordering::SeqCst) && std::time::Instant::now() < deadline
+                {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+            }
             Operation::Diagnose(server, selected) => {
                 self.calls
                     .lock()
@@ -360,6 +369,335 @@ fn dispatch(cx: &mut TestAppContext, handle: WindowHandle<Root>, command: Comman
     in_frame(cx, handle, |window, cx| {
         window.click("remote-search", cx);
         window.dispatch_action(Box::new(RemoteAction(command)), cx);
+    });
+}
+
+async fn open_connected_remote(
+    cx: &mut TestAppContext,
+    factory: Arc<dyn TerminalTransportFactory>,
+) -> (
+    WindowHandle<Root>,
+    Entity<Workspace>,
+    Arc<FakeRemote>,
+    Server,
+) {
+    let (handle, workspace) = open_workspace_with_remote_factory(cx, HostStore::empty(), factory);
+    let backend = Arc::new(FakeRemote::default());
+    let server = Server::new(
+        "Test".into(),
+        "https://example.test".into(),
+        "operator".into(),
+    );
+    let service = cx.update(|cx| workspace.read(cx).remote_management().clone());
+    cx.update(|cx| service.update(cx, |service, cx| service.set_backend(backend.clone(), cx)));
+    in_frame(cx, handle, |window, cx| {
+        window.click("show-remote-management", cx)
+    });
+    dispatch(
+        cx,
+        handle,
+        Command::SaveLogin(server.clone(), Secret::new("test password"), false),
+    );
+    cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
+        service.read(cx).is_logged_in(&server.id)
+    })
+    .await;
+    dispatch(
+        cx,
+        handle,
+        Command::ConnectServer(server.id.clone(), "one".into()),
+    );
+    cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
+        service.read(cx).connection().is_some() && !service.read(cx).is_busy()
+    })
+    .await;
+    (handle, workspace, backend, server)
+}
+
+async fn hold_network_poll(
+    cx: &mut TestAppContext,
+    handle: WindowHandle<Root>,
+    workspace: &Entity<Workspace>,
+    backend: &Arc<FakeRemote>,
+) {
+    let count = backend.poll_calls.load(Ordering::SeqCst);
+    backend.hold_poll.store(true, Ordering::SeqCst);
+    cx.update(|cx| {
+        workspace
+            .read(cx)
+            .remote_management()
+            .clone()
+            .update(cx, |service, cx| service.run(Operation::Poll, cx));
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(3), |_, _| {
+        backend.poll_calls.load(Ordering::SeqCst) > count
+    })
+    .await;
+}
+
+#[gpui_kit::test]
+async fn background_network_polls_leave_dialog_buttons_enabled_and_queue_disconnect(
+    cx: &mut TestAppContext,
+) {
+    let (handle, workspace, backend, server) =
+        open_connected_remote(cx, Arc::new(FakeTerminalFactory::default())).await;
+    dispatch(cx, handle, Command::Networks(server.id.clone()));
+    hold_network_poll(cx, handle, &workspace, &backend).await;
+    for _ in 0..3 {
+        cx.executor().advance_clock(Duration::from_millis(100));
+        cx.run_until_parked();
+        in_frame(cx, handle, |window, cx| {
+            for id in [
+                "remote-view-device-paths",
+                "remote-diagnose",
+                "remote-refresh",
+                "remote-disconnect",
+            ] {
+                assert!(
+                    enabled(&window.find(id)),
+                    "{id} must stay enabled during a background poll"
+                );
+            }
+            assert!(!workspace.read(cx).remote_management().read(cx).is_busy());
+        });
+    }
+    in_frame(cx, handle, |window, cx| {
+        window.click("remote-disconnect", cx)
+    });
+    in_frame(cx, handle, |window, cx| {
+        assert!(workspace.read(cx).remote_management().read(cx).is_busy());
+        assert!(!enabled(&window.find("remote-disconnect")));
+        window.within("dialog-close").click("close", cx);
+    });
+    in_frame(cx, handle, |window, _| {
+        assert!(window.try_find("remote-catalog-dialog").is_none())
+    });
+    backend.hold_poll.store(false, Ordering::SeqCst);
+    cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
+        let service = workspace.read(cx).remote_management().read(cx);
+        service.connection().is_none() && !service.is_busy()
+    })
+    .await;
+}
+
+#[gpui_kit::test]
+async fn device_paths_can_open_and_close_during_a_background_poll(cx: &mut TestAppContext) {
+    let (handle, workspace, backend, server) =
+        open_connected_remote(cx, Arc::new(FakeTerminalFactory::default())).await;
+    dispatch(cx, handle, Command::Networks(server.id.clone()));
+    hold_network_poll(cx, handle, &workspace, &backend).await;
+    in_frame(cx, handle, |window, cx| {
+        window.click("remote-view-device-paths", cx)
+    });
+    in_frame(cx, handle, |window, cx| {
+        assert!(window.find("remote-device-count").visible());
+        assert!(enabled(&window.find("remote-ssh-board-00")));
+        window.within("dialog-close").click("close", cx);
+    });
+    in_frame(cx, handle, |window, _| {
+        assert!(window.try_find("remote-catalog-dialog").is_none())
+    });
+    backend.hold_poll.store(false, Ordering::SeqCst);
+}
+
+struct DelayedSsh {
+    ready: Arc<AtomicBool>,
+}
+
+impl TerminalTransportFactory for DelayedSsh {
+    fn create(&self) -> Box<dyn TerminalTransport> {
+        Box::new(Self {
+            ready: self.ready.clone(),
+        })
+    }
+}
+
+impl TerminalTransport for DelayedSsh {
+    fn run(
+        self: Box<Self>,
+        _: TerminalSize,
+        commands: mpsc::Receiver<TerminalTransportCommand>,
+        events: async_channel::Sender<TerminalTransportEvent>,
+    ) -> anyhow::Result<()> {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while !self.ready.load(Ordering::SeqCst) && std::time::Instant::now() < deadline {
+            if matches!(
+                commands.recv_timeout(Duration::from_millis(1)),
+                Ok(TerminalTransportCommand::Shutdown) | Err(mpsc::RecvTimeoutError::Disconnected)
+            ) {
+                return Ok(());
+            }
+        }
+        events.send_blocking(TerminalTransportEvent::Started)?;
+        while let Ok(command) = commands.recv() {
+            if matches!(command, TerminalTransportCommand::Shutdown) {
+                break;
+            }
+        }
+        Ok(())
+    }
+}
+
+#[gpui_kit::test]
+async fn ssh_start_and_reconnect_do_not_steal_catalog_focus_or_block_close(
+    cx: &mut TestAppContext,
+) {
+    let ready = Arc::new(AtomicBool::new(false));
+    let (handle, workspace, _, server) = open_connected_remote(
+        cx,
+        Arc::new(DelayedSsh {
+            ready: ready.clone(),
+        }),
+    )
+    .await;
+    dispatch(cx, handle, Command::Devices(server.id.clone()));
+    cx.update(|cx| {
+        workspace
+            .read(cx)
+            .remote_management()
+            .clone()
+            .update(cx, |service, cx| {
+                service.run(
+                    Operation::Resolve(server.id.clone(), "board-00".into(), "root".into(), None),
+                    cx,
+                )
+            });
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, cx| {
+        window.render_frame(cx);
+        workspace
+            .read(cx)
+            .remote_terminal(RemoteTerminalId(1))
+            .is_some()
+    })
+    .await;
+    in_frame(cx, handle, |window, cx| {
+        assert_eq!(
+            remote_lifecycle(&workspace, RemoteTerminalId(1), cx),
+            TerminalLifecycle::Starting
+        );
+        assert!(window.find("remote-catalog-dialog").visible());
+        assert_ne!(window.find(("terminal", 1u64)).focused(), Some(true));
+        window.within("dialog-close").click("close", cx);
+    });
+    in_frame(cx, handle, |window, _| {
+        assert!(window.try_find("remote-catalog-dialog").is_none())
+    });
+    ready.store(true, Ordering::SeqCst);
+    cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
+        remote_lifecycle(&workspace, RemoteTerminalId(1), cx) == TerminalLifecycle::Running
+    })
+    .await;
+    dispatch(cx, handle, Command::Devices(server.id.clone()));
+    cx.update_window(handle.into(), |_, window, cx| {
+        let panel = workspace
+            .read(cx)
+            .remote_terminal(RemoteTerminalId(1))
+            .unwrap()
+            .clone();
+        panel.update(cx, |panel, cx| panel.reconnect(window, cx));
+    })
+    .unwrap();
+    cx.run_until_parked();
+    in_frame(cx, handle, |window, cx| {
+        assert!(window.find("remote-catalog-dialog").visible());
+        assert_ne!(window.find(("terminal", 1u64)).focused(), Some(true));
+        window.press("escape", cx);
+    });
+    in_frame(cx, handle, |window, _| {
+        assert!(window.try_find("remote-catalog-dialog").is_none())
+    });
+}
+
+#[gpui_kit::test]
+async fn invalidated_remote_terminals_are_not_stopped_repeatedly_and_error_dialogs_close(
+    cx: &mut TestAppContext,
+) {
+    let (handle, workspace, backend, server) =
+        open_connected_remote(cx, Arc::new(FakeTerminalFactory::default())).await;
+    dispatch(
+        cx,
+        handle,
+        Command::Ssh {
+            server: server.id.clone(),
+            device: "board-00".into(),
+            user: "root".into(),
+        },
+    );
+    cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
+        remote_lifecycle(&workspace, RemoteTerminalId(1), cx) == TerminalLifecycle::Running
+    })
+    .await;
+    dispatch(cx, handle, Command::Devices(server.id.clone()));
+    in_frame(cx, handle, |window, cx| {
+        window.click("remote-disconnect", cx)
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
+        workspace
+            .read(cx)
+            .remote_management()
+            .read(cx)
+            .connection()
+            .is_none()
+            && remote_lifecycle(&workspace, RemoteTerminalId(1), cx) != TerminalLifecycle::Running
+    })
+    .await;
+    let terminal = cx.update(|cx| {
+        workspace
+            .read(cx)
+            .remote_terminal(RemoteTerminalId(1))
+            .unwrap()
+            .read(cx)
+            .terminal()
+            .clone()
+    });
+    let generation = cx.update(|cx| terminal.read(cx).generation(cx));
+    for _ in 0..3 {
+        let count = backend.poll_calls.load(Ordering::SeqCst);
+        cx.update(|cx| {
+            workspace
+                .read(cx)
+                .remote_management()
+                .clone()
+                .update(cx, |service, cx| service.run(Operation::Poll, cx))
+        });
+        cx.wait_for(handle.into(), Duration::from_secs(3), |_, _| {
+            backend.poll_calls.load(Ordering::SeqCst) > count
+        })
+        .await;
+        cx.executor().advance_clock(Duration::from_millis(150));
+        cx.run_until_parked();
+    }
+    in_frame(cx, handle, |window, cx| {
+        assert_eq!(terminal.read(cx).generation(cx), generation);
+        assert_eq!(
+            terminal
+                .read(cx)
+                .screen_text(cx)
+                .matches("[已断开连接]")
+                .count(),
+            1
+        );
+        window.within("dialog-close").click("close", cx);
+    });
+    backend.fail.store(true, Ordering::SeqCst);
+    dispatch(cx, handle, Command::Networks(server.id.clone()));
+    in_frame(cx, handle, |window, cx| {
+        window.click("remote-connect-one", cx)
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, cx| {
+        !workspace.read(cx).remote_management().read(cx).is_busy()
+            && window
+                .find("remote-status")
+                .label()
+                .is_some_and(|label| label.contains("取消"))
+    })
+    .await;
+    in_frame(cx, handle, |window, cx| {
+        window.within("dialog-close").click("close", cx)
+    });
+    in_frame(cx, handle, |window, _| {
+        assert!(window.try_find("remote-catalog-dialog").is_none())
     });
 }
 

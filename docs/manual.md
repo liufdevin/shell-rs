@@ -88,6 +88,8 @@ Drag a group or host above or below another item of the same kind to reorder ite
 
 **Serial hosts** are serial ports of this computer, such as a USB-to-serial cable, a development board’s debug port, or a switch’s or router’s console port. Choose “Serial” under “Protocol” in the host dialog:
 
+The host list checks local serial port presence every two seconds. Two consecutive detections enable the colored icon; four consecutive absences (about six seconds) turn it gray. Three dropouts within 60 seconds latch an unstable gray state until the port remains present for at least 15 seconds. Hover the host row for its status. Initial checks and enumeration errors are gray without falsely reporting an absent device. Checks only enumerate system ports: they never open a port, transmit data or change DTR/RTS. Presence does not prove that the board is running or the port is free. Manual connection remains available; terminal tabs still reflect their actual connection state. SSH and Telnet are not probed in the background.
+
 - **Serial port**: type it, or pick from the menu at its right end, which lists the serial ports found on this computer; its last item, “Look again”, looks again. macOS lists only `/dev/cu.*`, Linux has paths like `/dev/ttyUSB0`, and Windows has names like `COM3`. The name is the serial port if left empty.
 - **Baud rate**: 115200 by default; the menu has the common rates, and you can type any other.
 - **DTR / RTS:** saved per host and applied when reconnecting. Both default to asserted, matching Xshell and common serial tools. RTS/CTS lets the driver control RTS and disables the manual RTS option. Choose the states required by the device; changing a control line may reset some boards.

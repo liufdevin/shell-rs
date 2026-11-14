@@ -2,7 +2,7 @@ use std::borrow::Cow;
 use std::sync::LazyLock;
 
 use gpui_kit::component::{
-    ActiveTheme as _, Icon, Sizable as _,
+    ActiveTheme as _, Icon, Sizable as _, WindowExt as _,
     button::Button,
     dock::{BasePanel, Panel, PanelEvent, TabGroup},
     h_flex,
@@ -186,7 +186,9 @@ impl LocalTerminalPanel {
             terminal.restart_with_factory(factory, cx)
         });
         let focus = self.terminal.read(cx).focus_handle();
-        window.focus(&focus, cx);
+        if !window.has_active_dialog(cx) {
+            window.focus(&focus, cx);
+        }
     }
 
     /// Call it by its name in 项目, renamed there.
@@ -246,7 +248,9 @@ impl BasePanel for LocalTerminalPanel {
             self.terminal
                 .update(cx, |terminal, cx| terminal.attach_window(window, cx));
             let focus = self.terminal.read(cx).focus_handle();
-            window.focus(&focus, cx);
+            if !window.has_active_dialog(cx) {
+                window.focus(&focus, cx);
+            }
             cx.emit(LocalTerminalPanelEvent::Activated(self.id));
         }
     }

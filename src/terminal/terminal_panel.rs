@@ -422,7 +422,9 @@ impl TerminalPanel {
             terminal.restart_with_factory(factory, cx)
         });
         let focus = self.terminal.read(cx).focus_handle();
-        window.focus(&focus, cx);
+        if !window.has_active_dialog(cx) {
+            window.focus(&focus, cx);
+        }
     }
 
     pub fn disconnect(&mut self, cx: &mut Context<Self>) {
@@ -731,7 +733,9 @@ impl BasePanel for TerminalPanel {
         self.terminal
             .update(cx, |terminal, cx| terminal.attach_window(window, cx));
         let focus = self.terminal.read(cx).focus_handle();
-        window.focus(&focus, cx);
+        if !window.has_active_dialog(cx) {
+            window.focus(&focus, cx);
+        }
         cx.emit(TerminalPanelEvent::Activated(self.id, self.host_id));
     }
 

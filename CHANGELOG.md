@@ -8,6 +8,7 @@ One section per version, titled `## [version]`, optionally followed by a date. E
 
 ### Added
 
+- Local serial hosts automatically show colored icons when present and gray icons when absent. Background checks only enumerate ports without opening them. Brief disappearances are debounced; three dropouts within a minute latch a gray unstable state until 15 seconds of continuous presence. SSH and Telnet are unchanged.
 - Appearance now offers an interface font chosen from fonts installed on the computer, applied immediately and saved. It follows the system UI font by default and falls back when a saved font is unavailable; terminal text keeps its own font setting.
 - Ported terminal background images from main, with separate light/dark pictures, enable controls, transparency, previews and clearing. Images are kept in the data directory and cover each terminal split independently.
 - Ported the Show host details toggle beside the host search field, with persistent address/note visibility and variable-height rows while retaining lf's manual host ordering and drag-and-drop behavior.
@@ -18,6 +19,8 @@ One section per version, titled `## [version]`, optionally followed by a date. E
 
 ### Fixed
 
+- Keep modal focus when SSH tabs activate or reconnect asynchronously, so remote-management dialogs remain closable by their close button and Escape. Device and network dialogs replace each other instead of stacking. Background network polling no longer toggles dialog buttons; user operations wait for the in-flight poll instead of being dropped. Repeated remote invalidation notifications no longer append duplicate disconnect messages to stopped terminals.
+- Reduce resize flicker when opening or closing the right tool sidebar in Codex and other non-serial terminals using synchronized redraws. Retain the complete frame until the next synchronized redraw, with a 300 ms fallback, and coalesce resize requests within one layout cycle. Ordinary shells and serial terminals do not wait; no extra commands, clearing or reconnection are involved.
 - Background terminal output uses a steady red dot to the left of the host icon plus a full-width 1px strip at the actual Dock tab’s top edge, rather than over its inset title content. No flashing, added text or bold labels; fixed positioning keeps dimensions unchanged, and returning or disabling indicators clears both.
 - Shift+Insert now pastes in Windows and Linux terminals instead of sending the Insert escape sequence and displaying `^[[2~`. It uses the existing paste encoding, bracketed-paste and broadcast handling while preserving Ctrl+Shift+V and custom shortcuts.
 - Network checks now show P2P-direct, relayed and unknown device counts in the remote network dialog, with access to per-device path details. Invalidated or expired results are not presented as current paths.

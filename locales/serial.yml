@@ -1,4 +1,22 @@
 _version: 2
+serial.presence.checking:
+  zh-CN: 正在检测串口设备
+  en: Checking serial port
+serial.presence.online:
+  zh-CN: 设备在线
+  en: Device present
+serial.presence.offline:
+  zh-CN: 设备离线
+  en: Device absent
+serial.presence.unstable:
+  zh-CN: 设备连接不稳定，正在等待恢复
+  en: Unstable device connection; waiting for recovery
+serial.presence.unknown:
+  zh-CN: 串口状态未知，无法读取串口列表
+  en: Serial port status unknown; could not read the port list
+serial.presence.host_tooltip:
+  zh-CN: "%{endpoint} · %{state}"
+  en: "%{endpoint} · %{state}"
 serial.open.configuration_mismatch:
   zh-CN: 串口驱动实际参数与请求不一致，请检查波特率、帧格式和控制线是否受支持
   en: The serial driver did not apply the requested settings. Check support for the baud rate, frame format and control lines.

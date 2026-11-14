@@ -97,7 +97,10 @@ impl CatalogDialog {
             .label(label)
             .disabled(disabled)
             .on_click(move |_, window, cx| {
-                if matches!(&command, Command::Ssh { .. } | Command::Devices(_)) {
+                if matches!(
+                    &command,
+                    Command::Ssh { .. } | Command::Devices(_) | Command::Networks(_)
+                ) {
                     window.close_dialog(cx);
                 }
                 dispatch.dispatch_action(&RemoteAction(command.clone()), window, cx);
@@ -108,7 +111,7 @@ impl CatalogDialog {
 impl Render for CatalogDialog {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let service = self.service.read(cx);
-        let busy = service.busy;
+        let busy = service.is_busy();
         let catalog = service.catalogs.get(&self.server.id);
         let active = service
             .connection

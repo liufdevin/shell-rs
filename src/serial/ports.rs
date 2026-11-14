@@ -6,9 +6,11 @@ use std::path::Path;
 /// them is quick, but it is a file system walk; callers keep it off the UI
 /// thread.
 pub fn available_ports() -> Vec<String> {
-    let Ok(ports) = serial2::SerialPort::available_ports() else {
-        return Vec::new();
-    };
+    read_ports().unwrap_or_default()
+}
+
+pub(super) fn read_ports() -> std::io::Result<Vec<String>> {
+    let ports = serial2::SerialPort::available_ports()?;
     let mut names: Vec<String> = ports
         .iter()
         .filter(|path| offered(path))
@@ -16,7 +18,7 @@ pub fn available_ports() -> Vec<String> {
         .collect();
     names.sort_by(|a, b| natural_order(a, b));
     names.dedup();
-    names
+    Ok(names)
 }
 
 /// macOS has every port twice: a `tty.*` that waits for the other end's

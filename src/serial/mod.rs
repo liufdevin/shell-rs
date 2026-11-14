@@ -6,6 +6,7 @@ mod file_picker;
 pub mod files;
 mod message;
 mod ports;
+mod presence;
 mod tools;
 mod transport;
 #[cfg(windows)]
@@ -19,5 +20,6 @@ pub use tools::{SerialAssistantCommand, SerialToolCommand, SerialToolPage, Seria
 
 pub use file_picker::open_serial_download_dialog;
 pub use ports::available_ports;
+pub use presence::{SerialPortSource, SerialPresence, SerialPresenceState, SystemSerialPortSource};
 pub(crate) use transport::open as open_shared_port;
 pub use transport::{SerialTransportProvider, check};

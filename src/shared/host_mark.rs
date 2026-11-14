@@ -6,6 +6,7 @@ use gpui_kit::*;
 
 use crate::host::{ConnectionState, HostOs, ProtocolKind, mark_color};
 use crate::i18n::t;
+use crate::serial::SerialPresenceState;
 
 /// What a glyph is drawn in on a [`mark_color`] colour.
 const MARK_INK: u32 = 0xFF_FFFF;
@@ -28,6 +29,7 @@ pub struct HostMark {
     protocol: ProtocolKind,
     /// The connection the mark stands for on a tab, when it has one.
     state: Option<ConnectionState>,
+    presence: Option<SerialPresenceState>,
     size: Size,
     tooltip: bool,
 }
@@ -48,6 +50,7 @@ impl HostMark {
             os,
             protocol: ProtocolKind::Ssh,
             state: None,
+            presence: None,
             size: Size::Medium,
             tooltip: true,
         }
@@ -64,6 +67,11 @@ impl HostMark {
     /// connected draws the mark grey, glyph and all, and says so.
     pub fn connection_state(mut self, state: ConnectionState) -> Self {
         self.state = Some(state);
+        self
+    }
+
+    pub fn serial_presence(mut self, presence: SerialPresenceState) -> Self {
+        self.presence = Some(presence);
         self
     }
 
@@ -148,6 +156,29 @@ impl RenderOnce for HostMark {
                     "shared.host_mark.with_state",
                     mark = description,
                     state = state.label()
+                ),
+            ),
+            None => (background, ink, description),
+        };
+        let (background, ink, description) = match self
+            .presence
+            .filter(|_| self.protocol == ProtocolKind::Serial && self.state.is_none())
+        {
+            Some(presence) => (
+                if presence.is_online() {
+                    background
+                } else {
+                    cx.theme().muted
+                },
+                if presence.is_online() {
+                    ink
+                } else {
+                    cx.theme().muted_foreground
+                },
+                t!(
+                    "shared.host_mark.with_state",
+                    mark = description,
+                    state = presence.label()
                 ),
             ),
             None => (background, ink, description),

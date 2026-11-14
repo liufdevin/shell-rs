@@ -29,6 +29,7 @@ use crate::app::{
 };
 
 use crate::i18n::{UiLocale, t, tn};
+use crate::serial::{SerialPresence, SerialPresenceState};
 use crate::shared::{HostMark, RowTooltip, RowTooltips};
 
 use super::{
@@ -63,6 +64,7 @@ struct TreeRow {
 
 pub struct HostPanel {
     store: Entity<HostStore>,
+    serial_presence: Entity<SerialPresence>,
     rows: Rc<Vec<TreeRow>>,
     selected: Option<HostNode>,
     details: bool,
@@ -89,7 +91,12 @@ pub struct HostPanel {
 }
 
 impl HostPanel {
-    pub fn new(store: Entity<HostStore>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        store: Entity<HostStore>,
+        serial_presence: Entity<SerialPresence>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let (expanded, known_groups, seen_hosts) = {
             let read = store.read(cx);
             let expanded: HashSet<GroupId> = read
@@ -112,6 +119,7 @@ impl HostPanel {
 
         let subscriptions = vec![
             cx.observe(&store, |this, _, cx| this.on_store_changed(cx)),
+            cx.observe(&serial_presence, |_, _, cx| cx.notify()),
             cx.observe_global::<ShowHostDetails>(|this, cx| {
                 this.details = ShowHostDetails::get(cx);
                 if let Some(index) = this
@@ -145,6 +153,7 @@ impl HostPanel {
 
         let mut panel = Self {
             store,
+            serial_presence,
             rows: Rc::default(),
             selected: None,
             details: ShowHostDetails::get(cx),
@@ -471,6 +480,8 @@ impl Render for HostPanel {
                         os: host.os,
                         protocol: host.kind(),
                         address: host.address.clone(),
+                        presence: (host.kind() == ProtocolKind::Serial)
+                            .then(|| self.serial_presence.read(cx).state_for(&host.address)),
                         details: if self.details {
                             std::iter::once(location(host))
                                 .chain(note_line(&host.notes))
@@ -489,7 +500,29 @@ impl Render for HostPanel {
                 .hosts()
                 .iter()
                 .map(|host| {
-                    let tooltip = RowTooltip::new(host.endpoint()).note(host.notes.clone());
+                    let text = if host.kind() == ProtocolKind::Serial {
+                        let state = self
+                            .serial_presence
+                            .read(cx)
+                            .state_for(&host.address)
+                            .label();
+                        if self.details {
+                            state
+                        } else {
+                            t!(
+                                "serial.presence.host_tooltip",
+                                endpoint = host.endpoint(),
+                                state = state
+                            )
+                        }
+                    } else {
+                        host.endpoint().into()
+                    };
+                    let tooltip = if self.details {
+                        RowTooltip::new(text)
+                    } else {
+                        RowTooltip::new(text).note(host.notes.clone())
+                    };
                     (host.id, tooltip)
                 })
                 .collect(),
@@ -717,6 +750,7 @@ struct MarkOf {
     os: Option<HostOs>,
     protocol: ProtocolKind,
     address: SharedString,
+    presence: Option<SerialPresenceState>,
     details: Vec<SharedString>,
 }
 
@@ -854,6 +888,9 @@ fn render_row(
                     mark.and_then(|mark| mark.os),
                 )
                 .protocol(mark.map(|mark| mark.protocol).unwrap_or_default())
+                .when_some(mark.and_then(|mark| mark.presence), |mark, presence| {
+                    mark.serial_presence(presence)
+                })
             }
             .small()
             .without_tooltip()
@@ -921,11 +958,19 @@ fn render_row(
                 }
             })
         })
-        .when_some(host_id.filter(|_| !details), |row, id| {
-            row_tooltips
-                .row(id, tooltips.get(&id).cloned().unwrap_or_default())
-                .attach(row)
-        })
+        .when_some(
+            host_id.filter(|id| {
+                !details
+                    || host_marks
+                        .get(id)
+                        .is_some_and(|host| host.presence.is_some())
+            }),
+            |row, id| {
+                row_tooltips
+                    .row(id, tooltips.get(&id).cloned().unwrap_or_default())
+                    .attach(row)
+            },
+        )
         .when_some(node, |row, node| {
             let right_clicked = right_clicked.clone();
             row.on_mouse_down(MouseButton::Right, move |_, _, _| {

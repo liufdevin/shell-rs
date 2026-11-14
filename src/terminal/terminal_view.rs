@@ -1,3 +1,4 @@
+use std::cell::Cell;
 use std::ops::Range;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -322,6 +323,7 @@ pub struct TerminalView {
     viewport: Option<TerminalViewport>,
     ime_cursor_bounds: Option<Bounds<Pixels>>,
     requested_size: TerminalSize,
+    pending_size: Rc<Cell<Option<TerminalSize>>>,
     /// A selection drag is under way.
     selecting: bool,
     /// A selection drag held past the top or the bottom: how many lines
@@ -621,6 +623,7 @@ impl TerminalView {
             viewport: None,
             ime_cursor_bounds: None,
             requested_size: TerminalSize::DEFAULT,
+            pending_size: Rc::default(),
             selecting: false,
             edge_scroll: None,
             edge_scroll_task: None,
@@ -1894,6 +1897,7 @@ impl Render for TerminalView {
             marked_text: self.marked_text.clone(),
             marked_selection: self.marked_selection.clone(),
             requested_size: self.requested_size,
+            pending_size: self.pending_size.clone(),
         };
 
         let stamps = element.snapshot.timestamps.clone();
@@ -2436,6 +2440,7 @@ struct TerminalElement {
     marked_text: String,
     marked_selection: Range<usize>,
     requested_size: TerminalSize,
+    pending_size: Rc<Cell<Option<TerminalSize>>>,
 }
 
 struct TerminalPaintState {
@@ -2511,11 +2516,17 @@ impl Element for TerminalElement {
             cell_width.as_f32().round().clamp(1., u16::MAX as f32) as u16,
             line_height.as_f32().round().clamp(1., u16::MAX as f32) as u16,
         );
-        if requested_size != self.requested_size {
-            let terminal = self.view.clone();
-            cx.defer(move |cx| {
-                terminal.update(cx, |terminal, cx| terminal.resize(requested_size, cx));
-            });
+        if requested_size != self.requested_size || self.pending_size.get().is_some() {
+            let schedule = self.pending_size.replace(Some(requested_size)).is_none();
+            if schedule {
+                let terminal = self.view.clone();
+                let pending_size = self.pending_size.clone();
+                cx.defer(move |cx| {
+                    if let Some(size) = pending_size.take() {
+                        terminal.update(cx, |terminal, cx| terminal.resize(size, cx));
+                    }
+                });
+            }
         }
 
         let palette = TerminalPalette::new(cx);

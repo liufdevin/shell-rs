@@ -58,6 +58,7 @@ pub type AlacrittyTerm = Term<TerminalEventProxy>;
 const AI_CITATION_PATTERN: &str = r"\x{e200}cite\x{e202}turn[0-9]+(?:view|search)[0-9]+(?:\x{e202}turn[0-9]+(?:view|search)[0-9]+)*\x{e201}";
 
 const OUTPUT_QUEUE_CAPACITY: usize = 64;
+const RESIZE_REDRAW_TIMEOUT: Duration = Duration::from_millis(300);
 
 fn observe_serial_output(
     io: &SessionIo,
@@ -218,6 +219,9 @@ pub struct TerminalEngine {
     generation: u64,
     output_revision: u64,
     size: TerminalSize,
+    resize_frame: RefCell<Option<ResizeFrame>>,
+    resize_frame_task: Option<gpui_kit::Task<()>>,
+    next_resize_frame: u64,
     event_sender: mpsc::Sender<TerminalUiEvent>,
     event_task: Option<gpui_kit::Task<()>>,
     io: Arc<SessionIo>,
@@ -227,6 +231,13 @@ pub struct TerminalEngine {
     reconnect_allowed: bool,
     reconnect_task: Option<gpui_kit::Task<()>>,
     reconnect_settings: TerminalConnectionSettings,
+}
+
+struct ResizeFrame {
+    id: u64,
+    snapshot: TerminalSnapshot,
+    synchronized_frames: u64,
+    hide_ai_citations: bool,
 }
 
 impl TerminalEngine {
@@ -531,6 +542,9 @@ impl TerminalEngine {
             output_revision: 0,
             output_activity: RefCell::default(),
             size,
+            resize_frame: RefCell::default(),
+            resize_frame_task: None,
+            next_resize_frame: 0,
             event_sender,
             event_task: None,
             io,
@@ -829,6 +843,8 @@ impl TerminalEngine {
     }
 
     pub fn restart(&mut self, cx: &mut gpui_kit::Context<Self>) {
+        self.resize_frame.get_mut().take();
+        self.resize_frame_task = None;
         self.reconnect_task = None;
         self.reconnect_allowed = true;
         self.output_revision = self.output_revision.wrapping_add(1);
@@ -879,6 +895,8 @@ impl TerminalEngine {
     }
 
     pub fn shutdown(&mut self, cx: &mut gpui_kit::Context<Self>) {
+        self.resize_frame.get_mut().take();
+        self.resize_frame_task = None;
         self.reconnect_task = None;
         self.reconnect_allowed = false;
         self.io.stop_recording();
@@ -891,6 +909,16 @@ impl TerminalEngine {
     }
 
     pub fn stop(&mut self, message: &str, cx: &mut gpui_kit::Context<Self>) {
+        if !self.reconnect_allowed
+            && matches!(
+                self.lifecycle,
+                TerminalLifecycle::Exited { .. } | TerminalLifecycle::Closing
+            )
+        {
+            return;
+        }
+        self.resize_frame.get_mut().take();
+        self.resize_frame_task = None;
         self.reconnect_task = None;
         self.reconnect_allowed = false;
         self.generation = self.generation.saturating_add(1);
@@ -934,6 +962,7 @@ impl TerminalEngine {
     }
 
     fn send_encoded_input(&self, bytes: Vec<u8>) {
+        self.resize_frame.borrow_mut().take();
         let mut term = self.runtime.term.lock();
         prepare_term_for_user_input(&mut term);
         drop(term);
@@ -945,6 +974,7 @@ impl TerminalEngine {
             return;
         }
 
+        self.resize_frame.borrow_mut().take();
         let mut term = self.runtime.term.lock();
         prepare_term_for_user_input(&mut term);
     }
@@ -981,6 +1011,9 @@ impl TerminalEngine {
         if size == self.size {
             return;
         }
+        let grid_changed = self.size.columns() != size.columns() || self.size.rows() != size.rows();
+        let metrics_changed = self.size.cell_width() != size.cell_width()
+            || self.size.cell_height() != size.cell_height();
         self.output_revision = self.output_revision.wrapping_add(1);
         self.size = size;
         *self
@@ -990,6 +1023,47 @@ impl TerminalEngine {
             .unwrap_or_else(|error| error.into_inner()) = size;
         {
             let mut term = self.runtime.term.lock();
+            if grid_changed {
+                let frames = self.runtime.synchronized_frames.load(Ordering::Acquire);
+                let protect = frames != 0
+                    && !metrics_changed
+                    && self.serial_name.is_none()
+                    && self.lifecycle.accepts_input()
+                    && term.grid().display_offset() == 0;
+                let mut pending = self.resize_frame.borrow_mut();
+                if protect {
+                    let hide_ai_citations = TerminalInteraction::current(cx).hide_ai_citations;
+                    if let Some(frame) = pending.as_mut() {
+                        frame.synchronized_frames = frames;
+                    } else {
+                        self.next_resize_frame = self.next_resize_frame.wrapping_add(1);
+                        *pending = Some(ResizeFrame {
+                            id: self.next_resize_frame,
+                            snapshot: self.snapshot_from_term(&term, hide_ai_citations),
+                            synchronized_frames: frames,
+                            hide_ai_citations,
+                        });
+                        let id = self.next_resize_frame;
+                        self.resize_frame_task = Some(cx.spawn(async move |this, cx| {
+                            cx.background_executor().timer(RESIZE_REDRAW_TIMEOUT).await;
+                            let _ = this.update(cx, |this, cx| {
+                                let mut frame = this.resize_frame.borrow_mut();
+                                if frame.as_ref().is_some_and(|frame| frame.id == id) {
+                                    *frame = None;
+                                    cx.notify();
+                                }
+                            });
+                        }));
+                    }
+                } else {
+                    *pending = None;
+                    self.resize_frame_task = None;
+                }
+            }
+            if metrics_changed {
+                self.resize_frame.borrow_mut().take();
+                self.resize_frame_task = None;
+            }
             self.runtime
                 .timestamps
                 .lock()
@@ -1001,6 +1075,7 @@ impl TerminalEngine {
     }
 
     pub fn scroll(&mut self, lines: i32, cx: &mut gpui_kit::Context<Self>) {
+        self.resize_frame.get_mut().take();
         self.runtime
             .term
             .lock()
@@ -1020,6 +1095,7 @@ impl TerminalEngine {
         selection_type: SelectionType,
         cx: &mut gpui_kit::Context<Self>,
     ) {
+        self.resize_frame.get_mut().take();
         self.runtime.term.lock().selection = Some(Selection::new(selection_type, point, side));
         cx.notify();
     }
@@ -1062,6 +1138,7 @@ impl TerminalEngine {
     }
 
     pub fn select_all(&mut self, cx: &mut gpui_kit::Context<Self>) {
+        self.resize_frame.get_mut().take();
         select_all(&mut self.runtime.term.lock());
         cx.notify();
     }
@@ -1078,6 +1155,7 @@ impl TerminalEngine {
         options: SearchOptions,
         cx: &mut gpui_kit::Context<Self>,
     ) {
+        self.resize_frame.get_mut().take();
         let mut term = self.runtime.term.lock();
         let mut search = self.search.borrow_mut();
         let search = search.get_or_insert_with(TerminalSearch::new);
@@ -1154,6 +1232,7 @@ impl TerminalEngine {
     /// the emulator alone; the shell is not told, and carries on writing from
     /// the cursor, which stays beside its prompt.
     pub fn clear_keeping_prompt(&mut self, cx: &mut gpui_kit::Context<Self>) {
+        self.resize_frame.get_mut().take();
         let mut term = self.runtime.term.lock();
         if !clear_keeping_cursor_line(&mut term) {
             return;
@@ -1373,11 +1452,33 @@ impl TerminalEngine {
     }
 
     pub fn snapshot(&self) -> TerminalSnapshot {
-        self.display_snapshot(false)
+        self.snapshot_from_term(&self.runtime.term.lock(), false)
     }
 
     pub(super) fn display_snapshot(&self, hide_ai_citations: bool) -> TerminalSnapshot {
         let term = self.runtime.term.lock();
+        let mut pending = self.resize_frame.borrow_mut();
+        if let Some(frame) = pending.as_ref() {
+            let completed = self.runtime.synchronized_frames.load(Ordering::Acquire)
+                != frame.synchronized_frames
+                && !self.runtime.synchronized_output.load(Ordering::Acquire);
+            if !completed
+                && self.lifecycle.accepts_input()
+                && frame.hide_ai_citations == hide_ai_citations
+                && term.grid().display_offset() == 0
+            {
+                return frame.snapshot.clone();
+            }
+            *pending = None;
+        }
+        self.snapshot_from_term(&term, hide_ai_citations)
+    }
+
+    fn snapshot_from_term(
+        &self,
+        term: &AlacrittyTerm,
+        hide_ai_citations: bool,
+    ) -> TerminalSnapshot {
         let content = term.renderable_content();
         let selection = content.selection;
         let display_offset = content.display_offset as i32;
@@ -1389,17 +1490,17 @@ impl TerminalEngine {
             .search
             .borrow_mut()
             .as_mut()
-            .map(|search| search.visible(&term))
+            .map(|search| search.visible(term))
             .unwrap_or_default();
         let mut marker = MatchMarker::new(&matches, focused.as_ref());
         let citations = if hide_ai_citations {
-            self.display_searches.citations(&term)
+            self.display_searches.citations(term)
         } else {
             Vec::new()
         };
         let mut citation_marker = MatchMarker::new(&citations, None);
-        let mut links = LinkMarker::new(self.display_searches.links(&term));
-        let highlights = current(&self.highlights).screen(&term);
+        let mut links = LinkMarker::new(self.display_searches.links(term));
+        let highlights = current(&self.highlights).screen(term);
         let mut cells: Vec<_> = content
             .display_iter
             .map(|indexed| {
@@ -1430,7 +1531,7 @@ impl TerminalEngine {
             .collect();
         normalize_wide_character_selection(&mut cells, columns);
         TerminalSnapshot {
-            timestamps: self.runtime.timestamps.lock().unwrap().visible(&*term),
+            timestamps: self.runtime.timestamps.lock().unwrap().visible(term),
             columns,
             rows: term.grid().screen_lines(),
             cells,
@@ -1564,6 +1665,7 @@ struct TerminalRuntime {
     received_output: Arc<AtomicU64>,
     rewritten_output: Arc<AtomicU64>,
     synchronized_output: Arc<AtomicBool>,
+    synchronized_frames: Arc<AtomicU64>,
     /// The `exec --terminal` run this connection carries, which the parser
     /// thread reads the output for. Given up with the connection.
     run: Arc<Mutex<Option<RunHandle>>>,
@@ -1606,6 +1708,7 @@ impl TerminalRuntime {
         let received_output = Arc::new(AtomicU64::new(0));
         let rewritten_output = Arc::new(AtomicU64::new(0));
         let synchronized_output = Arc::new(AtomicBool::new(false));
+        let synchronized_frames = Arc::new(AtomicU64::new(0));
         let proxy = TerminalEventProxy {
             generation,
             commands: commands.clone(),
@@ -1615,6 +1718,7 @@ impl TerminalRuntime {
             received_output: received_output.clone(),
             rewritten_output: rewritten_output.clone(),
             synchronized_output: synchronized_output.clone(),
+            synchronized_frames: synchronized_frames.clone(),
             replies: Arc::default(),
             theme,
         };
@@ -1862,6 +1966,7 @@ impl TerminalRuntime {
             received_output,
             rewritten_output,
             synchronized_output,
+            synchronized_frames,
             run,
             zmodem,
             transferring,
@@ -1947,6 +2052,7 @@ pub struct TerminalEventProxy {
     received_output: Arc<AtomicU64>,
     rewritten_output: Arc<AtomicU64>,
     synchronized_output: Arc<AtomicBool>,
+    synchronized_frames: Arc<AtomicU64>,
     /// What the output just parsed asks of the terminal, in the order it
     /// asks, until `answer`.
     replies: Arc<Mutex<Vec<Reply>>>,
@@ -2266,6 +2372,9 @@ impl Parser {
                 self.processor.sync_timeout().pending_timeout(),
                 Ordering::Release,
             );
+            self.proxy
+                .synchronized_frames
+                .store(self.rewrites.synchronized_frames, Ordering::Release);
             lines
         };
         if let Some(hit) = self.watcher.check(lines, Instant::now()) {
@@ -2334,16 +2443,20 @@ impl OutputActivity {
 struct RewriteScanner {
     parser: alacritty_terminal::vte::Parser,
     count: u64,
+    synchronized_frames: u64,
 }
 
 impl RewriteScanner {
     fn scan(&mut self, bytes: &[u8]) {
-        struct Counter<'a>(&'a mut u64);
+        struct Counter<'a> {
+            rewrites: &'a mut u64,
+            synchronized_frames: &'a mut u64,
+        }
         impl alacritty_terminal::vte::Perform for Counter<'_> {
             fn csi_dispatch(
                 &mut self,
-                _: &alacritty_terminal::vte::Params,
-                _: &[u8],
+                params: &alacritty_terminal::vte::Params,
+                intermediates: &[u8],
                 ignore: bool,
                 action: char,
             ) {
@@ -2371,11 +2484,24 @@ impl RewriteScanner {
                             | 'u'
                     )
                 {
-                    *self.0 = self.0.wrapping_add(1);
+                    *self.rewrites = self.rewrites.wrapping_add(1);
+                }
+                if !ignore
+                    && action == 'l'
+                    && intermediates == b"?"
+                    && params.iter().any(|param| param == [2026])
+                {
+                    *self.synchronized_frames = self.synchronized_frames.wrapping_add(1);
                 }
             }
         }
-        self.parser.advance(&mut Counter(&mut self.count), bytes);
+        self.parser.advance(
+            &mut Counter {
+                rewrites: &mut self.count,
+                synchronized_frames: &mut self.synchronized_frames,
+            },
+            bytes,
+        );
     }
 }
 
@@ -2601,6 +2727,20 @@ mod tests {
     }
 
     #[test]
+    fn synchronized_redraw_counter_handles_fragments_without_counting_title_text() {
+        let mut scanner = RewriteScanner::default();
+        for byte in b"\x1b[?2026h\x1b[2Jready\x1b[?2026l" {
+            scanner.scan(&[*byte]);
+        }
+        assert_eq!(scanner.synchronized_frames, 1);
+        assert_eq!(scanner.count, 1);
+        scanner.scan(b"\x1b]0;Codex [?2026l\x07\x1b[?25l");
+        assert_eq!(scanner.synchronized_frames, 1);
+        scanner.scan(b"\x1b[?2026hnext\x1b[?2026l\x1b[?2026h");
+        assert_eq!(scanner.synchronized_frames, 2);
+    }
+
+    #[test]
     fn output_queue_applies_backpressure_and_shutdown_releases_blocked_senders() {
         struct ObservedTransport(mpsc::Sender<async_channel::Sender<TerminalTransportEvent>>);
 
@@ -2804,6 +2944,7 @@ mod tests {
             received_output: Arc::new(AtomicU64::new(0)),
             rewritten_output: Arc::new(AtomicU64::new(0)),
             synchronized_output: Arc::new(AtomicBool::new(false)),
+            synchronized_frames: Arc::new(AtomicU64::new(0)),
             replies: Arc::default(),
             theme: Arc::new(Mutex::new(
                 TerminalTheme::default_for(gpui_kit::component::ThemeMode::Light).clone(),

@@ -155,7 +155,7 @@ impl RemotePanel {
             cx.notify();
             return;
         }
-        if self.service.read(cx).busy {
+        if self.service.read(cx).is_busy() {
             return;
         }
         let networks = matches!(&command, Command::Networks(_));
@@ -345,7 +345,7 @@ impl Focusable for RemotePanel {
 impl Render for RemotePanel {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let service = self.service.read(cx);
-        let busy = service.busy;
+        let busy = service.is_busy();
         let query = self.search.read(cx).value().trim().to_lowercase();
         let servers = self.settings.read(cx).settings().remote_servers;
         let mut rows = v_flex().gap_1().px_1();

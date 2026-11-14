@@ -423,7 +423,9 @@ pub struct Service {
     pub(super) backend: Option<Arc<dyn Backend>>,
     pub(super) catalogs: HashMap<String, Catalog>,
     pub(super) connection: Option<Connected>,
-    pub(super) busy: bool,
+    busy: bool,
+    polling: bool,
+    queued: Option<Operation>,
     pub(super) status: String,
     pub(super) status_error: bool,
     pub(super) statuses: HashMap<String, ServiceStatus>,
@@ -449,6 +451,8 @@ impl Service {
             catalogs: HashMap::new(),
             connection: None,
             busy: false,
+            polling: false,
+            queued: None,
             status: String::new(),
             status_error: false,
             statuses: HashMap::new(),
@@ -495,7 +499,7 @@ impl Service {
     }
 
     pub fn is_busy(&self) -> bool {
-        self.busy
+        (self.busy && !self.polling) || self.queued.is_some()
     }
 
     pub fn is_logged_in(&self, server: &str) -> bool {
@@ -588,7 +592,7 @@ impl Service {
     }
 
     pub fn ssh_target(&self, server: &str, device: &str) -> Option<(String, String)> {
-        if self.busy || !self.is_logged_in(server) {
+        if self.is_busy() || !self.is_logged_in(server) {
             return None;
         }
         let connection = self
@@ -617,12 +621,17 @@ impl Service {
 
     pub fn run(&mut self, operation: Operation, cx: &mut Context<Self>) {
         if self.busy {
+            if self.polling && !matches!(operation, Operation::Poll) && self.queued.is_none() {
+                self.queued = Some(operation);
+                cx.notify();
+            }
             return;
         }
         let Some(backend) = self.backend.clone() else {
             return;
         };
         let polling = matches!(operation, Operation::Poll);
+        self.polling = polling;
         self.diagnosing = matches!(operation, Operation::Diagnose(..));
         let server_id = match &operation {
             Operation::Login(server, _)
@@ -741,6 +750,7 @@ impl Service {
             };
             let _ = this.update(cx, |this, cx| {
                 this.busy = false;
+                this.polling = false;
                 this.diagnosing = false;
                 this.pending_server = None;
                 let moved = this.connection.as_ref().and_then(|old| {
@@ -870,7 +880,11 @@ impl Service {
                     cx.emit(Event::NetworkChanged);
                 }
                 cx.emit(Event::Updated);
-                this.refresh_paths(cx);
+                if let Some(operation) = this.queued.take() {
+                    this.run(operation, cx);
+                } else {
+                    this.refresh_paths(cx);
+                }
                 cx.notify();
             });
         }));

@@ -180,6 +180,7 @@ pub struct Workspace {
     /// The right dock's panel: the tools for the host of the tab in front.
     pub(super) tools: Entity<ToolSidebar>,
     pub(super) host_panel: Entity<HostPanel>,
+    serial_presence: Entity<crate::serial::SerialPresence>,
     /// The port forwards that are running, each on a connection of its own.
     pub(super) forwards: Entity<ForwardManager>,
     /// The start page the dock skin shows while the center has no tab.
@@ -337,6 +338,9 @@ impl Workspace {
             super::local_terminal_window::SystemAdministratorTerminalLauncher,
         ));
         this.adb_detector = Arc::new(crate::adb::SystemAdbDetector);
+        this.serial_presence.update(cx, |presence, cx| {
+            presence.start(Arc::new(crate::serial::SystemSerialPortSource), cx)
+        });
         this.tools.update(cx, |tools, cx| {
             tools.set_monitor_connector(
                 Arc::new(crate::monitor::SystemMonitorConnector::new(
@@ -459,7 +463,9 @@ impl Workspace {
             window,
             cx,
         );
-        let host_panel = cx.new(|cx| HostPanel::new(store.clone(), window, cx));
+        let serial_presence = cx.new(|cx| crate::serial::SerialPresence::new(store.clone(), cx));
+        let host_panel =
+            cx.new(|cx| HostPanel::new(store.clone(), serial_presence.clone(), window, cx));
         let forwards = cx.new(|cx| ForwardManager::new(store.clone(), forward_provider, cx));
         let update_settings = settings.read(cx).settings().update.clone();
         let updater = cx.new(|cx| {
@@ -872,6 +878,7 @@ impl Workspace {
             remote_hosts: HashMap::new(),
             tools,
             host_panel,
+            serial_presence,
             forwards,
             recent,
             terminals,
@@ -950,6 +957,10 @@ impl Workspace {
 
     pub fn store(&self) -> &Entity<HostStore> {
         &self.store
+    }
+
+    pub fn serial_presence(&self) -> &Entity<crate::serial::SerialPresence> {
+        &self.serial_presence
     }
 
     pub fn terminal(&self, id: HostId, cx: &App) -> Option<&Entity<TerminalPanel>> {
@@ -1216,6 +1227,9 @@ impl Workspace {
     /// Give the focus to the center: the tab shown last, or the start page
     /// while there is none. For when the focus is about to go off screen.
     pub(super) fn focus_center(&self, window: &mut Window, cx: &mut Context<Self>) {
+        if window.has_active_dialog(cx) {
+            return;
+        }
         let tab = self
             .active_tab
             .and_then(|tab| self.tab_focus_handle(tab, cx));
