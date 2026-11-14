@@ -1,0 +1,91 @@
+_version: 2
+serial.maintenance.title:
+  zh-CN: Windows 串口维护
+  en: Windows serial port maintenance
+serial.maintenance.open:
+  zh-CN: 清理未连接的 USB 串口…
+  en: Clean up disconnected USB serial ports…
+serial.maintenance.settings_description:
+  zh-CN: 扫描并选择本机未连接的 USB 串口设备，确认后请求管理员权限移除残留记录；不修改在线设备和驱动包。
+  en: Scan and select disconnected local USB serial devices, then approve administrator access to remove stale records. Present devices and driver packages are not modified.
+serial.maintenance.keywords:
+  zh-CN: 串口 COM USB 清理 端口 设备 管理员
+  en: serial COM USB cleanup ports devices administrator
+serial.maintenance.description:
+  zh-CN: 只列出系统明确判定未连接的 USB 串口。扫描不会打开串口或修改系统；移除前再次检查设备，重新插入或无法确认状态的设备会跳过。不删除主机、不卸载驱动、不重新编号，也不保证下次从低编号分配。
+  en: Only USB serial devices explicitly reported absent by Windows are listed. Scanning never opens ports or changes the system. Presence is checked again before removal; reconnected or unverified devices are skipped. Hosts, drivers and port numbers are not edited, and low-number allocation is not guaranteed.
+serial.maintenance.idle:
+  zh-CN: 点击扫描查看残留设备，所有项目默认不勾选。
+  en: Scan to find stale devices. Nothing is selected by default.
+serial.maintenance.scanning:
+  zh-CN: 正在扫描本机设备…
+  en: Scanning local devices…
+serial.maintenance.count:
+  zh-CN: "未连接的 USB 串口：%{count} 个 · 已选择 %{selected} 个"
+  en: "Disconnected USB serial ports: %{count} · Selected: %{selected}"
+serial.maintenance.confirm:
+  zh-CN: "确认移除以下 %{count} 个未连接的设备？"
+  en: "Remove these %{count} disconnected devices?"
+serial.maintenance.removing:
+  zh-CN: 正在请求管理员授权并移除设备，关闭窗口不会取消已开始的操作。请勿插拔待清理的设备。
+  en: Requesting administrator approval and removing devices. Closing this dialog does not cancel started operations. Do not reconnect the selected devices during cleanup.
+serial.maintenance.completed:
+  zh-CN: 操作已结束，请查看逐项结果。再次操作前必须重新扫描。
+  en: Operation finished. Review each result. Scan again before another removal.
+serial.maintenance.unsupported:
+  zh-CN: 当前环境不支持 Windows 串口维护。
+  en: Windows serial port maintenance is unavailable in this environment.
+serial.maintenance.no_references:
+  zh-CN: 没有已保存主机引用此端口
+  en: No saved hosts reference this port
+serial.maintenance.references:
+  zh-CN: "已保存主机引用：%{hosts}。移除后重新插入时可能需要修改主机的端口配置。"
+  en: "Referenced by saved hosts: %{hosts}. Their port settings may need updating after reconnection."
+serial.maintenance.warning:
+  zh-CN: 仅移除本次确认的设备记录。下一步将出现 Windows 管理员授权；取消授权不会清理设备。移除后重新插入设备可能分配不同的 COM 号。操作不支持撤销，请勿插拔这些设备。
+  en: Only the listed device records will be removed. Windows will request administrator approval; cancelling approval removes nothing. Reconnecting a removed device may assign a different COM number. Removal cannot be undone. Do not reconnect these devices during cleanup.
+serial.maintenance.empty:
+  zh-CN: 没有符合条件的残留 USB 串口设备。
+  en: No eligible stale USB serial devices found.
+serial.maintenance.scan:
+  zh-CN: 扫描设备
+  en: Scan devices
+serial.maintenance.review:
+  zh-CN: 确认所选设备…
+  en: Review selected devices…
+serial.maintenance.remove:
+  zh-CN: "移除选中的 %{count} 个设备"
+  en: "Remove %{count} selected devices"
+serial.maintenance.limit:
+  zh-CN: "每次最多选择 %{count} 个设备。第一版仅支持实例 ID 以 USB 开头的端口，其他类型不清理。"
+  en: "Select up to %{count} devices per operation. This version only supports ports with USB instance IDs; other types are excluded."
+serial.maintenance.previous:
+  zh-CN: 上一页
+  en: Previous
+serial.maintenance.next:
+  zh-CN: 下一页
+  en: Next
+serial.maintenance.cancelled:
+  zh-CN: 已取消管理员授权，未移除设备。再次尝试前请重新扫描。
+  en: Administrator approval was cancelled. No devices were removed. Scan again before retrying.
+serial.maintenance.timeout:
+  zh-CN: 操作超时，无法确认最终状态。请重新扫描核对，不要重复提交清理。
+  en: The operation timed out; its final state is unknown. Rescan to verify rather than submitting removal again.
+serial.maintenance.failed:
+  zh-CN: "未能完成：%{detail}"
+  en: "Could not complete: %{detail}"
+serial.maintenance.removed:
+  zh-CN: 已移除设备记录
+  en: Device record removed
+serial.maintenance.present:
+  zh-CN: 设备已连接，已跳过，未移除
+  en: Device is present; skipped without removal
+serial.maintenance.gone:
+  zh-CN: 设备记录已不存在，无需移除
+  en: Device record no longer exists; nothing to remove
+serial.maintenance.changed:
+  zh-CN: 设备类型或端口已变化，已跳过
+  en: Device type or port changed; skipped
+serial.maintenance.reboot:
+  zh-CN: 系统要求重启，请自行安排重启后重新扫描确认；程序不会自动重启电脑
+  en: Windows requires a restart. Restart at your convenience and rescan to verify; the app will not restart your computer.

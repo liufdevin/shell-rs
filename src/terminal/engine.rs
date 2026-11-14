@@ -1247,7 +1247,7 @@ impl TerminalEngine {
     }
 
     pub fn selection_text(&self) -> Option<String> {
-        self.runtime.term.lock().selection_to_string()
+        selected_text(&self.runtime.term.lock())
     }
 
     /// The last lines of output, to draw again when the terminal next
@@ -1262,6 +1262,10 @@ impl TerminalEngine {
 
     pub fn mode(&self) -> TermMode {
         *self.runtime.term.lock().mode()
+    }
+
+    pub(super) fn is_serial(&self) -> bool {
+        self.serial_name.is_some()
     }
 
     pub fn set_focused(&self, focused: bool) {
@@ -2555,6 +2559,14 @@ fn end_overdue_sync_timestamps(
     overdue
 }
 
+fn selected_text(term: &AlacrittyTerm) -> Option<String> {
+    let mut text = term.selection_to_string()?;
+    if term.selection.as_ref()?.ty == SelectionType::Block {
+        text.retain(|character| character != '\n' && character != '\r');
+    }
+    Some(text)
+}
+
 /// Select the scrollback and the screen, from the first line with text to
 /// the last; the blank lines around them would only copy as empty lines.
 /// With no text at all, nothing.
@@ -3557,6 +3569,35 @@ mod tests {
             .unwrap()
             .update(Point::new(Line(0), Column(3)), Side::Right);
         assert_eq!(term.selection_to_string().as_deref(), Some("ell"));
+    }
+
+    #[test]
+    fn block_selection_copies_only_the_rectangle_without_line_breaks() {
+        let mut term = test_term(20, 4);
+        feed(&mut term, "xxab  zz\r\nxx你c zz\r\nxxde  zz".as_bytes());
+        for (start, start_side, end, end_side) in [
+            ((0, 2), Side::Left, (2, 5), Side::Right),
+            ((2, 5), Side::Right, (0, 2), Side::Left),
+        ] {
+            term.selection = Some(Selection::new(
+                SelectionType::Block,
+                Point::new(Line(start.0), Column(start.1)),
+                start_side,
+            ));
+            term.selection
+                .as_mut()
+                .unwrap()
+                .update(Point::new(Line(end.0), Column(end.1)), end_side);
+            assert_eq!(super::selected_text(&term).as_deref(), Some("ab你cde"));
+        }
+        term.selection.as_mut().unwrap().ty = SelectionType::Simple;
+        assert!(super::selected_text(&term).unwrap().contains('\n'));
+        term.selection = Some(Selection::new(
+            SelectionType::Block,
+            Point::new(Line(0), Column(0)),
+            Side::Left,
+        ));
+        assert_eq!(super::selected_text(&term), None);
     }
 
     #[test]

@@ -144,6 +144,7 @@ pub struct ToolSidebar {
     target: Option<SidebarTarget>,
     /// Whether the right dock is open.
     shown: bool,
+    status_system_info: bool,
     serial_transfer_status: Option<(RemoteTerminalId, u64, SharedString)>,
     serial_checks: HashSet<(RemoteTerminalId, u64)>,
     monitor: Entity<MonitorPanel>,
@@ -185,6 +186,7 @@ impl ToolSidebar {
             tool: ToolKind::default(),
             target: None,
             shown: false,
+            status_system_info: false,
             serial_transfer_status: None,
             serial_checks: HashSet::new(),
             monitor: cx.new(|cx| MonitorPanel::new(dispatch.clone(), store.clone(), cx)),
@@ -217,6 +219,21 @@ impl ToolSidebar {
 
     pub fn tool(&self) -> ToolKind {
         self.tool
+    }
+
+    pub(super) fn monitor(&self) -> Entity<MonitorPanel> {
+        self.monitor.clone()
+    }
+
+    pub(super) fn monitor_status(
+        &self,
+        terminal: RemoteTerminalId,
+        cx: &App,
+    ) -> Option<crate::monitor::MonitorStatus> {
+        if !self.status_system_info || self.remote()?.id != terminal {
+            return None;
+        }
+        self.monitor.read(cx).status(cx)
     }
 
     pub fn set_utilities_target(
@@ -284,10 +301,14 @@ impl ToolSidebar {
         &mut self,
         target: Option<SidebarTarget>,
         shown: bool,
+        status_system_info: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.target != target || self.shown != shown {
+        if self.target != target
+            || self.shown != shown
+            || self.status_system_info != status_system_info
+        {
             self.terminal_observer = match &target {
                 Some(SidebarTarget::Remote(terminal)) => terminal
                     .view
@@ -297,6 +318,7 @@ impl ToolSidebar {
             };
             self.target = target;
             self.shown = shown;
+            self.status_system_info = status_system_info;
             self.sync_tools(window, cx);
             cx.notify();
         }
@@ -527,6 +549,19 @@ impl ToolSidebar {
             .filter(|terminal| terminal.serial)
             .map(|terminal| (terminal.host, terminal.monitor_settings.clone()));
         let native_ssh = self.remote().is_some_and(|terminal| terminal.ssh);
+        let monitor = monitor
+            || (self.status_system_info
+                && native_ssh
+                && self.remote().is_some_and(|terminal| {
+                    !terminal.shell_only && terminal.os.is_none_or(HostOs::is_linux)
+                }));
+        let activity = if showing(ToolKind::Monitor) {
+            crate::monitor::MonitorActivity::Sidebar
+        } else if monitor {
+            crate::monitor::MonitorActivity::StatusBar
+        } else {
+            crate::monitor::MonitorActivity::Inactive
+        };
         let log_target = self
             .remote()
             .filter(|terminal| terminal.device_logs.enabled)
@@ -545,7 +580,7 @@ impl ToolSidebar {
         self.logs
             .update(cx, |panel, cx| panel.set_target(log_target, logs, cx));
         self.monitor.update(cx, |panel, cx| {
-            panel.set_target(target.clone(), serial, native_ssh, monitor, cx)
+            panel.set_target(target.clone(), serial, native_ssh, activity, cx)
         });
         self.processes.update(cx, |panel, cx| {
             panel.set_target(target.clone(), processes, cx)

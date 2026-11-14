@@ -58,6 +58,24 @@ impl TerminalFont {
     pub fn row_height(&self, window: &Window) -> Pixels {
         window.pixel_snap(self.size * self.line_height).max(px(1.))
     }
+
+    pub(super) fn fit_fullscreen(&self, height: Pixels, window: &Window) -> Self {
+        let mut fitted = self.clone();
+        fitted.size = px(fullscreen_font_size(
+            self.size.as_f32(),
+            self.line_height,
+            height.as_f32(),
+            window.scale_factor(),
+        ));
+        fitted
+    }
+}
+
+fn fullscreen_font_size(size: f32, line_height: f32, height: f32, scale: f32) -> f32 {
+    let row_height = (height * scale / 48.).floor().max(1.) / scale;
+    (row_height / line_height)
+        .min(size)
+        .max(size.min(*FONT_SIZE_RANGE.start()))
 }
 
 /// The width of one cell: the font's `M`, on whole device pixels like the
@@ -272,6 +290,19 @@ mod tests {
     use gpui_kit::{TestAppContext, font, px};
 
     use super::{cell_width, in_cells};
+
+    #[test]
+    fn fullscreen_fit_reserves_rows_without_enlarging_or_becoming_unreadable() {
+        for scale in [1., 1.25, 1.5, 2.] {
+            let size = super::fullscreen_font_size(18., 1.54, 940., scale);
+            let row_height = (size * 1.54 * scale).round() / scale;
+            assert!((10. ..18.).contains(&size));
+            assert!((940. / row_height).floor() >= 48.);
+            assert_eq!(super::fullscreen_font_size(13., 1.54, 1200., scale), 13.);
+            assert_eq!(super::fullscreen_font_size(18., 1.54, 200., scale), 10.);
+            assert_eq!(super::fullscreen_font_size(8., 1.54, 200., scale), 8.);
+        }
+    }
 
     /// The test text system's `M` is 0.6 of the font size, its window at 2×.
     #[gpui_kit::test]

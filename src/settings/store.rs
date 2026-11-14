@@ -325,11 +325,13 @@ mod tests {
             settings.app_lock_idle_minutes = 15;
             settings.app_lock_allow_cli = true;
             settings.window.close_to_tray = true;
+            settings.status_system_info = true;
             settings.sidebar_width = Some(196.);
             settings.language = InterfaceLanguage::English;
             settings.terminal_interaction.cursor_style = crate::terminal::TerminalCursorStyle::Beam;
             settings.terminal_interaction.cursor_blinking = false;
             settings.terminal_interaction.hide_ai_citations = true;
+            settings.terminal_interaction.fit_fullscreen = false;
             settings.notifications.tab_output = false;
             settings.local_terminal.cmder_directory = Some(PathBuf::from("D:/Cmder installation"));
             settings.terminal_interaction.right_click = crate::terminal::RightClick::Enter;
@@ -350,6 +352,7 @@ mod tests {
         assert_eq!(reloaded.settings().app_lock_idle_minutes, 15);
         assert!(reloaded.settings().app_lock_allow_cli);
         assert!(reloaded.settings().window.close_to_tray);
+        assert!(reloaded.settings().status_system_info);
         assert_eq!(reloaded.settings().sidebar_width, Some(196.));
         assert_eq!(reloaded.settings().language, InterfaceLanguage::English);
         assert_eq!(
@@ -358,6 +361,7 @@ mod tests {
         );
         assert!(!reloaded.settings().terminal_interaction.cursor_blinking);
         assert!(reloaded.settings().terminal_interaction.hide_ai_citations);
+        assert!(!reloaded.settings().terminal_interaction.fit_fullscreen);
         assert!(!reloaded.settings().notifications.tab_output);
         assert_eq!(
             reloaded.settings().local_terminal.cmder_directory,

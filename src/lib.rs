@@ -19,6 +19,7 @@ pub mod device_logs;
 pub mod docker;
 pub mod editor;
 pub mod explorer;
+pub mod flashing;
 pub mod forward;
 pub mod gpu;
 pub mod history;

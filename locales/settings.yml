@@ -178,6 +178,15 @@ settings.appearance.mode:
 settings.appearance.font_size:
   zh-CN: 界面字号
   en: Interface font size
+settings.appearance.status_system_info:
+  zh-CN: 状态栏系统信息
+  en: System information in status bar
+settings.appearance.status_system_info_description:
+  zh-CN: 在底部同一行用图标和竖线分隔显示当前 Linux SSH 主机的 CPU、内存、网速、运行时间和磁盘。默认关闭；开启后与系统监控共用采集，关闭后不额外采集。
+  en: Show CPU, memory, network rates, uptime and disks with icons and separators for the active Linux SSH host on the existing bottom row. Off by default; uses the system monitor's collector without additional sampling when disabled.
+settings.appearance.status_system_info_keywords:
+  zh-CN: 状态栏,系统信息,CPU,内存,网速,磁盘,运行时间,底部
+  en: status bar,system information,CPU,memory,network,disk,uptime,bottom
 settings.appearance.font_family:
   zh-CN: 界面字体
   en: Interface font
@@ -252,6 +261,15 @@ settings.terminal.preview_keywords:
 settings.interaction.title:
   zh-CN: 终端交互
   en: Interaction
+settings.interaction.fit_fullscreen:
+  zh-CN: 全屏程序自适应
+  en: Fit full-screen programs
+settings.interaction.fit_fullscreen_description:
+  zh-CN: htop 等全屏程序临时缩小字号，尽量显示至少 48 行，最小 10 px。退出后恢复原字号；普通命令行和串口不受影响。关闭后可按原字号自由缩放。
+  en: Temporarily reduce text size in full-screen programs such as htop to fit at least 48 rows where possible, down to 10 px. Restore the configured size on exit; ordinary shells and serial terminals are unchanged. Turn off to zoom freely at the configured size.
+settings.interaction.fit_fullscreen_keywords:
+  zh-CN: htop,top,全屏,自适应,缩放,行数,进程
+  en: htop,top,full screen,fit,zoom,rows,processes
 settings.interaction.hide_ai_citations:
   zh-CN: 隐藏 AI 引用标记
   en: Hide AI citation markers
@@ -265,8 +283,8 @@ settings.interaction.copy_on_select:
   zh-CN: 选中复制
   en: Copy on select
 settings.interaction.copy_on_select_description:
-  zh-CN: 选中文字即复制。
-  en: Copy text when selected.
+  zh-CN: 松开鼠标时复制选中文字。Alt + 左键拖动可块选，复制不带换行。
+  en: Copy selected text on release. Alt + left-drag selects a block and copies without line breaks.
 settings.interaction.right_click:
   zh-CN: 右键行为
   en: Right-click

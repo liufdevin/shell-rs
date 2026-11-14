@@ -3,7 +3,7 @@ use std::{
     process::{Child, Command},
 };
 
-pub(super) struct CommandGroup {
+pub(crate) struct CommandGroup {
     #[cfg(windows)]
     job: std::os::windows::io::OwnedHandle,
     #[cfg(unix)]
@@ -11,7 +11,7 @@ pub(super) struct CommandGroup {
 }
 
 impl CommandGroup {
-    pub(super) fn spawn(command: &mut Command) -> io::Result<(Child, Self)> {
+    pub(crate) fn spawn(command: &mut Command) -> io::Result<(Child, Self)> {
         #[cfg(windows)]
         {
             use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle};
@@ -43,7 +43,7 @@ impl CommandGroup {
         }
     }
 
-    pub(super) fn terminate(&self) {
+    pub(crate) fn terminate(&self) {
         #[cfg(windows)]
         {
             use std::os::windows::io::AsRawHandle as _;
@@ -62,7 +62,7 @@ impl CommandGroup {
         }
     }
 
-    pub(super) fn terminate_on_close(&self) -> io::Result<()> {
+    pub(crate) fn terminate_on_close(&self) -> io::Result<()> {
         #[cfg(windows)]
         {
             use std::os::windows::io::AsRawHandle as _;

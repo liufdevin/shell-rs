@@ -4,7 +4,10 @@
 
 use std::rc::Rc;
 
-use gpui_kit::component::dock::{DockPlacement, panel_handle};
+use gpui_kit::component::{
+    WindowExt as _,
+    dock::{DockPlacement, panel_handle},
+};
 use gpui_kit::*;
 
 use super::Workspace;
@@ -255,6 +258,25 @@ impl Workspace {
     /// synced yet, hold it back for a last round.
     pub(super) fn ask_before_quit(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
         let unsaved = self.all_unsaved_files(cx);
+        if self.flashing_needs_confirmation(cx) {
+            crate::app::bring_forward(window, cx);
+            let description = if unsaved.is_empty() {
+                t!("flashing.interruption")
+            } else {
+                t!("flashing.quit_unsaved", files = describe_files(&unsaved))
+            };
+            if !window.has_active_dialog(cx) {
+                confirm_danger(
+                    t!("flashing.stop_title"),
+                    Some(description),
+                    t!("flashing.quit"),
+                    Rc::new(|_, cx| cx.quit()),
+                    window,
+                    cx,
+                );
+            }
+            return true;
+        }
         if unsaved.is_empty() {
             return self.sync_before_quit(cx);
         }

@@ -9,6 +9,7 @@ mod host_mark;
 mod latency_label;
 mod metrics;
 mod panel_transfer;
+pub(crate) mod process;
 mod rename_tab_dialog;
 mod row_tooltip;
 mod saved_password_picker;

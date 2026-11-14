@@ -387,6 +387,7 @@ impl Category {
 /// 外观.
 fn appearance_groups(panel: &SettingsPanel, _: &App) -> Vec<SettingGroup> {
     let store = &panel.store;
+    let (status_reader, status_writer) = (store.clone(), store.clone());
     vec![
         SettingGroup::new()
             .title(t!("settings.appearance.interface"))
@@ -424,6 +425,22 @@ fn appearance_groups(panel: &SettingsPanel, _: &App) -> Vec<SettingGroup> {
                 )
                 .description(t!("settings.appearance.font_size_description"))
                 .keywords(keywords(t!("settings.appearance.font_size_keywords"))),
+                SettingItem::new(
+                    t!("settings.appearance.status_system_info"),
+                    SettingField::switch(
+                        move |cx| status_reader.read(cx).settings().status_system_info,
+                        move |on, cx| {
+                            status_writer.update(cx, |store, cx| {
+                                store.update(|settings| settings.status_system_info = on, cx)
+                            });
+                        },
+                    )
+                    .default_value(false),
+                )
+                .description(t!("settings.appearance.status_system_info_description"))
+                .keywords(keywords(t!(
+                    "settings.appearance.status_system_info_keywords"
+                ))),
             ]),
         SettingGroup::new()
             .title(t!("settings.appearance.theme"))
@@ -585,6 +602,7 @@ fn interaction_group(store: &Entity<SettingsStore>) -> SettingGroup {
     let (reader, writer) = (store.clone(), store.clone());
     let (cursor_reader, cursor_writer) = (store.clone(), store.clone());
     let (citation_reader, citation_writer) = (store.clone(), store.clone());
+    let (fit_reader, fit_writer) = (store.clone(), store.clone());
     SettingGroup::new()
         .title(t!("settings.interaction.title"))
         .items([
@@ -679,6 +697,29 @@ fn interaction_group(store: &Entity<SettingsStore>) -> SettingGroup {
             .keywords(keywords(t!(
                 "settings.interaction.hide_ai_citations_keywords"
             ))),
+            SettingItem::new(
+                t!("settings.interaction.fit_fullscreen"),
+                SettingField::switch(
+                    move |cx| {
+                        fit_reader
+                            .read(cx)
+                            .settings()
+                            .terminal_interaction
+                            .fit_fullscreen
+                    },
+                    move |on, cx| {
+                        fit_writer.update(cx, |store, cx| {
+                            store.update(
+                                |settings| settings.terminal_interaction.fit_fullscreen = on,
+                                cx,
+                            )
+                        });
+                    },
+                )
+                .default_value(true),
+            )
+            .description(t!("settings.interaction.fit_fullscreen_description"))
+            .keywords(keywords(t!("settings.interaction.fit_fullscreen_keywords"))),
         ])
 }
 
@@ -1076,6 +1117,31 @@ fn application_groups(panel: &SettingsPanel, cx: &App) -> Vec<SettingGroup> {
     let mut groups = update_privacy_groups(panel, cx);
     groups.push(window_group);
     groups.push(app_lock_group(&panel.store, cx));
+    if cfg!(windows) {
+        groups.push(
+            SettingGroup::new()
+                .title(t!("serial.maintenance.title"))
+                .items([SettingItem::new(
+                    t!("serial.maintenance.title"),
+                    SettingField::render(|options, _, _| {
+                        Button::new("open-serial-maintenance")
+                            .outline()
+                            .with_size(options.size())
+                            .label(t!("serial.maintenance.open"))
+                            .on_click(|_, window, cx| {
+                                window.dispatch_action(
+                                    Box::new(crate::app::SerialMaintenanceAction(
+                                        crate::serial::maintenance::SerialMaintenanceCommand::Open,
+                                    )),
+                                    cx,
+                                )
+                            })
+                    }),
+                )
+                .description(t!("serial.maintenance.settings_description"))
+                .keywords(keywords(t!("serial.maintenance.keywords")))]),
+        );
+    }
     groups
 }
 

@@ -1077,9 +1077,11 @@ impl Workspace {
             }
             _ => None,
         };
+        let status_system_info = self.settings().read(cx).settings().status_system_info
+            && matches!(self.active_tab, Some(CenterTab::Terminal(_)));
         self.tools.update(cx, |tools, cx| {
             tools.set_files(files, window, cx);
-            tools.set_target(target, open, window, cx);
+            tools.set_target(target, open, status_system_info, window, cx);
         });
         if self.dock_area.read(cx).is_dock_open(DockPlacement::Right) != open {
             // A focus inside the sidebar would go off screen with it.

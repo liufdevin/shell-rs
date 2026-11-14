@@ -1,4 +1,55 @@
 _version: 2
+monitor.status.cpu:
+  zh-CN: CPU
+  en: CPU
+monitor.status.memory:
+  zh-CN: 内存
+  en: Memory
+monitor.status.upload:
+  zh-CN: 上行
+  en: Upload
+monitor.status.download:
+  zh-CN: 下行
+  en: Download
+monitor.status.uptime:
+  zh-CN: 运行时间
+  en: Uptime
+monitor.status.disks:
+  zh-CN: 磁盘
+  en: Disks
+monitor.status.cpu_detail:
+  zh-CN: "CPU 使用率：%{value}"
+  en: "CPU usage: %{value}"
+monitor.status.memory_detail:
+  zh-CN: "内存：%{value}（%{percent}）"
+  en: "Memory: %{value} (%{percent})"
+monitor.status.upload_detail:
+  zh-CN: "上行：%{value} · %{interface}"
+  en: "Upload: %{value} · %{interface}"
+monitor.status.download_detail:
+  zh-CN: "下行：%{value} · %{interface}"
+  en: "Download: %{value} · %{interface}"
+monitor.status.uptime_detail:
+  zh-CN: "已运行：%{value}"
+  en: "Uptime: %{value}"
+monitor.status.disk_detail:
+  zh-CN: "磁盘 %{mount}：%{percent}（已用 %{used} / %{total}）"
+  en: "Disk %{mount}: %{percent} (%{used} used of %{total})"
+monitor.status.interface:
+  zh-CN: "网络接口：%{name}"
+  en: "Network interface: %{name}"
+monitor.status.no_interface:
+  zh-CN: 未检测到网络接口
+  en: No network interface
+monitor.status.loading:
+  zh-CN: 系统信息：读取中…
+  en: "System information: Loading…"
+monitor.status.unavailable:
+  zh-CN: 系统信息：暂不可用
+  en: "System information: Unavailable"
+monitor.status.unsupported:
+  zh-CN: 系统信息：暂不支持此系统
+  en: "System information: Unsupported system"
 monitor.route.channel:
   zh-CN: 监控采集通道
   en: Monitor channel

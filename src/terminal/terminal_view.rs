@@ -91,6 +91,17 @@ fn opens_links(modifiers: &Modifiers) -> bool {
     }
 }
 
+fn text_selection_type(click_count: usize, modifiers: Modifiers) -> SelectionType {
+    if modifiers.alt {
+        return SelectionType::Block;
+    }
+    match click_count {
+        2 => SelectionType::Semantic,
+        count if count >= 3 => SelectionType::Lines,
+        _ => SelectionType::Simple,
+    }
+}
+
 /// What a key does in a terminal whose connection has ended.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum EndedKey {
@@ -1532,7 +1543,11 @@ impl TerminalView {
     ) -> bool {
         let mode = self.engine.read(cx).mode();
         let held = self.reported_button.is_some();
-        if (modifiers.shift && !held) || !mouse::wants(mode, kind, held) {
+        let block_selection =
+            modifiers.alt && matches!(button, ReportButton::Left | ReportButton::None);
+        if ((modifiers.shift || block_selection || self.selecting) && !held)
+            || !mouse::wants(mode, kind, held)
+        {
             return false;
         }
         let button = match kind {
@@ -1881,7 +1896,16 @@ impl Render for TerminalView {
             .engine
             .read(cx)
             .display_snapshot(TerminalInteraction::current(cx).hide_ai_citations);
-        let font = TerminalFont::current(cx);
+        let fit_fullscreen = TerminalInteraction::current(cx).fit_fullscreen
+            && self.engine.read(cx).mode().contains(TermMode::ALT_SCREEN)
+            && !self.engine.read(cx).is_serial();
+        let fitted_height = self
+            .viewport
+            .map(|viewport| viewport.geometry.bounds.size.height);
+        let mut font = TerminalFont::current(cx);
+        if fit_fullscreen && let Some(height) = fitted_height {
+            font = font.fit_fullscreen(height, window);
+        }
         let scrollback = ScrollbackHandle::new(
             self.engine.read(cx).scrollback(),
             &snapshot,
@@ -1898,6 +1922,9 @@ impl Render for TerminalView {
             marked_selection: self.marked_selection.clone(),
             requested_size: self.requested_size,
             pending_size: self.pending_size.clone(),
+            line_height: font.row_height(window),
+            fit_fullscreen,
+            fitted_height,
         };
 
         let stamps = element.snapshot.timestamps.clone();
@@ -2079,11 +2106,7 @@ impl Render for TerminalView {
                     }
                     this.focus(window, cx);
                     let (point, side) = viewport.grid_point(event.position);
-                    let selection_type = match event.click_count {
-                        2 => SelectionType::Semantic,
-                        count if count >= 3 => SelectionType::Lines,
-                        _ => SelectionType::Simple,
-                    };
+                    let selection_type = text_selection_type(event.click_count, event.modifiers);
                     this.start_selection(point, side, selection_type, cx);
                     cx.stop_propagation();
                 }),
@@ -2441,6 +2464,9 @@ struct TerminalElement {
     marked_selection: Range<usize>,
     requested_size: TerminalSize,
     pending_size: Rc<Cell<Option<TerminalSize>>>,
+    line_height: Pixels,
+    fit_fullscreen: bool,
+    fitted_height: Option<Pixels>,
 }
 
 struct TerminalPaintState {
@@ -2507,7 +2533,7 @@ impl Element for TerminalElement {
         let text_style = window.text_style();
         let font_size = text_style.font_size.to_pixels(window.rem_size());
         let cell_width = font::cell_width(text_style.font(), font_size, window);
-        let line_height = TerminalFont::current(cx).row_height(window);
+        let line_height = self.line_height;
         let columns = ((bounds.size.width / cell_width).floor() as usize).max(2);
         let rows = ((bounds.size.height / line_height).floor() as usize).max(1);
         let requested_size = TerminalSize::new(
@@ -2516,7 +2542,9 @@ impl Element for TerminalElement {
             cell_width.as_f32().round().clamp(1., u16::MAX as f32) as u16,
             line_height.as_f32().round().clamp(1., u16::MAX as f32) as u16,
         );
-        if requested_size != self.requested_size || self.pending_size.get().is_some() {
+        if self.fit_fullscreen && self.fitted_height != Some(bounds.size.height) {
+            self.pending_size.set(None);
+        } else if requested_size != self.requested_size || self.pending_size.get().is_some() {
             let schedule = self.pending_size.replace(Some(requested_size)).is_none();
             if schedule {
                 let terminal = self.view.clone();
@@ -2763,7 +2791,13 @@ impl Element for TerminalElement {
         let view = self.view.clone();
         let viewport = state.viewport;
         let ime_cursor_bounds = state.ime_cursor_bounds;
-        view.update(cx, |view, _| view.set_viewport(viewport, ime_cursor_bounds));
+        let needs_fit = self.fit_fullscreen && self.fitted_height != Some(bounds.size.height);
+        view.update(cx, |view, cx| {
+            view.set_viewport(viewport, ime_cursor_bounds);
+            if needs_fit {
+                cx.notify();
+            }
+        });
 
         let mask = ContentMask { bounds };
         window.with_content_mask(Some(mask), |window| {
@@ -2847,6 +2881,7 @@ impl Element for TerminalElement {
                     return;
                 }
                 if button == ReportButton::Left
+                    && !event.modifiers.alt
                     && opens_links(&event.modifiers)
                     && let Some((_, uri)) = links.at(cell)
                 {
@@ -2863,11 +2898,7 @@ impl Element for TerminalElement {
                     cx.stop_propagation();
                 } else if button == ReportButton::Left {
                     let (point, side) = viewport.grid_point(event.position);
-                    let selection_type = match event.click_count {
-                        2 => SelectionType::Semantic,
-                        count if count >= 3 => SelectionType::Lines,
-                        _ => SelectionType::Simple,
-                    };
+                    let selection_type = text_selection_type(event.click_count, event.modifiers);
                     view.update(cx, |view, cx| {
                         view.start_selection(point, side, selection_type, cx);
                     });
@@ -3527,6 +3558,33 @@ mod tests {
 
     fn key(source: &str) -> Keystroke {
         Keystroke::parse(source).unwrap()
+    }
+
+    #[test]
+    fn alt_selects_blocks_without_changing_plain_word_and_line_selection() {
+        use alacritty_terminal::selection::SelectionType;
+        use gpui_kit::Modifiers;
+
+        for (count, expected) in [
+            (1, SelectionType::Simple),
+            (2, SelectionType::Semantic),
+            (3, SelectionType::Lines),
+        ] {
+            assert_eq!(
+                super::text_selection_type(count, Modifiers::none()),
+                expected
+            );
+            assert_eq!(
+                super::text_selection_type(
+                    count,
+                    Modifiers {
+                        alt: true,
+                        ..Modifiers::none()
+                    }
+                ),
+                SelectionType::Block,
+            );
+        }
     }
 
     #[test]

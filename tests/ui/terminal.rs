@@ -7,6 +7,188 @@ use shellrs::app::{CopyTerminal, DuplicateTerminal, SelectAllTerminal};
 use shellrs::host::SnippetDraft;
 use shellrs::terminal::{MiddleClick, RightClick};
 
+#[derive(Default)]
+struct MonitorFactory {
+    sizes: Arc<Mutex<Vec<TerminalSize>>>,
+}
+
+impl TerminalTransportFactory for MonitorFactory {
+    fn create(&self) -> Box<dyn TerminalTransport> {
+        Box::new(MonitorTransport(self.sizes.clone()))
+    }
+}
+
+struct MonitorTransport(Arc<Mutex<Vec<TerminalSize>>>);
+
+impl TerminalTransport for MonitorTransport {
+    fn run(
+        self: Box<Self>,
+        initial_size: TerminalSize,
+        commands: mpsc::Receiver<TerminalTransportCommand>,
+        events: async_channel::Sender<TerminalTransportEvent>,
+    ) -> anyhow::Result<()> {
+        events.send_blocking(TerminalTransportEvent::Started)?;
+        events.send_blocking(TerminalTransportEvent::Output(b"\x1b[?1049h".to_vec()))?;
+        events.send_blocking(TerminalTransportEvent::Output(monitor_screen(initial_size)))?;
+        let mut fullscreen = true;
+        while let Ok(command) = commands.recv() {
+            match command {
+                TerminalTransportCommand::Resize(size) => {
+                    self.0.lock().unwrap().push(size);
+                    if fullscreen {
+                        events
+                            .send_blocking(TerminalTransportEvent::Output(monitor_screen(size)))?;
+                    }
+                }
+                TerminalTransportCommand::Write(bytes) if bytes == b"\x1b" => {
+                    fullscreen = false;
+                    events.send_blocking(TerminalTransportEvent::Output(
+                        b"\x1b[?1049lreturned-shell".to_vec(),
+                    ))?;
+                }
+                TerminalTransportCommand::Shutdown => break,
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+}
+
+fn monitor_screen(size: TerminalSize) -> Vec<u8> {
+    let mut lines = (1..=32)
+        .map(|row| {
+            (0..4)
+                .map(|column| format!("{:3}[|||| 90.0%]", row + column * 32))
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .collect::<Vec<_>>();
+    lines.extend(
+        [
+            "Mem[42.9G/126G]",
+            "Swp[0K/0K]",
+            "Tasks: 609",
+            "Load average: 102.69",
+            "",
+            "PID CPU% Command",
+        ]
+        .map(str::to_owned),
+    );
+    lines.extend((1..=8).map(|process| format!("{} 90.0 PROCESS_{process}", 75000 + process)));
+    let mut output = String::from("\x1b[2J\x1b[H");
+    for (row, line) in lines.iter().take(size.rows().saturating_sub(1)).enumerate() {
+        output.push_str(&format!("\x1b[{};1H{line}", row + 1));
+    }
+    output.push_str(&format!("\x1b[{};1HF1Help F2Setup F10Quit", size.rows()));
+    output.into_bytes()
+}
+
+#[gpui_kit::test]
+async fn fullscreen_fit_keeps_128_cpu_meters_and_processes_visible_and_restores_shell_font(
+    cx: &mut TestAppContext,
+) {
+    let factory = Arc::new(MonitorFactory::default());
+    let (handle, workspace) = open_workspace_with_local_terminals(
+        cx,
+        Arc::new(FixedLocalTerminalTransportProvider::new(factory.clone())),
+        size(px(1780.), px(1080.)),
+    );
+    let settings = cx.update(|cx| workspace.read(cx).settings().clone());
+    settings.update(cx, |settings, cx| {
+        settings.update(
+            |settings| {
+                settings.terminal_font.size = 18.;
+                settings.terminal_font.line_height = 1.54;
+            },
+            cx,
+        );
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.click("new-local-terminal", cx)
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, cx| {
+        window.render_frame(cx);
+        let screen = local_screen(&workspace, cx);
+        factory
+            .sizes
+            .lock()
+            .unwrap()
+            .last()
+            .is_some_and(|size| size.rows() >= 48)
+            && screen.contains("PROCESS_8")
+            && screen.contains("128[")
+            && screen.contains("F10Quit")
+    })
+    .await;
+    let before = *factory.sizes.lock().unwrap().last().unwrap();
+    cx.executor().advance_clock(Duration::from_millis(100));
+    cx.run_until_parked();
+    let resize_count = factory.sizes.lock().unwrap().len();
+    for _ in 0..8 {
+        in_frame(cx, handle, |window, cx| window.render_frame(cx));
+    }
+    assert_eq!(factory.sizes.lock().unwrap().len(), resize_count);
+    cx.update(|cx| {
+        assert_eq!(cx.global::<TerminalFont>().size, px(18.));
+        assert_eq!(settings.read(cx).settings().terminal_font.size, 18.);
+    });
+    cx.simulate_window_resize(handle.into(), size(px(1500.), px(940.)));
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, cx| {
+        window.render_frame(cx);
+        factory
+            .sizes
+            .lock()
+            .unwrap()
+            .last()
+            .is_some_and(|size| size.rows() >= 48 && size.cell_height() < before.cell_height())
+            && local_screen(&workspace, cx).contains("PROCESS_8")
+    })
+    .await;
+    settings.update(cx, |settings, cx| {
+        settings.update(
+            |settings| settings.terminal_interaction.fit_fullscreen = false,
+            cx,
+        );
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, cx| {
+        window.render_frame(cx);
+        factory
+            .sizes
+            .lock()
+            .unwrap()
+            .last()
+            .is_some_and(|size| size.cell_height() == 28 && size.rows() < 40)
+            && !local_screen(&workspace, cx).contains("PROCESS_1")
+    })
+    .await;
+    settings.update(cx, |settings, cx| {
+        settings.update(
+            |settings| settings.terminal_interaction.fit_fullscreen = true,
+            cx,
+        );
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, cx| {
+        window.render_frame(cx);
+        local_screen(&workspace, cx).contains("PROCESS_8")
+    })
+    .await;
+    in_frame(cx, handle, |window, cx| {
+        window.click(("local-terminal", 1_u64), cx);
+        window.press("escape", cx);
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, cx| {
+        window.render_frame(cx);
+        local_screen(&workspace, cx).contains("returned-shell")
+            && factory
+                .sizes
+                .lock()
+                .unwrap()
+                .last()
+                .is_some_and(|size| size.cell_height() == 28)
+    })
+    .await;
+}
+
 #[gpui_kit::test]
 async fn ai_citation_display_is_optional_and_keeps_raw_copy_and_grid_positions(
     cx: &mut TestAppContext,
@@ -1130,6 +1312,119 @@ async fn selecting_a_path_name_keeps_adjacent_slashes_out(cx: &mut TestAppContex
             );
         }
     }
+}
+
+#[gpui_kit::test]
+async fn alt_drag_block_selection_copies_without_newlines_even_with_mouse_reporting(
+    cx: &mut TestAppContext,
+) {
+    use gpui_kit::{Modifiers, MouseDownEvent, MouseUpEvent};
+
+    let (handle, workspace, factory) = terminal_printing(
+        cx,
+        "xxabczz\r\nxxdefzz\r\nready\x1b[?1003h\x1b[?1006h",
+        "ready",
+    )
+    .await;
+    let settings = cx.update(|cx| workspace.read(cx).settings().clone());
+    let first_row = cx.update(|cx| {
+        local_screen(&workspace, cx)
+            .lines()
+            .position(|line| line == "xxabczz")
+            .expect("the block-selection fixture is visible")
+    });
+    for (reverse, margin, copy_on_select, expected) in [
+        (false, false, true, "abcdef"),
+        (true, false, false, "abcdef"),
+        (false, true, true, "xxabcxxdef"),
+    ] {
+        settings.update(cx, |settings, cx| {
+            settings.update(
+                |settings| settings.terminal_interaction.copy_on_select = copy_on_select,
+                cx,
+            );
+        });
+        cx.run_until_parked();
+        in_frame(cx, handle, |window, cx| {
+            let cell = *factory.resizes.lock().unwrap().last().unwrap();
+            let mut from = cell_center(window, &factory, 2, first_row);
+            from.x -= px(cell.cell_width() as f32 * 0.3);
+            if margin {
+                from.x = window.find("terminal-grid").bounds().left() - px(4.);
+            }
+            let mut to = cell_center(window, &factory, 4, first_row + 1);
+            to.x += px(cell.cell_width() as f32 * 0.3);
+            if reverse {
+                std::mem::swap(&mut from, &mut to);
+            }
+            cx.write_to_clipboard(ClipboardItem::new_string("sentinel".into()));
+            let modifiers = Modifiers {
+                alt: true,
+                ..Modifiers::none()
+            };
+            window.dispatch_event(
+                MouseMoveEvent {
+                    position: from,
+                    pressed_button: None,
+                    modifiers,
+                }
+                .to_platform_input(),
+                cx,
+            );
+            window.render_frame(cx);
+            window.dispatch_event(
+                MouseDownEvent {
+                    button: MouseButton::Left,
+                    position: from,
+                    modifiers,
+                    click_count: 1,
+                    first_mouse: false,
+                }
+                .to_platform_input(),
+                cx,
+            );
+            window.dispatch_event(
+                MouseMoveEvent {
+                    position: to,
+                    pressed_button: Some(MouseButton::Left),
+                    modifiers: Modifiers::none(),
+                }
+                .to_platform_input(),
+                cx,
+            );
+            window.dispatch_event(
+                MouseUpEvent {
+                    button: MouseButton::Left,
+                    position: to,
+                    modifiers: Modifiers::none(),
+                    click_count: 1,
+                }
+                .to_platform_input(),
+                cx,
+            );
+            window.render_frame(cx);
+            assert_eq!(
+                cx.read_from_clipboard()
+                    .and_then(|item| item.text())
+                    .as_deref(),
+                Some(if copy_on_select { expected } else { "sentinel" })
+            );
+            cx.write_to_clipboard(ClipboardItem::new_string("sentinel".into()));
+            window.dispatch_action(Box::new(CopyTerminal), cx);
+        });
+        assert_eq!(
+            cx.update(|cx| cx.read_from_clipboard().and_then(|item| item.text()))
+                .as_deref(),
+            Some(expected)
+        );
+    }
+    cx.executor().advance_clock(Duration::from_millis(100));
+    cx.run_until_parked();
+    assert!(
+        factory.written_text().is_empty(),
+        "{}",
+        factory.written_text()
+    );
 }
 
 #[gpui_kit::test]

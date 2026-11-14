@@ -25,21 +25,22 @@ use super::front::follow_focus;
 use crate::analytics::{Analytics, AnalyticsServices, Counter};
 use crate::app::ExplorerDispatch as _;
 use crate::app::{
-    CenterTab, ClearTerminal, CloseActiveTab, CloseEditor, CloseExplorer, CloseLocalTerminal,
-    CloseSettings, CloseTabs, CloseTerminal, CollapseAllGroups, ConnectGroup, ConnectHost,
-    CopyAgentSkill, CopyHostAddress, CopyHostId, CopyTerminal, CopyTerminalFindResults,
-    DeleteGroup, DeleteHost, DisconnectTerminal, DismissTerminalFind, DuplicateHost,
-    DuplicateTerminal, EditHost, ExpandAllGroups, ExplorerAction, ExplorerCommand,
-    ExplorerShortcut, FindInTerminal, FindNextInTerminal, FindPreviousInTerminal, FocusSearch,
-    InstallAgentSkill, InstallCliCommand, MaximizeWindow, MoveHostNode, NewChildGroup,
+    CenterTab, ClearTerminal, CloseActiveTab, CloseEditor, CloseExplorer, CloseFlashing,
+    CloseLocalTerminal, CloseSettings, CloseTabs, CloseTerminal, CollapseAllGroups, ConnectGroup,
+    ConnectHost, CopyAgentSkill, CopyHostAddress, CopyHostId, CopyTerminal,
+    CopyTerminalFindResults, DeleteGroup, DeleteHost, DisconnectTerminal, DismissTerminalFind,
+    DuplicateHost, DuplicateTerminal, EditHost, ExpandAllGroups, ExplorerAction, ExplorerCommand,
+    ExplorerShortcut, FindInTerminal, FindNextInTerminal, FindPreviousInTerminal, FlashingAction,
+    FocusSearch, InstallAgentSkill, InstallCliCommand, MaximizeWindow, MoveHostNode, NewChildGroup,
     NewCommandTerminal, NewGroup, NewHost, NewHostInGroup, NewLocalTerminal,
-    NewTemporaryConnection, OpenExplorer, OpenLocalTerminalOptions, OpenSettings, PasteTerminal,
-    QuickConnect, ReconnectTerminal, RefreshCliIntegration, RemoveAgentSkill, RemoveCliCommand,
-    RenameExplorer, RenameGroup, RenameTerminal, RestartLocalTerminal, RestoreWindow,
-    ReturnDetachedTab, SelectAllTerminal, SendBreak, SendSerialHex, SetFileSizeFormat,
-    ShowOrHideApp, StartLocalTerminal, StartTerminalRecording, StopTerminalRecording,
-    ToggleHiddenFiles, ToggleHostDetails, ToggleHostPanel, ToggleTerminalFindOption, ToggleTheme,
-    ToolKind, ZoomIn, ZoomOut, ZoomReset, ZoomTerminalIn, ZoomTerminalOut, ZoomTerminalReset,
+    NewTemporaryConnection, OpenExplorer, OpenFlashing, OpenLocalTerminalOptions, OpenSettings,
+    PasteTerminal, QuickConnect, ReconnectTerminal, RefreshCliIntegration, RemoveAgentSkill,
+    RemoveCliCommand, RenameExplorer, RenameGroup, RenameTerminal, RestartLocalTerminal,
+    RestoreWindow, ReturnDetachedTab, SelectAllTerminal, SendBreak, SendSerialHex,
+    SetFileSizeFormat, ShowOrHideApp, StartLocalTerminal, StartTerminalRecording,
+    StopTerminalRecording, ToggleHiddenFiles, ToggleHostDetails, ToggleHostPanel,
+    ToggleTerminalFindOption, ToggleTheme, ToolKind, ZoomIn, ZoomOut, ZoomReset, ZoomTerminalIn,
+    ZoomTerminalOut, ZoomTerminalReset,
 };
 use crate::app::{
     ClearTerminalLog, DeleteTerminalLog, SetSerialBackspace, ToggleSerialReceiveHex,
@@ -55,6 +56,7 @@ use crate::editor::{EditorId, EditorPanel};
 use crate::explorer::{
     ExplorerId, ExplorerPanel, ExplorerPanelEvent, PreviewKind, confirm_close_transfer,
 };
+use crate::flashing::{FlashingPanel, FlashingPanelEvent};
 use crate::forward::{
     ForwardManager, ForwardManagerEvent, ForwardPanel, SharedForwardTransportProvider,
     SshForwardTransportProvider,
@@ -181,6 +183,7 @@ pub struct Workspace {
     pub(super) tools: Entity<ToolSidebar>,
     pub(super) host_panel: Entity<HostPanel>,
     serial_presence: Entity<crate::serial::SerialPresence>,
+    serial_maintenance: Entity<crate::serial::maintenance::SerialMaintenance>,
     /// The port forwards that are running, each on a connection of its own.
     pub(super) forwards: Entity<ForwardManager>,
     /// The start page the dock skin shows while the center has no tab.
@@ -207,6 +210,8 @@ pub struct Workspace {
     pub(super) front_saved_terminal: Option<LocalTerminalId>,
     /// The settings tab, while it is open. There is only ever one.
     settings_tab: Option<Entity<SettingsPanel>>,
+    /// The firmware flashing tab, while it is open. There is only ever one.
+    flashing_tab: Option<Entity<FlashingPanel>>,
     /// What the settings tab edits; the workspace applies it to the window.
     settings: Entity<SettingsStore>,
     /// Where the `shelllf-cli` command and the agent skills go, and whether
@@ -341,6 +346,12 @@ impl Workspace {
         this.serial_presence.update(cx, |presence, cx| {
             presence.start(Arc::new(crate::serial::SystemSerialPortSource), cx)
         });
+        this.serial_maintenance.update(cx, |maintenance, cx| {
+            maintenance.set_backend(
+                Arc::new(crate::serial::maintenance::SystemSerialMaintenance),
+                cx,
+            )
+        });
         this.tools.update(cx, |tools, cx| {
             tools.set_monitor_connector(
                 Arc::new(crate::monitor::SystemMonitorConnector::new(
@@ -464,6 +475,13 @@ impl Workspace {
             cx,
         );
         let serial_presence = cx.new(|cx| crate::serial::SerialPresence::new(store.clone(), cx));
+        let serial_maintenance = cx.new(|cx| {
+            crate::serial::maintenance::SerialMaintenance::new(
+                store.clone(),
+                focus_handle.clone(),
+                cx,
+            )
+        });
         let host_panel =
             cx.new(|cx| HostPanel::new(store.clone(), serial_presence.clone(), window, cx));
         let forwards = cx.new(|cx| ForwardManager::new(store.clone(), forward_provider, cx));
@@ -539,6 +557,11 @@ impl Workspace {
 
         let mut sidebar_width = dock_area.read(cx).dock_size(DockPlacement::Left);
         let mut subscriptions = vec![
+            cx.observe(&tools.read(cx).monitor(), |this, _, cx| {
+                if this.settings.read(cx).settings().status_system_info {
+                    cx.notify();
+                }
+            }),
             cx.subscribe_in(&remote, window, |this, _, event, window, cx| {
                 if let crate::remote::Event::DeviceAddressesChanged(server, devices) = event {
                     let hosts: std::collections::HashSet<_> = this
@@ -671,6 +694,7 @@ impl Workspace {
                         .update(cx, |tools, cx| tools.disable_kubernetes(cx));
                 }
                 this.sync_tool_sidebar(window, cx);
+                cx.notify();
             }),
             cx.subscribe_in(
                 &updater,
@@ -879,6 +903,7 @@ impl Workspace {
             tools,
             host_panel,
             serial_presence,
+            serial_maintenance,
             forwards,
             recent,
             terminals,
@@ -893,6 +918,7 @@ impl Workspace {
             saved_terminals,
             front_saved_terminal,
             settings_tab: None,
+            flashing_tab: None,
             settings,
             cli_integration: cx.new(|_| CliIntegration::new(None)),
             cli_server: None,
@@ -961,6 +987,34 @@ impl Workspace {
 
     pub fn serial_presence(&self) -> &Entity<crate::serial::SerialPresence> {
         &self.serial_presence
+    }
+
+    pub fn serial_maintenance(&self) -> &Entity<crate::serial::maintenance::SerialMaintenance> {
+        &self.serial_maintenance
+    }
+
+    fn on_serial_maintenance_action(
+        &mut self,
+        action: &crate::app::SerialMaintenanceAction,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if crate::app_lock::is_locked(cx) {
+            return;
+        }
+        if action.0 == crate::serial::maintenance::SerialMaintenanceCommand::Open {
+            if !window.has_active_dialog(cx) {
+                crate::serial::maintenance::SerialMaintenance::open(
+                    self.serial_maintenance.clone(),
+                    window,
+                    cx,
+                );
+            }
+        } else {
+            self.serial_maintenance.update(cx, |maintenance, cx| {
+                maintenance.command(action.0.clone(), cx)
+            });
+        }
     }
 
     pub fn terminal(&self, id: HostId, cx: &App) -> Option<&Entity<TerminalPanel>> {
@@ -1260,6 +1314,10 @@ impl Workspace {
                 .map(|panel| panel.read(cx).focus_handle(cx)),
             CenterTab::Settings => self
                 .settings_tab
+                .as_ref()
+                .map(|panel| panel.read(cx).focus_handle(cx)),
+            CenterTab::Flashing => self
+                .flashing_tab
                 .as_ref()
                 .map(|panel| panel.read(cx).focus_handle(cx)),
             CenterTab::Editor(id) => self
@@ -2239,6 +2297,117 @@ impl Workspace {
         });
     }
 
+    /// Open the firmware flashing tab, or bring the open one forward. It
+    /// stays alive while hidden, so a run keeps going when another tab is
+    /// looked at.
+    fn on_open_flashing(&mut self, _: &OpenFlashing, window: &mut Window, cx: &mut Context<Self>) {
+        if !cfg!(windows) || window.has_active_dialog(cx) {
+            return;
+        }
+        if let Some(panel) = self.flashing_tab.clone() {
+            let group = panel.read(cx).tab_group();
+            self.activate_tab(group, panel.entity_id(), window, cx);
+            panel.update(cx, |panel, cx| panel.show(window, cx));
+            return;
+        }
+        let panel = cx.new(|cx| FlashingPanel::new(self.focus_handle.clone(), cx));
+        let subscription = cx.subscribe_in(
+            &panel,
+            window,
+            |this, _, event: &FlashingPanelEvent, window, cx| {
+                match event {
+                    FlashingPanelEvent::Activated => {
+                        this.set_active_tab(Some(CenterTab::Flashing), window, cx);
+                    }
+                    FlashingPanelEvent::Closed => {
+                        this.flashing_tab = None;
+                        if this.active_tab == Some(CenterTab::Flashing) {
+                            this.set_active_tab(None, window, cx);
+                        }
+                    }
+                }
+                cx.notify();
+            },
+        );
+        self._subscriptions.push(subscription);
+        let focus = panel.read(cx).focus_handle(cx);
+        self._subscriptions
+            .push(follow_focus(CenterTab::Flashing, &focus, window, cx));
+        self.flashing_tab = Some(panel.clone());
+        self.dock_area.update(cx, |area, cx| {
+            area.add_panel_view(panel_handle(panel), DockPlacement::Center, None, window, cx);
+        });
+    }
+
+    fn on_flashing_action(
+        &mut self,
+        action: &FlashingAction,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(panel) = self.flashing_tab.clone() else {
+            return;
+        };
+        let command = action.0.clone();
+        if command == crate::flashing::FlashingCommand::Stop && self.flashing_needs_confirmation(cx)
+        {
+            if !window.has_active_dialog(cx) {
+                confirm_danger(
+                    t!("flashing.stop_title"),
+                    Some(t!("flashing.interruption")),
+                    t!("flashing.stop"),
+                    Rc::new(move |_, cx| {
+                        panel.update(cx, |panel, cx| panel.command(command.clone(), cx))
+                    }),
+                    window,
+                    cx,
+                );
+            }
+            return;
+        }
+        panel.update(cx, |panel, cx| panel.command(command, cx));
+    }
+
+    pub(super) fn flashing_needs_confirmation(&self, cx: &mut App) -> bool {
+        self.flashing_tab.as_ref().is_some_and(|panel| {
+            panel.update(cx, |panel, cx| {
+                if panel.drain_run_events() {
+                    cx.notify();
+                }
+                panel.is_burning() || panel.is_rebooting()
+            })
+        })
+    }
+
+    fn on_close_flashing(
+        &mut self,
+        _: &CloseFlashing,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(panel) = self.flashing_tab.clone() {
+            if self.flashing_needs_confirmation(cx) {
+                if !window.has_active_dialog(cx) {
+                    let workspace = cx.weak_entity();
+                    confirm_danger(
+                        t!("flashing.stop_title"),
+                        Some(t!("flashing.interruption")),
+                        t!("common.close"),
+                        Rc::new(move |window, cx| {
+                            let _ = workspace.update(cx, |workspace, cx| {
+                                workspace.remove_tab_panel(panel.clone(), window, cx)
+                            });
+                        }),
+                        window,
+                        cx,
+                    );
+                }
+            } else {
+                self.remove_tab_panel(panel, window, cx);
+            }
+        }
+    }
+
     fn on_install_cli_command(
         &mut self,
         _: &InstallCliCommand,
@@ -2660,6 +2829,7 @@ impl Workspace {
                 self.on_close_local_terminal(&CloseLocalTerminal(id), window, cx)
             }
             CenterTab::Settings => self.on_close_settings(&CloseSettings, window, cx),
+            CenterTab::Flashing => self.on_close_flashing(&CloseFlashing, window, cx),
             CenterTab::Editor(id) => self.on_close_editor(&CloseEditor(id), window, cx),
         }
     }
@@ -2685,6 +2855,10 @@ impl Workspace {
             }
             CenterTab::Settings => {
                 let panel = self.settings_tab.as_ref()?;
+                (panel.read(cx).tab_group(), panel.entity_id())
+            }
+            CenterTab::Flashing => {
+                let panel = self.flashing_tab.as_ref()?;
                 (panel.read(cx).tab_group(), panel.entity_id())
             }
             CenterTab::Editor(id) => {
@@ -2719,6 +2893,12 @@ impl Workspace {
                     .as_ref()
                     .filter(|panel| is(panel.entity_id()))
                     .map(|_| CenterTab::Settings)
+            })
+            .or_else(|| {
+                self.flashing_tab
+                    .as_ref()
+                    .filter(|panel| is(panel.entity_id()))
+                    .map(|_| CenterTab::Flashing)
             })
             .or_else(|| {
                 self.editors
@@ -2889,7 +3069,10 @@ impl Workspace {
             CenterTab::LocalTerminal(id) => {
                 Some(self.local_terminals.get(&id)?.read(cx).terminal().clone())
             }
-            CenterTab::Explorer(_) | CenterTab::Settings | CenterTab::Editor(_) => None,
+            CenterTab::Explorer(_)
+            | CenterTab::Settings
+            | CenterTab::Flashing
+            | CenterTab::Editor(_) => None,
         }
     }
 
@@ -4237,6 +4420,16 @@ impl Workspace {
             },
             _ => WorkspaceStatus::Host(None, None),
         };
+        let system_info =
+            if detached.is_none() && self.settings.read(cx).settings().status_system_info {
+                match self.active_tab {
+                    Some(CenterTab::Terminal(id)) => self.tools.read(cx).monitor_status(id, cx),
+                    _ => None,
+                }
+            } else {
+                None
+            };
+        let status = status.with_system_info(system_info, cx);
         let sidebar = self.sidebar_showing(cx);
         let running_forwards = self.forwards.read(cx).active_count();
         let tool = self.tool_showing(cx);
@@ -4327,6 +4520,9 @@ impl Workspace {
             .on_action(cx.listener(Self::on_disable_app_lock))
             .on_action(cx.listener(Self::on_lock_app))
             .on_action(cx.listener(Self::on_open_settings))
+            .on_action(cx.listener(Self::on_open_flashing))
+            .on_action(cx.listener(Self::on_flashing_action))
+            .on_action(cx.listener(Self::on_close_flashing))
             .on_action(cx.listener(Self::on_install_cli_command))
             .on_action(cx.listener(Self::on_remove_cli_command))
             .on_action(cx.listener(Self::on_install_agent_skill))
@@ -4465,6 +4661,7 @@ impl Workspace {
             .on_action(cx.listener(Self::on_show_credentials))
             .on_action(cx.listener(Self::on_show_remote_management))
             .on_action(cx.listener(Self::on_remote_action))
+            .on_action(cx.listener(Self::on_serial_maintenance_action))
             .on_action(cx.listener(Self::on_new_credential))
             .on_action(cx.listener(Self::on_generate_credential_key))
             .on_action(cx.listener(Self::on_edit_credential))

@@ -4,6 +4,160 @@
 use crate::support::*;
 
 #[gpui_kit::test]
+async fn status_system_info_is_opt_in_and_shares_monitor_without_growing_the_bar(
+    cx: &mut TestAppContext,
+) {
+    let factory = Arc::new(FakeTerminalFactory::answering(&[FIRST, SECOND]));
+    let (handle, workspace) =
+        open_workspace_with_remote_factory(cx, HostStore::seed(), factory.clone());
+    in_frame(cx, handle, |window, cx| {
+        window.click(("terminal-tab", INITIAL_WEB_TERMINAL), cx);
+    });
+    cx.executor().advance_clock(Duration::from_secs(3));
+    cx.run_until_parked();
+    let original_size = in_frame(cx, handle, |window, _| {
+        assert!(window.try_find("status-system-info").is_none());
+        assert!(window.try_find("monitor-cpu").is_none());
+        window
+            .find(("terminal", INITIAL_WEB_TERMINAL))
+            .bounds()
+            .size
+    });
+    assert!(factory.exec_commands().is_empty());
+    in_frame(cx, handle, |window, cx| window.click("open-settings", cx));
+    in_frame(cx, handle, |window, cx| {
+        window.within("settings").click("0-0", cx);
+    });
+    in_frame(cx, handle, |window, cx| {
+        let mut page = window.within("settings");
+        let mut group = page.within("group-0");
+        let mut row = group.within("item-4");
+        assert_eq!(row.find("check").checked(), Some(false));
+        row.click("check", cx);
+    });
+    cx.update(|cx| {
+        assert!(
+            workspace
+                .read(cx)
+                .settings()
+                .read(cx)
+                .settings()
+                .status_system_info
+        )
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.click(("terminal-tab", INITIAL_WEB_TERMINAL), cx);
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(6), |window, _| {
+        window.try_find("status-system-info").is_some_and(|field| {
+            field
+                .label()
+                .is_some_and(|label| label.contains("CPU 50.0%") && label.contains("/ 35.1%"))
+        })
+    })
+    .await;
+    in_frame(cx, handle, |window, _| {
+        let info = window.find("status-system-info");
+        let connection = window.find("status-connection");
+        let terminal_size = window.find("status-terminal-size");
+        let cpu = window.find("status-metric-cpu");
+        let memory = window.find("status-metric-memory");
+        let upload = window.find("status-metric-upload");
+        let download = window.find("status-metric-download");
+        let uptime = window.find("status-metric-uptime");
+        let disks = window.find("status-metric-disks");
+        assert!(info.visible());
+        assert!(!info.label().unwrap().contains("用户"));
+        assert_eq!(cpu.label(), Some("CPU 50.0%"));
+        assert!(memory.label().unwrap().contains("内存"));
+        assert!(upload.label().unwrap().starts_with("上行"));
+        assert!(download.label().unwrap().starts_with("下行"));
+        assert!(uptime.label().unwrap().starts_with("运行时间"));
+        assert!(disks.label().unwrap().contains("/ 35.1%"));
+        for metric in [&cpu, &memory, &upload, &download, &uptime, &disks] {
+            assert!(metric.visible());
+            assert_eq!(metric.bounds().center().y, connection.bounds().center().y);
+        }
+        assert!(cpu.bounds().right() < memory.bounds().left());
+        assert!(memory.bounds().right() < upload.bounds().left());
+        assert!(upload.bounds().right() < download.bounds().left());
+        assert!(download.bounds().right() < uptime.bounds().left());
+        assert!(uptime.bounds().right() < disks.bounds().left());
+        assert!(info.bounds().left() >= connection.bounds().right());
+        assert!(info.bounds().right() <= terminal_size.bounds().left());
+        assert_eq!(
+            window
+                .find(("terminal", INITIAL_WEB_TERMINAL))
+                .bounds()
+                .size,
+            original_size
+        );
+    });
+    assert!(
+        factory
+            .exec_commands()
+            .iter()
+            .all(|command| !command.contains("@@mtop"))
+    );
+    assert!(
+        factory
+            .exec_commands()
+            .iter()
+            .all(|command| !command.contains("who"))
+    );
+    in_frame(cx, handle, |window, cx| window.click("tool-monitor", cx));
+    cx.wait_for(handle.into(), Duration::from_secs(5), |window, _| {
+        window.try_find("monitor-memory-usage").is_some()
+            && window.try_find("status-system-info").is_some()
+    })
+    .await;
+    in_frame(cx, handle, |window, cx| window.click("tool-monitor", cx));
+    let settings = cx.update(|cx| workspace.read(cx).settings().clone());
+    settings.update(cx, |settings, cx| {
+        settings.update(|settings| settings.status_system_info = false, cx)
+    });
+    cx.run_until_parked();
+    in_frame(cx, handle, |window, _| {
+        assert!(window.try_find("status-system-info").is_none())
+    });
+    let count = factory.exec_commands().len();
+    cx.executor().advance_clock(Duration::from_secs(6));
+    cx.run_until_parked();
+    assert_eq!(factory.exec_commands().len(), count);
+}
+
+#[gpui_kit::test]
+async fn status_system_info_hides_on_disconnect_and_reports_unsupported_systems(
+    cx: &mut TestAppContext,
+) {
+    let factory = Arc::new(FakeTerminalFactory::answering(&["@@unsupported\nDarwin\n"]));
+    let (handle, workspace) = open_workspace_with_remote_factory(cx, HostStore::seed(), factory);
+    in_frame(cx, handle, |window, cx| {
+        window.click(("terminal-tab", INITIAL_WEB_TERMINAL), cx)
+    });
+    let settings = cx.update(|cx| workspace.read(cx).settings().clone());
+    settings.update(cx, |settings, cx| {
+        settings.update(|settings| settings.status_system_info = true, cx)
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(5), |window, _| {
+        window
+            .try_find("status-system-info")
+            .is_some_and(|field| field.label() == Some("系统信息：暂不支持此系统"))
+    })
+    .await;
+    in_frame(cx, handle, |window, cx| {
+        window.dispatch_action(
+            Box::new(DisconnectTerminal(RemoteTerminalId(INITIAL_WEB_TERMINAL))),
+            cx,
+        )
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window.try_find("status-system-info").is_none()
+    })
+    .await;
+}
+
+#[gpui_kit::test]
 async fn android_system_architecture_shows_the_application_abi(cx: &mut TestAppContext) {
     let output = FIRST.replace("@@arch\nx86_64", "@@arch\narm64-v8a");
     let factory = Arc::new(FakeTerminalFactory::answering(&[&output]));

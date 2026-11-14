@@ -33,6 +33,7 @@ pub struct AppSettings {
     pub terminal_theme: TerminalThemeSettings,
     pub terminal_background: TerminalBackgroundSettings,
     pub host_details: bool,
+    pub status_system_info: bool,
     pub terminal_font: TerminalFontSettings,
     /// 终端 → 终端交互.
     pub terminal_interaction: TerminalInteraction,
@@ -1314,8 +1315,10 @@ mod tests {
     #[test]
     fn terminals_show_the_menu_and_copy_only_on_command_unless_the_file_says_otherwise() {
         let settings: AppSettings = serde_json::from_str("{}").unwrap();
+        assert!(!settings.status_system_info);
         assert!(!settings.terminal_interaction.copy_on_select);
         assert!(!settings.terminal_interaction.hide_ai_citations);
+        assert!(settings.terminal_interaction.fit_fullscreen);
         assert_eq!(settings.terminal_interaction.right_click, RightClick::Menu);
         let settings: AppSettings =
             serde_json::from_str(r#"{"terminal_interaction":{"right_click":"paste"}}"#).unwrap();
@@ -1335,6 +1338,9 @@ mod tests {
             TerminalCursorStyle::Underline
         );
         assert!(!settings.terminal_interaction.cursor_blinking);
+        let settings: AppSettings =
+            serde_json::from_str(r#"{"terminal_interaction":{"fit_fullscreen":false}}"#).unwrap();
+        assert!(!settings.terminal_interaction.fit_fullscreen);
     }
 
     #[test]

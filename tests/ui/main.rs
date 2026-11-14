@@ -20,6 +20,8 @@ mod docker;
 mod editor;
 mod encoding;
 mod file_sidebar;
+#[cfg(windows)]
+mod flashing;
 mod forward;
 mod gpu;
 mod history;
@@ -34,6 +36,7 @@ mod processes;
 mod projects;
 mod remote_management;
 mod serial;
+mod serial_maintenance;
 mod serial_presence;
 mod serial_tools;
 mod services;

@@ -1,15 +1,24 @@
-//! 系统监控: the right sidebar's tool that shows the CPU, memory, network
-//! and disks of the host of the SSH terminal in front, read over that
-//! terminal's own connection. Linux hosts only, for now.
+//! 系统监控: CPU, memory, network and disks in the right sidebar and optional
+//! status bar, read over the front SSH terminal's own connection. Linux
+//! hosts only, for now.
 
 mod connection;
 mod hardware;
 mod linux;
 mod model;
 mod monitor_panel;
+mod status;
 
 pub use connection::{MonitorConnector, MonitorLink, SystemMonitorConnector};
 pub use monitor_panel::MonitorPanel;
+pub use status::MonitorStatus;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MonitorActivity {
+    Inactive,
+    StatusBar,
+    Sidebar,
+}
 
 /// A part of the system monitor that is folded away until asked for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -612,7 +612,7 @@ fn parse_listing(output: &[u8]) -> Result<DirectoryListing> {
     Ok(DirectoryListing::new(path, entries))
 }
 
-fn find_adb() -> Option<PathBuf> {
+pub(super) fn find_adb() -> Option<PathBuf> {
     let executable = if cfg!(windows) { "adb.exe" } else { "adb" };
     let mut directories = Vec::new();
     if let Some(path) = std::env::current_exe()
@@ -646,6 +646,14 @@ fn find_adb() -> Option<PathBuf> {
 }
 
 struct SystemRunner(PathBuf);
+
+pub(super) fn run_local_adb(program: PathBuf, args: &[&str]) -> Result<Vec<u8>> {
+    SystemRunner(program).run(
+        &args.iter().map(OsString::from).collect::<Vec<_>>(),
+        Duration::from_secs(10),
+        &mut || false,
+    )
+}
 impl Runner for SystemRunner {
     fn program(&self) -> Option<PathBuf> {
         Some(self.0.clone())

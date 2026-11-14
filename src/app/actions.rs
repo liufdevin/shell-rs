@@ -146,6 +146,8 @@ gpui_kit::actions!(
         ShowCredentials,
         ShowRemoteManagement,
         OpenAdbDevices,
+        /// Open the firmware flashing tab.
+        OpenFlashing,
         /// Open the new-credential dialog.
         NewCredential,
         /// Open the new-credential dialog at a key it generates.
@@ -194,6 +196,8 @@ gpui_kit::actions!(
         LockApp,
         /// Close the settings tab.
         CloseSettings,
+        /// Close the firmware flashing tab.
+        CloseFlashing,
         /// Increase the application base font (interface zoom).
         ZoomIn,
         /// Decrease the application base font (interface zoom).
@@ -282,10 +286,12 @@ pub struct SerialBackspaceChoice {
 }
 
 id_actions! {
+    SerialMaintenanceAction(crate::serial::maintenance::SerialMaintenanceCommand);
     RemoteAction(crate::remote::Command);
     LanAction(crate::lan::LanCommand);
     AdbDeviceAction(crate::adb::DeviceCommand);
     DeviceLogAction(crate::device_logs::DeviceLogCommand);
+    FlashingAction(crate::flashing::FlashingCommand);
     /// Ask where a new local or Cmder terminal starts, and whether it opens
     /// in an administrator window.
     OpenLocalTerminalOptions(LocalTerminalKind);
@@ -581,6 +587,8 @@ pub enum CenterTab {
     LocalTerminal(LocalTerminalId),
     /// There is at most one settings tab.
     Settings,
+    /// There is at most one firmware flashing tab.
+    Flashing,
     Editor(EditorId),
 }
 

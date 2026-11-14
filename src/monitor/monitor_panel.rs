@@ -44,14 +44,15 @@ const SECOND_READING: Duration = Duration::from_secs(1);
 /// Disks are read this seldom: they fill slowly, and `df` is the slowest
 /// part of a reading.
 const DISK_INTERVAL: Duration = Duration::from_secs(30);
+const STATUS_MAX_AGE: Duration = Duration::from_secs(10);
 /// 系统监控: the CPU, memory, network and disks of the host of the SSH
-/// terminal in front, read every two seconds while the panel shows.
+/// terminal in front, read every two seconds while a monitor surface shows.
 ///
 /// Each reading runs `linux::command` beside the shell, on the terminal's
 /// own connection: no second login, nothing asked again. What does not
 /// change while connected is asked once per connection, the disks every
 /// half minute, so most readings start no process on the host but the `sh`
-/// running them. Nothing runs on the host while the panel is hidden. What
+/// running them. Nothing runs unless the panel or optional status bar asks. What
 /// each terminal's host showed last is kept, so coming back to a terminal
 /// shows its numbers at once.
 pub struct MonitorPanel {
@@ -59,6 +60,7 @@ pub struct MonitorPanel {
     connector: Option<Arc<dyn MonitorConnector>>,
     serial: Option<(HostId, MonitorSettings)>,
     native_ssh: bool,
+    collect_hardware: bool,
     target: Option<ExecTarget>,
     active: bool,
     hosts: HashMap<RemoteTerminalId, HostState>,
@@ -73,6 +75,7 @@ pub struct MonitorPanel {
     /// they work whatever is focused.
     dispatch: FocusHandle,
     sampling: Option<Task<()>>,
+    status_expiry: Option<Task<()>>,
     channels_unfolded: bool,
 }
 
@@ -85,6 +88,7 @@ struct HostState {
     updated: Option<String>,
     tracker: Tracker,
     snapshot: Option<Snapshot>,
+    sampled_at: Option<Instant>,
     /// With the terminal's connection it was read on: a reconnect may land
     /// on another machine.
     system: Option<(u64, SystemInfo)>,
@@ -160,6 +164,7 @@ impl MonitorPanel {
             connector: None,
             serial: None,
             native_ssh: false,
+            collect_hardware: false,
             target: None,
             active: false,
             hosts: HashMap::new(),
@@ -168,6 +173,7 @@ impl MonitorPanel {
             interfaces_unfolded: false,
             dispatch,
             sampling: None,
+            status_expiry: None,
             channels_unfolded: false,
         }
     }
@@ -184,19 +190,22 @@ impl MonitorPanel {
         cx.notify();
     }
 
-    /// Read `target`'s host while `active`, the panel showing it.
+    /// Read `target`'s host for the active monitor surface.
     pub fn set_target(
         &mut self,
         target: Option<ExecTarget>,
         serial: Option<(HostId, MonitorSettings)>,
         native_ssh: bool,
-        active: bool,
+        activity: super::MonitorActivity,
         cx: &mut Context<Self>,
     ) {
+        let active = activity != super::MonitorActivity::Inactive;
+        let collect_hardware = activity == super::MonitorActivity::Sidebar;
         if self.target == target
             && self.serial == serial
             && self.native_ssh == native_ssh
             && self.active == active
+            && self.collect_hardware == collect_hardware
         {
             return;
         }
@@ -204,8 +213,56 @@ impl MonitorPanel {
         self.serial = serial;
         self.native_ssh = native_ssh;
         self.active = active;
+        self.collect_hardware = collect_hardware;
         self.restart(cx);
         cx.notify();
+    }
+
+    pub fn status(&self, cx: &App) -> Option<super::MonitorStatus> {
+        if !self.active || !self.native_ssh {
+            return None;
+        }
+        let target = self.target.as_ref()?;
+        let view = target.view.upgrade()?;
+        let view = view.read(cx);
+        if view.lifecycle(cx) != crate::terminal::TerminalLifecycle::Running {
+            return None;
+        }
+        let loading = || {
+            let text = t!("monitor.status.loading");
+            super::MonitorStatus::message(text.clone(), text)
+        };
+        let Some(host) = self
+            .hosts
+            .get(&target.terminal)
+            .filter(|host| host.generation == view.generation(cx))
+        else {
+            return Some(loading());
+        };
+        if let Some(problem) = &host.problem {
+            let text = match problem {
+                Problem::Unsupported(_) => t!("monitor.status.unsupported"),
+                _ => t!("monitor.status.unavailable"),
+            };
+            let details = match problem {
+                Problem::Failed(error) => error.clone().into(),
+                _ => text.clone(),
+            };
+            return Some(super::MonitorStatus::message(text, details));
+        }
+        if host.sampled_at.is_none_or(|at| {
+            cx.background_executor().now().saturating_duration_since(at) >= STATUS_MAX_AGE
+        }) {
+            return Some(loading());
+        }
+        let snapshot = host.snapshot.as_ref()?;
+        Some(super::MonitorStatus::reading(
+            snapshot,
+            host.system.as_ref().map(|(_, system)| system),
+            host.disks
+                .as_ref()
+                .map_or(&[], |(_, disks)| disks.as_slice()),
+        ))
     }
 
     pub fn set_connector(&mut self, connector: Arc<dyn MonitorConnector>, cx: &mut Context<Self>) {
@@ -234,11 +291,12 @@ impl MonitorPanel {
     /// answered to no one.
     fn restart(&mut self, cx: &mut Context<Self>) {
         self.sampling = None;
+        self.schedule_status_expiry(cx);
         let Some(target) = self.target.clone().filter(|_| self.active) else {
             return;
         };
         let serial = self.serial.clone();
-        let native_ssh = self.native_ssh;
+        let native_ssh = self.native_ssh && self.collect_hardware;
         if !native_ssh && let Some(host) = self.hosts.get_mut(&target.terminal) {
             host.hardware_enabled = false;
             host.hardware.clear();
@@ -499,6 +557,7 @@ impl MonitorPanel {
                         host.disks = Some((now, disks));
                     }
                     host.snapshot = Some(host.tracker.update(*reading, now));
+                    host.sampled_at = Some(now);
                     None
                 }
                 Parsed::Unsupported(system) => Some(Problem::Unsupported(system)),
@@ -507,7 +566,41 @@ impl MonitorPanel {
         if host.problem.is_some() {
             host.hardware.clear();
         }
+        self.schedule_status_expiry(cx);
         cx.notify();
+    }
+
+    fn schedule_status_expiry(&mut self, cx: &mut Context<Self>) {
+        self.status_expiry = None;
+        let Some(target) = self
+            .target
+            .as_ref()
+            .filter(|_| self.active && self.native_ssh)
+        else {
+            return;
+        };
+        let terminal = target.terminal;
+        let Some(host) = self.hosts.get(&terminal) else {
+            return;
+        };
+        let Some(at) = host.sampled_at else {
+            return;
+        };
+        let generation = host.generation;
+        let remaining = STATUS_MAX_AGE
+            .saturating_sub(cx.background_executor().now().saturating_duration_since(at));
+        self.status_expiry = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(remaining).await;
+            let _ = this.update(cx, |this, cx| {
+                if let Some(host) = this.hosts.get_mut(&terminal)
+                    && host.generation == generation
+                    && host.sampled_at == Some(at)
+                {
+                    host.sampled_at = None;
+                    cx.notify();
+                }
+            });
+        }));
     }
 }
 

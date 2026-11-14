@@ -59,6 +59,16 @@ fn connection_text(state: ConnectionState, name: &str) -> SharedString {
 
 impl RenderOnce for WorkspaceStatus {
     fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+        self.with_system_info(None, cx)
+    }
+}
+
+impl WorkspaceStatus {
+    pub(super) fn with_system_info(
+        self,
+        system_info: Option<crate::monitor::MonitorStatus>,
+        cx: &App,
+    ) -> impl IntoElement {
         let muted = cx.theme().muted_foreground;
         // Red when something is wrong: a dropped connection, or an SFTP
         // tab's directory that could not be read.
@@ -184,6 +194,7 @@ impl RenderOnce for WorkspaceStatus {
         };
 
         let danger = cx.theme().danger;
+        let has_system_info = system_info.is_some();
         StatusBar::new()
             .left(
                 div()
@@ -201,6 +212,8 @@ impl RenderOnce for WorkspaceStatus {
             .when_some(address, |bar, address| {
                 bar.left(Separator::vertical()).left(address)
             })
+            .when(has_system_info, |bar| bar.left(Separator::vertical()))
+            .children(system_info)
             .map(|bar| match editor {
                 Some((cursor, format)) => bar
                     .right(

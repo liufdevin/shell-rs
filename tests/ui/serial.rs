@@ -165,6 +165,59 @@ fn serial_store() -> (HostStore, HostId) {
     (store, id)
 }
 
+#[gpui_kit::test]
+async fn fullscreen_fit_does_not_resize_serial_text(cx: &mut TestAppContext) {
+    let (store, id) = serial_store();
+    let factory = Arc::new(FakeTerminalFactory::printing(
+        "\x1b[?1049hserial-fullscreen",
+    ));
+    let serial = Arc::new(FixedSerialTerminalTransportProvider::new(factory.clone()));
+    let (handle, workspace) =
+        open_workspace_with_terminals(cx, store, Arc::new(FakeTerminalFactory::default()), serial);
+    let settings = cx.update(|cx| workspace.read(cx).settings().clone());
+    settings.update(cx, |settings, cx| {
+        settings.update(
+            |settings| {
+                settings.terminal_font.size = 18.;
+                settings.terminal_font.line_height = 1.54;
+            },
+            cx,
+        );
+    });
+    connect(cx, handle, id).await;
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        window.render_frame(cx);
+        workspace
+            .read(cx)
+            .remote_terminal(RemoteTerminalId(1))
+            .unwrap()
+            .read(cx)
+            .terminal()
+            .read(cx)
+            .screen_text(cx)
+            .contains("serial-fullscreen")
+            && factory
+                .resizes
+                .lock()
+                .unwrap()
+                .last()
+                .is_some_and(|size| size.cell_height() == 28)
+    })
+    .await;
+    let previous_rows = factory.resizes.lock().unwrap().last().unwrap().rows();
+    cx.simulate_window_resize(handle.into(), size(px(1280.), px(680.)));
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        window.render_frame(cx);
+        factory
+            .resizes
+            .lock()
+            .unwrap()
+            .last()
+            .is_some_and(|size| size.cell_height() == 28 && size.rows() < previous_rows)
+    })
+    .await;
+}
+
 fn serial_directory(path: &str, entries: &[(&str, &str)]) -> String {
     use base64::Engine as _;
     let mut bytes = format!("P\0{path}\0").into_bytes();

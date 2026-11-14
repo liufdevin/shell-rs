@@ -9,8 +9,8 @@ use gpui_kit::*;
 
 use crate::app::{
     CatalogIcon, NewCmderTerminal, NewLocalTerminal, NewTemporaryConnection, OpenAdbDevices,
-    OpenLocalTerminalOptions, QuickConnect, ShowCredentials, ShowForwards, ShowHosts, ShowUpdate,
-    StartLocalTerminal, ToggleHostPanel, ToggleTheme,
+    OpenFlashing, OpenLocalTerminalOptions, QuickConnect, ShowCredentials, ShowForwards, ShowHosts,
+    ShowUpdate, StartLocalTerminal, ToggleHostPanel, ToggleTheme,
 };
 use crate::i18n::t;
 use crate::shared::tinted;
@@ -38,7 +38,8 @@ pub fn render_title_bar(
     let dark = cx.theme().is_dark();
     let devices = target.clone();
     let cmder = target.clone();
-    let (mode, quick, temporary, new_local, theme, show_update) = (
+    let (mode, quick, temporary, new_local, theme, show_update, flashing) = (
+        target.clone(),
         target.clone(),
         target.clone(),
         target.clone(),
@@ -150,6 +151,19 @@ pub fn render_title_bar(
                             devices.dispatch_action(&OpenAdbDevices, window, cx)
                         }),
                 )
+                .when(cfg!(windows), |row| {
+                    row.child(
+                        Button::new("open-flashing")
+                            .ghost()
+                            .small()
+                            .icon(CatalogIcon::Upload)
+                            .tooltip(t!("flashing.title"))
+                            .accessibility_label(t!("flashing.title"))
+                            .on_click(move |_, window, cx| {
+                                flashing.dispatch_action(&OpenFlashing, window, cx)
+                            }),
+                    )
+                })
                 .child(
                     // Saved hosts are made in the host list; up here is the
                     // quick way in, to a host that is not saved.

@@ -867,6 +867,7 @@ fn terminal_themes_follow_the_appearance_and_a_card_chooses_one(cx: &mut TestApp
     };
     let light = TerminalTheme::for_mode(ThemeMode::Light).nth(1).unwrap();
     let dark = TerminalTheme::for_mode(ThemeMode::Dark).nth(1).unwrap();
+    cx.simulate_window_resize(handle.into(), size(px(1280.), px(1200.)));
 
     set_appearance(Appearance::Light, cx);
     assert_eq!(in_effect(cx), "shellrs-light");

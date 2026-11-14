@@ -5,8 +5,8 @@ use gpui_kit::component::{
 use gpui_kit::*;
 
 use crate::app::{
-    CenterTab, CloseEditor, CloseExplorer, CloseLocalTerminal, CloseScope, CloseSettings,
-    CloseTabs, CloseTerminal, DetachTab,
+    CenterTab, CloseEditor, CloseExplorer, CloseFlashing, CloseLocalTerminal, CloseScope,
+    CloseSettings, CloseTabs, CloseTerminal, DetachTab,
 };
 use crate::i18n::t;
 
@@ -34,9 +34,13 @@ pub fn close_tab_items(
         |scope: CloseScope| position.is_none_or(|(len, ix)| scope.targets(len, ix).is_empty());
     let batch = |scope| Box::new(CloseTabs { tab, scope });
 
-    menu.menu(t!("shared.tab_menu.detach"), Box::new(DetachTab(tab)))
-        .separator()
-        .menu(t!("common.close"), close_action(tab))
+    let menu = if matches!(tab, CenterTab::Flashing) {
+        menu
+    } else {
+        menu.menu(t!("shared.tab_menu.detach"), Box::new(DetachTab(tab)))
+            .separator()
+    };
+    menu.menu(t!("common.close"), close_action(tab))
         .menu_with_disabled(
             t!("shared.tab_menu.close_left"),
             batch(CloseScope::Left),
@@ -61,6 +65,7 @@ fn close_action(tab: CenterTab) -> Box<dyn Action> {
         CenterTab::Explorer(id) => Box::new(CloseExplorer(id)),
         CenterTab::LocalTerminal(id) => Box::new(CloseLocalTerminal(id)),
         CenterTab::Settings => Box::new(CloseSettings),
+        CenterTab::Flashing => Box::new(CloseFlashing),
         CenterTab::Editor(id) => Box::new(CloseEditor(id)),
     }
 }

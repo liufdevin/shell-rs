@@ -267,6 +267,7 @@ impl Workspace {
             CenterTab::Settings => self
                 .settings_tab()
                 .map(|panel| (PanelId::from(panel.entity_id()), panel.clone().into())),
+            CenterTab::Flashing => None,
         }
         .filter(|(panel, _)| self.dock_area.read(cx).panel(*panel).is_some())
     }
@@ -401,6 +402,7 @@ impl Workspace {
                     self.transfer_out(panel.clone(), &area, window, cx);
                 }
             }
+            CenterTab::Flashing => {}
         }
         cx.notify();
     }
@@ -575,6 +577,7 @@ impl Workspace {
                                 });
                             }
                         }
+                        CenterTab::Flashing => {}
                     }
                     workspace.finish_detached_tab(tab, cx);
                     window.activate_window();

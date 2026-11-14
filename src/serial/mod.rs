@@ -4,6 +4,7 @@
 mod diagnostics;
 mod file_picker;
 pub mod files;
+pub mod maintenance;
 mod message;
 mod ports;
 mod presence;

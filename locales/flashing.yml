@@ -1,0 +1,187 @@
+_version: 2
+flashing.title:
+  zh-CN: 固件烧录
+  en: Firmware flashing
+flashing.firmware:
+  zh-CN: 固件文件
+  en: Firmware
+flashing.no_firmware:
+  zh-CN: 尚未选择固件
+  en: No firmware selected
+flashing.choose:
+  zh-CN: 选择固件…
+  en: Choose firmware…
+flashing.start:
+  zh-CN: 开始烧录
+  en: Start flashing
+flashing.start_tooltip:
+  zh-CN: 通过 ADB 让已开机设备重启到 efex，再自动烧录
+  en: Reboot the running device to efex over ADB, then burn automatically
+flashing.start_unavailable:
+  zh-CN: 等待烧录时只连接一台已授权的 USB ADB 设备，或按开发板 FEL 键
+  en: While waiting, connect one authorized USB ADB device or press the board's FEL key
+flashing.stop:
+  zh-CN: 停止
+  en: Stop
+flashing.stop_title:
+  zh-CN: 中断固件烧录？
+  en: Interrupt firmware flashing?
+flashing.interruption:
+  zh-CN: 如果设备正在写入固件，中断可能导致设备无法启动。
+  en: Interrupting a firmware write may leave the device unable to start.
+flashing.quit:
+  zh-CN: 中断并退出
+  en: Interrupt and quit
+flashing.quit_unsaved:
+  zh-CN: "中断烧录可能导致设备无法启动。退出同时会丢弃未保存的文件更改：%{files}"
+  en: "Interrupting flashing may leave the device unable to start. Quitting also discards unsaved changes to: %{files}"
+flashing.resume:
+  zh-CN: 继续等待
+  en: Wait again
+flashing.elapsed:
+  zh-CN: 已用时 %{time}
+  en: "Elapsed %{time}"
+flashing.overall:
+  zh-CN: 总进度
+  en: Overall
+flashing.device:
+  zh-CN: 设备 %{number}
+  en: "Device %{number}"
+flashing.stage:
+  zh-CN: 当前阶段：%{stage}
+  en: "Stage: %{stage}"
+flashing.phase.no_firmware:
+  zh-CN: 未选择固件
+  en: No firmware
+flashing.phase.waiting:
+  zh-CN: 等待设备
+  en: Waiting for device
+flashing.phase.burning:
+  zh-CN: 正在烧录
+  en: Flashing
+flashing.phase.failed:
+  zh-CN: 烧录失败
+  en: Failed
+flashing.phase.stopped:
+  zh-CN: 已停止
+  en: Stopped
+flashing.hint.no_firmware:
+  zh-CN: 选择固件后会自动进入等待设备状态
+  en: Choosing firmware starts waiting for a device
+flashing.hint.waiting:
+  zh-CN: 按开发板 FEL 键，或通过 ADB 重启已开机设备
+  en: Press the board's FEL key, or reboot a running device over ADB
+flashing.hint.burning:
+  zh-CN: 正在写入固件，请勿断开设备
+  en: Writing firmware; do not disconnect the device
+flashing.hint.failed:
+  zh-CN: 查看日志后可以继续等待或重新选择固件
+  en: Check the log, then wait again or choose another firmware
+flashing.hint.stopped:
+  zh-CN: 已停止；可以继续等待下一台设备
+  en: Stopped; wait again for the next device
+flashing.result.success:
+  zh-CN: 上一次烧录成功
+  en: Last flash succeeded
+flashing.result.failed:
+  zh-CN: 本次烧录失败
+  en: This run failed
+flashing.mode.keep:
+  zh-CN: 保留数据
+  en: Keep data
+flashing.mode.logical:
+  zh-CN: 分区擦除
+  en: Erase logical
+flashing.mode.all:
+  zh-CN: 全盘擦除
+  en: Erase all
+flashing.adb.label:
+  zh-CN: ADB 设备
+  en: ADB device
+flashing.adb.checking:
+  zh-CN: 正在检查…
+  en: Checking…
+flashing.adb.idle:
+  zh-CN: 等待烧录工具就绪后检测
+  en: Checked once the flashing tool is ready
+flashing.adb.multiple:
+  zh-CN: 检测到多台 USB ADB 设备；请只保留目标设备
+  en: Multiple USB ADB devices detected; leave only the target connected
+flashing.adb.empty:
+  zh-CN: 未发现已开机设备
+  en: No running device found
+flashing.adb.ready:
+  zh-CN: 已连接：%{serial}
+  en: "Connected: %{serial}"
+flashing.adb.error:
+  zh-CN: ADB 检查失败：%{error}
+  en: "ADB check failed: %{error}"
+flashing.tool.ready:
+  zh-CN: 工具：%{path}
+  en: "Tool: %{path}"
+flashing.tool.missing:
+  zh-CN: 未找到 PhoenixConsole_Windows（需要 PhoenixConsole.exe 和 adb.exe）
+  en: PhoenixConsole_Windows was not found (PhoenixConsole.exe and adb.exe are required)
+flashing.log.title:
+  zh-CN: 烧录日志
+  en: Flash log
+flashing.log.lines:
+  zh-CN: "%{count} 行"
+  en: "%{count} lines"
+flashing.log.follow:
+  zh-CN: 跟随输出
+  en: Follow output
+flashing.log.clear:
+  zh-CN: 清空
+  en: Clear
+flashing.log.cleared:
+  zh-CN: 日志已清空。
+  en: The log was cleared.
+flashing.log.ready:
+  zh-CN: 烧录页已就绪；选择固件后会自动等待设备。
+  en: The flashing page is ready. Choosing firmware starts waiting for a device.
+flashing.log.tool_missing:
+  zh-CN: 未找到 PhoenixConsole_Windows，请把工具放到程序旁边的 PhoenixConsole_Windows 目录。
+  en: PhoenixConsole_Windows was not found. Put it in the PhoenixConsole_Windows directory beside the program.
+flashing.log.pick_failed:
+  zh-CN: 选择固件失败：%{error}
+  en: "Could not choose firmware: %{error}"
+flashing.log.firmware_missing:
+  zh-CN: "请选择有效的 .img 固件文件：%{path}"
+  en: "Choose a valid .img firmware file: %{path}"
+flashing.log.firmware_selected:
+  zh-CN: 已选择固件：%{path}
+  en: "Firmware selected: %{path}"
+flashing.log.waiting:
+  zh-CN: 等待设备接入；请按开发板 FEL 键，或点“开始烧录”通过 ADB 重启设备。
+  en: Waiting for a device. Press the board's FEL key, or use Start flashing to reboot over ADB.
+flashing.log.wait_timeout:
+  zh-CN: 设备检测超时，自动继续等待。
+  en: Device detection timed out; waiting again.
+flashing.log.device_found:
+  zh-CN: 检测到设备，开始烧录。
+  en: Device detected; flashing started.
+flashing.log.success:
+  zh-CN: 烧录成功。
+  en: Flashing succeeded.
+flashing.log.next_device:
+  zh-CN: 已回到等待设备状态，可以接入下一台。
+  en: Waiting for the next device.
+flashing.log.failed:
+  zh-CN: 烧录失败（退出码 %{code}），请查看日志。
+  en: "Flashing failed (exit code %{code}); check the log."
+flashing.log.stopped:
+  zh-CN: 已停止等待或烧录。
+  en: Waiting or flashing was stopped.
+flashing.log.start_failed:
+  zh-CN: 无法启动 PhoenixConsole：%{error}
+  en: "Could not start PhoenixConsole: %{error}"
+flashing.log.adb_reboot:
+  zh-CN: 正在通过 ADB 重启设备 %{serial} 到 efex…
+  en: "Rebooting %{serial} to efex over ADB…"
+flashing.log.adb_failed:
+  zh-CN: ADB 命令失败：%{error}
+  en: "ADB command failed: %{error}"
+flashing.log.adb_changed:
+  zh-CN: USB ADB 设备已变化，未发送重启命令。
+  en: The USB ADB device changed. No reboot command was sent.
