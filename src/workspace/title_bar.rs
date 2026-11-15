@@ -32,6 +32,7 @@ pub fn render_title_bar(
     forwards: usize,
     update: Option<UpdateBadge>,
     cmder_available: bool,
+    flashing_enabled: bool,
     target: &FocusHandle,
     cx: &App,
 ) -> TitleBar {
@@ -151,12 +152,14 @@ pub fn render_title_bar(
                             devices.dispatch_action(&OpenAdbDevices, window, cx)
                         }),
                 )
-                .when(cfg!(windows), |row| {
+                .when(cfg!(windows) && flashing_enabled, |row| {
                     row.child(
                         Button::new("open-flashing")
                             .ghost()
                             .small()
-                            .icon(CatalogIcon::Upload)
+                            .w_6()
+                            .px_1()
+                            .child(crate::flashing::FlashingMark)
                             .tooltip(t!("flashing.title"))
                             .accessibility_label(t!("flashing.title"))
                             .on_click(move |_, window, cx| {

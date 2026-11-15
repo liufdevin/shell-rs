@@ -11,6 +11,7 @@ icon_assets!(
     ExtraIcons,
     [
         Server,
+        CircuitBoard,
         Gpu,
         Layers,
         LogOut,
@@ -145,9 +146,14 @@ os_icons! {
 /// single-path and monochrome like the operating-system marks.
 pub const ADB_ICON: &str = "icons/brand/adb.svg";
 pub const SERIAL_ICON: &str = "icons/serial.svg";
+pub const FLASHING_ICON: &str = "icons/flashing.svg";
 
 const BRAND_ICONS: &[(&str, &[u8])] = &[
     (SERIAL_ICON, include_bytes!("../../assets/icons/serial.svg")),
+    (
+        FLASHING_ICON,
+        include_bytes!("../../assets/icons/flashing.svg"),
+    ),
     (ADB_ICON, include_bytes!("../../assets/icons/brand/adb.svg")),
     (
         DOCKER_ICON,
@@ -240,6 +246,15 @@ mod tests {
             .unwrap()
             .expect("in the bundle");
         assert!(String::from_utf8_lossy(&bytes).contains("<title>Serial port</title>"));
+    }
+
+    #[test]
+    fn firmware_flashing_has_its_rocket_mark() {
+        let bytes = AppAssets
+            .load(super::FLASHING_ICON)
+            .unwrap()
+            .expect("in the bundle");
+        assert!(String::from_utf8_lossy(&bytes).contains("<title>Firmware flashing</title>"));
     }
 
     #[test]

@@ -1,4 +1,7 @@
 _version: 2
+serial.shell.settings:
+  zh-CN: 监控设置
+  en: Monitor settings
 serial.presence.checking:
   zh-CN: 正在检测串口设备
   en: Checking serial port

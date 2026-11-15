@@ -2262,11 +2262,9 @@ impl Workspace {
         let integration = self.cli_integration.clone();
         // Something may have been installed or removed since last time.
         integration.update(cx, |integration, cx| integration.refresh(cx));
-        let updater = self.updater.clone();
         let sync = self.sync.clone();
         let cmder = self.cmder.clone();
-        let panel =
-            cx.new(|cx| SettingsPanel::new(store, integration, updater, sync, cmder, window, cx));
+        let panel = cx.new(|cx| SettingsPanel::new(store, integration, sync, cmder, window, cx));
         panel.update(cx, |panel, cx| panel.set_lan(self.lan.clone(), window, cx));
         let subscription = cx.subscribe_in(
             &panel,
@@ -2301,7 +2299,10 @@ impl Workspace {
     /// stays alive while hidden, so a run keeps going when another tab is
     /// looked at.
     fn on_open_flashing(&mut self, _: &OpenFlashing, window: &mut Window, cx: &mut Context<Self>) {
-        if !cfg!(windows) || window.has_active_dialog(cx) {
+        if !cfg!(windows)
+            || !self.settings.read(cx).settings().flashing_enabled
+            || window.has_active_dialog(cx)
+        {
             return;
         }
         if let Some(panel) = self.flashing_tab.clone() {
@@ -2310,7 +2311,8 @@ impl Workspace {
             panel.update(cx, |panel, cx| panel.show(window, cx));
             return;
         }
-        let panel = cx.new(|cx| FlashingPanel::new(self.focus_handle.clone(), cx));
+        let panel =
+            cx.new(|cx| FlashingPanel::new(self.focus_handle.clone(), self.settings.clone(), cx));
         let subscription = cx.subscribe_in(
             &panel,
             window,
@@ -4721,6 +4723,7 @@ impl Workspace {
                         running_forwards,
                         self.updater.read(cx).snapshot().badge(),
                         self.cmder.read(cx).directory().is_some(),
+                        self.settings.read(cx).settings().flashing_enabled,
                         &self.focus_handle,
                         cx,
                     ))

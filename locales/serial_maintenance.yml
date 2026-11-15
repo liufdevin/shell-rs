@@ -6,8 +6,8 @@ serial.maintenance.open:
   zh-CN: 清理未连接的 USB 串口…
   en: Clean up disconnected USB serial ports…
 serial.maintenance.settings_description:
-  zh-CN: 扫描并选择本机未连接的 USB 串口设备，确认后请求管理员权限移除残留记录；不修改在线设备和驱动包。
-  en: Scan and select disconnected local USB serial devices, then approve administrator access to remove stale records. Present devices and driver packages are not modified.
+  zh-CN: 扫描并选择本机未连接的 USB 串口设备，确认后请求管理员权限移除残留记录。
+  en: Scan and select disconnected local USB serial devices, then approve administrator access to remove stale records.
 serial.maintenance.keywords:
   zh-CN: 串口 COM USB 清理 端口 设备 管理员
   en: serial COM USB cleanup ports devices administrator

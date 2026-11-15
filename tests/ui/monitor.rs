@@ -4,6 +4,52 @@
 use crate::support::*;
 
 #[gpui_kit::test]
+async fn disk_status_tooltips_follow_only_the_hovered_mount(cx: &mut TestAppContext) {
+    let output = FIRST.replace(
+        "@@df\n",
+        "@@df\n/dev/vdb1 1000000 750000 250000 75% /data\n",
+    );
+    let factory = Arc::new(FakeTerminalFactory::answering(&[&output]));
+    let (handle, workspace) = open_workspace_with_remote_factory(cx, HostStore::seed(), factory);
+    in_frame(cx, handle, |window, cx| {
+        window.click(("terminal-tab", INITIAL_WEB_TERMINAL), cx)
+    });
+    let settings = workspace.read_with(cx, |workspace, _| workspace.settings().clone());
+    settings.update(cx, |store, cx| {
+        store.update(|settings| settings.status_system_info = true, cx)
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(5), |window, _| {
+        window.try_find("status-disk:/data").is_some()
+    })
+    .await;
+    for mount in ["/", "/data", "/"] {
+        let id = gpui_kit::SharedString::from(format!("status-disk:{mount}"));
+        let expected = in_frame(cx, handle, |window, cx| {
+            let value = window.find(id.clone());
+            let detail = value.label().unwrap().to_string();
+            window.dispatch_event(
+                gpui_kit::PlatformInput::MouseMove(MouseMoveEvent {
+                    position: value.bounds().center(),
+                    pressed_button: None,
+                    modifiers: Default::default(),
+                }),
+                cx,
+            );
+            detail
+        });
+        cx.executor().advance_clock(Duration::from_secs(1));
+        cx.run_until_parked();
+        in_frame(cx, handle, |window, _| {
+            assert_eq!(
+                window.find("status-metric-tooltip").label(),
+                Some(expected.as_str())
+            );
+            assert!(!expected.contains('\n'));
+        });
+    }
+}
+
+#[gpui_kit::test]
 async fn status_system_info_is_opt_in_and_shares_monitor_without_growing_the_bar(
     cx: &mut TestAppContext,
 ) {
@@ -611,6 +657,10 @@ async fn serial_monitor_preferences_are_edited_independently_per_host(cx: &mut T
         window.dispatch_action(Box::new(EditHost(first)), cx)
     });
     in_frame(cx, handle, |window, cx| {
+        assert!(window.try_find("host-monitor-channel").is_none());
+        window.click("host-serial-shell-details", cx);
+    });
+    in_frame(cx, handle, |window, cx| {
         assert_eq!(
             window.find("host-monitor-channel").value(),
             Some("自动（SSH → ADB → 串口）")
@@ -641,6 +691,10 @@ async fn serial_monitor_preferences_are_edited_independently_per_host(cx: &mut T
     in_frame(cx, handle, |window, cx| {
         window.click("host-search", cx);
         window.dispatch_action(Box::new(EditHost(first)), cx);
+    });
+    in_frame(cx, handle, |window, cx| {
+        assert!(window.try_find("host-monitor-channel").is_none());
+        window.click("host-serial-shell-details", cx);
     });
     in_frame(cx, handle, |window, _| {
         assert_eq!(window.find("host-monitor-channel").value(), Some("ADB"));

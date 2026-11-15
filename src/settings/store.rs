@@ -185,6 +185,97 @@ mod tests {
     use crate::settings::{AppSettings, Appearance, InterfaceLanguage};
 
     #[test]
+    fn flashing_is_opt_in_and_the_tool_directory_survives_reloading() {
+        let defaults: AppSettings = serde_json::from_str("{}").unwrap();
+        assert!(!defaults.flashing_enabled);
+        assert!(defaults.flashing_tool_directory.is_none());
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let tools = directory.path().join("PhoenixTools");
+        let (mut store, _) = SettingsStore::load(path.clone());
+        store
+            .update_unnotified(|settings| {
+                settings.flashing_enabled = true;
+                settings.flashing_tool_directory = Some(tools.clone());
+            })
+            .unwrap()
+            .unwrap();
+        let (mut reloaded, problem) = SettingsStore::load(path.clone());
+        assert!(problem.is_none());
+        assert!(reloaded.settings().flashing_enabled);
+        assert_eq!(
+            reloaded.settings().flashing_tool_directory,
+            Some(tools.clone())
+        );
+        reloaded
+            .update_unnotified(|settings| settings.flashing_enabled = false)
+            .unwrap()
+            .unwrap();
+        let (reloaded, problem) = SettingsStore::load(path);
+        assert!(problem.is_none());
+        assert!(!reloaded.settings().flashing_enabled);
+        assert_eq!(reloaded.settings().flashing_tool_directory, Some(tools));
+    }
+
+    #[test]
+    fn flashing_erase_modes_survive_reloading_and_old_settings_keep_data() {
+        use crate::flashing::EraseMode;
+
+        let defaults: AppSettings = serde_json::from_str("{}").unwrap();
+        assert_eq!(defaults.flashing_erase_mode, EraseMode::KeepData);
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        for mode in [
+            EraseMode::EraseLogical,
+            EraseMode::EraseAll,
+            EraseMode::KeepData,
+        ] {
+            let (mut store, problem) = SettingsStore::load(path.clone());
+            assert!(problem.is_none());
+            store
+                .update_unnotified(|settings| settings.flashing_erase_mode = mode)
+                .unwrap()
+                .unwrap();
+            let (reloaded, problem) = SettingsStore::load(path.clone());
+            assert!(problem.is_none());
+            assert_eq!(reloaded.settings().flashing_erase_mode, mode);
+        }
+    }
+
+    #[test]
+    fn flashing_firmware_path_survives_reloading_without_requiring_the_file_to_be_online() {
+        let defaults: AppSettings = serde_json::from_str("{}").unwrap();
+        assert!(defaults.flashing_firmware_path.is_none());
+        let folder = tempfile::tempdir().unwrap();
+        let settings_path = folder.path().join("settings.json");
+        let mut images = vec![folder.path().join("offline.img")];
+        if cfg!(windows) {
+            images.push(PathBuf::from(r"\\192.0.2.10\firmware\开发板.IMG"));
+        }
+        for image in images {
+            let (mut store, problem) = SettingsStore::load(settings_path.clone());
+            assert!(problem.is_none());
+            store
+                .update_unnotified(|settings| settings.flashing_firmware_path = Some(image.clone()))
+                .unwrap()
+                .unwrap();
+            let (restored, problem) = SettingsStore::load(settings_path.clone());
+            assert!(problem.is_none());
+            assert_eq!(restored.settings().flashing_firmware_path, Some(image));
+        }
+        for invalid in [
+            PathBuf::from("relative.img"),
+            folder.path().join("wrong.zip"),
+        ] {
+            let settings = AppSettings {
+                flashing_firmware_path: Some(invalid),
+                ..AppSettings::default()
+            };
+            assert!(settings.normalized().flashing_firmware_path.is_none());
+        }
+    }
+
+    #[test]
     fn background_images_and_host_details_survive_relocation_and_reload() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("settings.json");

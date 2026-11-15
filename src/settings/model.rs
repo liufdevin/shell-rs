@@ -41,6 +41,11 @@ pub struct AppSettings {
     /// 终端 → 侧栏功能: which tools the right sidebar offers.
     pub sidebar_tools: SidebarTools,
     pub device_logs: DeviceLogAppearance,
+    pub flashing_erase_mode: crate::flashing::EraseMode,
+    pub flashing_enabled: bool,
+    pub flashing_partition_mode: bool,
+    pub flashing_tool_directory: Option<PathBuf>,
+    pub flashing_firmware_path: Option<PathBuf>,
     /// The left sidebar's visibility, restored on the next launch.
     pub sidebar_collapsed: bool,
     pub sidebar_width: Option<f32>,
@@ -675,6 +680,13 @@ impl AppSettings {
     /// file nor a typed value can give the terminal a size of zero.
     pub fn normalized(mut self) -> Self {
         self.terminal_background = self.terminal_background.normalized();
+        self.flashing_firmware_path = self.flashing_firmware_path.filter(|path| {
+            path.is_absolute()
+                && path
+                    .extension()
+                    .and_then(|extension| extension.to_str())
+                    .is_some_and(|extension| extension.eq_ignore_ascii_case("img"))
+        });
         let mut ids = std::collections::HashSet::new();
         self.remote_servers
             .retain(|server| server.validate().is_ok() && ids.insert(server.id.clone()));

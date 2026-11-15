@@ -263,7 +263,7 @@ fn serve_updates_as(
 }
 
 #[gpui_kit::test]
-fn the_application_page_opens_the_website(cx: &mut TestAppContext) {
+fn the_application_page_omits_updates_privacy_and_the_website(cx: &mut TestAppContext) {
     let (handle, _) = open_workspace(cx);
     open_about_settings(cx, handle);
     let position = in_frame(cx, handle, |window, _| {
@@ -283,11 +283,15 @@ fn the_application_page_opens_the_website(cx: &mut TestAppContext) {
             );
         });
     }
-    in_frame(cx, handle, |window, cx| window.click("open-website", cx));
-    assert_eq!(cx.opened_url().as_deref(), Some("https://shellrs.com"));
+    in_frame(cx, handle, |window, _| {
+        assert!(window.try_find("open-website").is_none());
+        assert!(window.try_find("update-status").is_none());
+        assert!(window.try_find("check-for-updates").is_none());
+        assert!(window.try_find("about-version").is_none());
+    });
+    assert!(cx.opened_url().is_none());
 }
 
-/// Open 设置 › 应用, which holds updating and privacy.
 fn open_about_settings(cx: &mut TestAppContext, handle: WindowHandle<Root>) {
     in_frame(cx, handle, |window, cx| window.click("open-settings", cx));
     in_frame(cx, handle, |window, cx| {
@@ -298,23 +302,32 @@ fn open_about_settings(cx: &mut TestAppContext, handle: WindowHandle<Root>) {
 async fn wait_for_update_status(
     cx: &mut TestAppContext,
     handle: WindowHandle<Root>,
+    workspace: &Entity<Workspace>,
     wanted: impl Fn(&str) -> bool,
 ) {
-    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
-        window
-            .try_find("update-status")
-            .and_then(|status| status.label().map(&wanted))
-            .unwrap_or(false)
+    cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
+        wanted(
+            workspace
+                .read(cx)
+                .updater()
+                .read(cx)
+                .snapshot()
+                .status_line()
+                .0
+                .as_ref(),
+        )
     })
     .await;
 }
 
-fn update_status(cx: &mut TestAppContext, handle: WindowHandle<Root>) -> String {
-    in_frame(cx, handle, |window, _| {
-        window
-            .find("update-status")
-            .label()
-            .unwrap_or_default()
+fn update_status(cx: &mut TestAppContext, workspace: &Entity<Workspace>) -> String {
+    workspace.read_with(cx, |workspace, cx| {
+        workspace
+            .updater()
+            .read(cx)
+            .snapshot()
+            .status_line()
+            .0
             .to_string()
     })
 }
@@ -339,25 +352,14 @@ fn set_update_channel(cx: &mut TestAppContext, workspace: &Entity<Workspace>, ch
     cx.run_until_parked();
 }
 
-/// The 更新渠道 dropdown's label on 设置 › 关于.
-fn update_channel_label(cx: &mut TestAppContext, handle: WindowHandle<Root>) -> Option<String> {
-    in_frame(cx, handle, |window, _| appearance_dropdown(window, 1))
-}
-
 #[gpui_kit::test]
 fn a_development_build_does_not_check(cx: &mut TestAppContext) {
-    let (handle, _) = open_workspace(cx);
+    let (handle, workspace) = open_workspace(cx);
     open_about_settings(cx, handle);
+    assert_eq!(update_status(cx, &workspace), "开发构建，不检查更新。");
     in_frame(cx, handle, |window, _| {
-        assert_eq!(
-            window.find("update-status").label(),
-            Some("开发构建，不检查更新。")
-        );
+        assert!(window.try_find("update-status").is_none());
         assert!(window.try_find("check-for-updates").is_none());
-        assert_eq!(
-            window.find("about-version").label(),
-            Some(format!("v{}", env!("CARGO_PKG_VERSION")).as_str())
-        );
         assert!(window.try_find("update-available").is_none());
     });
 }
@@ -367,12 +369,15 @@ async fn checking_by_hand_says_when_shellrs_is_up_to_date(cx: &mut TestAppContex
     let (handle, workspace) = open_workspace(cx);
     let fixture = serve_updates(cx, &workspace, Ok(RUNNING_VERSION), installable());
     open_about_settings(cx, handle);
-    assert_eq!(update_status(cx, handle), "尚未检查更新。");
+    assert_eq!(update_status(cx, &workspace), "尚未检查更新。");
 
     in_frame(cx, handle, |window, cx| {
-        window.click("check-for-updates", cx)
+        window.dispatch_action(Box::new(CheckForUpdates), cx)
     });
-    wait_for_update_status(cx, handle, |status| status == "当前已是最新版本。").await;
+    wait_for_update_status(cx, handle, &workspace, |status| {
+        status == "当前已是最新版本。"
+    })
+    .await;
     assert_eq!(fixture.fetches(), 1);
     assert_eq!(fixture.downloads(), 0);
     in_frame(cx, handle, |window, _| {
@@ -387,7 +392,7 @@ async fn a_found_update_downloads_by_itself_and_the_title_bar_offers_it(cx: &mut
     open_about_settings(cx, handle);
 
     in_frame(cx, handle, |window, cx| {
-        window.click("check-for-updates", cx)
+        window.dispatch_action(Box::new(CheckForUpdates), cx)
     });
     cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
         window
@@ -401,12 +406,11 @@ async fn a_found_update_downloads_by_itself_and_the_title_bar_offers_it(cx: &mut
         [Version::new(0, 2, 0)]
     );
     assert_eq!(
-        update_status(cx, handle),
+        update_status(cx, &workspace),
         "新版本 0.2.0 已下载，重启 ShellLF 即可完成更新。"
     );
     in_frame(cx, handle, |window, _| {
-        // One button: restarting takes the place of 检查更新.
-        assert!(window.try_find("show-update").is_some());
+        assert!(window.try_find("update-available").is_some());
         assert!(window.try_find("check-for-updates").is_none());
         assert!(window.try_find("download-update").is_none());
     });
@@ -420,16 +424,21 @@ async fn with_automatic_updates_off_a_found_update_waits_for_download(cx: &mut T
     open_about_settings(cx, handle);
 
     in_frame(cx, handle, |window, cx| {
-        window.click("check-for-updates", cx)
+        window.dispatch_action(Box::new(CheckForUpdates), cx)
     });
-    wait_for_update_status(cx, handle, |status| status == "发现新版本 0.2.0。").await;
+    wait_for_update_status(cx, handle, &workspace, |status| {
+        status == "发现新版本 0.2.0。"
+    })
+    .await;
     assert_eq!(fixture.downloads(), 0);
     in_frame(cx, handle, |window, _| {
         assert!(window.try_find("update-available").is_none());
     });
 
-    in_frame(cx, handle, |window, cx| window.click("download-update", cx));
-    wait_for_update_status(cx, handle, |status| {
+    in_frame(cx, handle, |window, cx| {
+        window.dispatch_action(Box::new(shellrs::app::DownloadUpdate), cx)
+    });
+    wait_for_update_status(cx, handle, &workspace, |status| {
         status.starts_with("新版本 0.2.0 已下载")
     })
     .await;
@@ -571,15 +580,15 @@ async fn an_unsupported_install_offers_the_download_page(cx: &mut TestAppContext
     );
     open_about_settings(cx, handle);
     in_frame(cx, handle, |window, cx| {
-        window.click("check-for-updates", cx)
+        window.dispatch_action(Box::new(CheckForUpdates), cx)
     });
-    wait_for_update_status(cx, handle, |status| {
+    wait_for_update_status(cx, handle, &workspace, |status| {
         status == "发现新版本 0.2.0。这份 ShellLF 不是 AppImage，请用安装它的方式更新。"
     })
     .await;
     assert_eq!(fixture.downloads(), 0);
     in_frame(cx, handle, |window, _| {
-        assert!(window.try_find("open-download-page").is_some());
+        assert!(window.try_find("open-download-page").is_none());
         assert!(window.try_find("download-update").is_none());
         assert_eq!(
             window.find("update-available").label(),
@@ -602,7 +611,7 @@ async fn a_portable_copy_downloads_the_portable_zip(cx: &mut TestAppContext) {
     );
     open_about_settings(cx, handle);
     in_frame(cx, handle, |window, cx| {
-        window.click("check-for-updates", cx)
+        window.dispatch_action(Box::new(CheckForUpdates), cx)
     });
     cx.wait_for(handle.into(), Duration::from_secs(3), |_, _| {
         !fixture.downloaded().is_empty()
@@ -625,15 +634,15 @@ async fn a_read_only_portable_copy_links_the_portable_zip(cx: &mut TestAppContex
     );
     open_about_settings(cx, handle);
     in_frame(cx, handle, |window, cx| {
-        window.click("check-for-updates", cx)
+        window.dispatch_action(Box::new(CheckForUpdates), cx)
     });
-    wait_for_update_status(cx, handle, |status| {
+    wait_for_update_status(cx, handle, &workspace, |status| {
         status == r"发现新版本 0.2.0。没有权限写入 C:\Program Files\ShellRS，无法自动更新。"
     })
     .await;
     assert_eq!(fixture.downloads(), 0);
     in_frame(cx, handle, |window, cx| {
-        window.click("open-download-page", cx)
+        window.dispatch_action(Box::new(shellrs::app::OpenDownloadPage), cx)
     });
     assert_eq!(cx.opened_url().as_deref(), Some(PORTABLE_INSTALLER));
     // Still counted as portable.
@@ -642,14 +651,16 @@ async fn a_read_only_portable_copy_links_the_portable_zip(cx: &mut TestAppContex
 }
 
 #[gpui_kit::test]
-async fn a_failed_check_says_why_on_the_about_page(cx: &mut TestAppContext) {
+async fn a_failed_check_retains_the_reason_without_an_application_settings_row(
+    cx: &mut TestAppContext,
+) {
     let (handle, workspace) = open_workspace(cx);
     let fixture = serve_updates(cx, &workspace, Err(UpdateError::Http(503)), installable());
     open_about_settings(cx, handle);
     in_frame(cx, handle, |window, cx| {
-        window.click("check-for-updates", cx)
+        window.dispatch_action(Box::new(CheckForUpdates), cx)
     });
-    wait_for_update_status(cx, handle, |status| {
+    wait_for_update_status(cx, handle, &workspace, |status| {
         status == "检查更新失败：更新服务器返回 HTTP 503"
     })
     .await;
@@ -674,7 +685,10 @@ async fn turning_automatic_updates_off_stops_the_schedule(cx: &mut TestAppContex
 
     cx.executor().advance_clock(Duration::from_secs(31));
     open_about_settings(cx, handle);
-    wait_for_update_status(cx, handle, |status| status == "当前已是最新版本。").await;
+    wait_for_update_status(cx, handle, &workspace, |status| {
+        status == "当前已是最新版本。"
+    })
+    .await;
     assert_eq!(fixture.fetches(), 1);
 
     set_automatic_updates(cx, &workspace, false);
@@ -698,27 +712,43 @@ async fn switching_the_update_channel_looks_at_that_channel(cx: &mut TestAppCont
     let fixture = serve_updates(cx, &workspace, Ok(RUNNING_VERSION), installable());
     fixture.offer(Channel::Beta, "0.2.0-beta.1");
     open_about_settings(cx, handle);
-    assert_eq!(update_channel_label(cx, handle).as_deref(), Some("稳定版"));
-    in_frame(cx, handle, |window, cx| {
-        window.click("check-for-updates", cx)
+    workspace.read_with(cx, |workspace, cx| {
+        assert_eq!(
+            workspace.settings().read(cx).settings().update.channel,
+            Channel::Stable
+        );
     });
-    wait_for_update_status(cx, handle, |status| status == "当前已是最新版本。").await;
+    in_frame(cx, handle, |window, cx| {
+        window.dispatch_action(Box::new(CheckForUpdates), cx)
+    });
+    wait_for_update_status(cx, handle, &workspace, |status| {
+        status == "当前已是最新版本。"
+    })
+    .await;
 
     // With 自动升级 on, the other channel is looked at right away.
     set_update_channel(cx, &workspace, Channel::Beta);
-    wait_for_update_status(cx, handle, |status| {
+    wait_for_update_status(cx, handle, &workspace, |status| {
         status == "新版本 0.2.0-beta.1 已下载，重启 ShellLF 即可完成更新。"
     })
     .await;
     assert_eq!(fixture.channels(), [Channel::Stable, Channel::Beta]);
-    assert_eq!(update_channel_label(cx, handle).as_deref(), Some("Beta"));
+    workspace.read_with(cx, |workspace, cx| {
+        assert_eq!(
+            workspace.settings().read(cx).settings().update.channel,
+            Channel::Beta
+        );
+    });
     in_frame(cx, handle, |window, _| {
         assert!(window.try_find("update-available").is_some());
     });
 
     // Back on stable, the beta downloaded is no longer offered.
     set_update_channel(cx, &workspace, Channel::Stable);
-    wait_for_update_status(cx, handle, |status| status == "当前已是最新版本。").await;
+    wait_for_update_status(cx, handle, &workspace, |status| {
+        status == "当前已是最新版本。"
+    })
+    .await;
     assert_eq!(
         fixture.channels(),
         [Channel::Stable, Channel::Beta, Channel::Stable]

@@ -4,6 +4,19 @@
 
 One section per version, titled `## [version]`, optionally followed by a date. Each section is written in English here and in Chinese in [CHANGELOG.zh.md](CHANGELOG.zh.md), in the same change. The release workflow (`.github/workflows/release.yml`) takes the section with the tag’s version, as it is, for the GitHub release. The website’s changelog shows this file in English and Japanese and CHANGELOG.zh.md in Chinese (ShellRS’s update dialog opens it with What’s new). Written in Markdown, for users.
 
+## [0.1.22]
+
+- Remember the last firmware path across tab closures and app restarts, and use a blue rocket mark in the title bar and flashing tab.
+- Keep firmware, partitions and erase modes editable while waiting, apply changes automatically, and remove the wait-again button. Check the embedded usbtool product version for full erase without disabling logical erase for older firmware that has no version resource.
+- Collapse Linux Shell monitor settings in serial host forms by default.
+- Keep Allwinner flashing in a persistent listening loop, time actual writes only, and suppress repeated ready and idle-timeout messages.
+- Read partitions from IMG firmware and flash selected partitions, rejecting empty selections and omitting full-disk erase flags.
+- Simplify Settings → Application by removing the update, privacy and website groups, and shorten the Windows serial maintenance description.
+- Keep firmware flashing off by default, with a persistent switch in Application settings and matching circuit board icons in the title bar and tab.
+- Allow choosing and saving a flashing tool folder, checking for PhoenixConsole.exe and adb.exe before applying it.
+- Improve the overall progress bar, remember the erase mode, filter IMG firmware files and hide ADB status until the flashing tool is ready.
+- Enlarge and unify status bar typography, and show only the hovered disk's details in its tooltip.
+
 ## [0.1.21]
 
 ### Added

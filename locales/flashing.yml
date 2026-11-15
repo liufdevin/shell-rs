@@ -2,6 +2,18 @@ _version: 2
 flashing.title:
   zh-CN: 固件烧录
   en: Firmware flashing
+flashing.settings.enabled:
+  zh-CN: 启用固件烧录
+  en: Enable firmware flashing
+flashing.settings.description:
+  zh-CN: 在标题栏显示固件烧录入口。默认关闭，开启后可选择烧录工具目录和 IMG 固件。
+  en: Show firmware flashing in the title bar. Off by default; enable it to choose a tool folder and IMG firmware.
+flashing.tool.choose:
+  zh-CN: 选择工具目录…
+  en: Choose tool folder…
+flashing.tool.invalid:
+  zh-CN: "工具目录不可用，请选择包含 PhoenixConsole.exe 和 adb.exe 的文件夹：%{path}"
+  en: "Choose a folder containing PhoenixConsole.exe and adb.exe: %{path}"
 flashing.firmware:
   zh-CN: 固件文件
   en: Firmware
@@ -11,6 +23,9 @@ flashing.no_firmware:
 flashing.choose:
   zh-CN: 选择固件…
   en: Choose firmware…
+flashing.image_filter:
+  zh-CN: 固件镜像 (*.img)
+  en: Firmware image (*.img)
 flashing.start:
   zh-CN: 开始烧录
   en: Start flashing
@@ -35,9 +50,39 @@ flashing.quit:
 flashing.quit_unsaved:
   zh-CN: "中断烧录可能导致设备无法启动。退出同时会丢弃未保存的文件更改：%{files}"
   en: "Interrupting flashing may leave the device unable to start. Quitting also discards unsaved changes to: %{files}"
-flashing.resume:
-  zh-CN: 继续等待
-  en: Wait again
+flashing.mode.partitions:
+  zh-CN: 单区 / 多分区
+  en: Selected partitions
+flashing.partitions.all:
+  zh-CN: 全选分区
+  en: Select all partitions
+flashing.partitions.selected:
+  zh-CN: "已选 %{selected} / %{total} 个分区"
+  en: "%{selected} / %{total} partitions selected"
+flashing.partitions.hint:
+  zh-CN: 勾选要写入的分区后自动等待设备；等待时仍可更改分区和固件。至少选择一个分区。
+  en: Select at least one partition to wait automatically. You can change partitions and firmware while waiting.
+flashing.partitions.empty:
+  zh-CN: 选择 IMG 固件后自动读取可用分区。
+  en: Choose IMG firmware to read the available partitions.
+flashing.partitions.failed:
+  zh-CN: "无法读取固件分区，请确认固件有效且工具支持 --list-parts：%{error}"
+  en: "Could not read partitions. Check the firmware and --list-parts support: %{error}"
+flashing.partitions.interrupted:
+  zh-CN: 分区读取已中断，请重新选择固件。
+  en: Partition inspection was interrupted. Choose the firmware again.
+flashing.phase.reading:
+  zh-CN: 读取固件
+  en: Reading firmware
+flashing.phase.ready:
+  zh-CN: 待开始
+  en: Ready
+flashing.hint.reading:
+  zh-CN: 正在读取 IMG 分区，不会触发烧录
+  en: Reading IMG partitions without flashing
+flashing.last_elapsed:
+  zh-CN: "上次耗时 %{time}"
+  en: "Last flash %{time}"
 flashing.elapsed:
   zh-CN: 已用时 %{time}
   en: "Elapsed %{time}"
@@ -69,17 +114,17 @@ flashing.hint.no_firmware:
   zh-CN: 选择固件后会自动进入等待设备状态
   en: Choosing firmware starts waiting for a device
 flashing.hint.waiting:
-  zh-CN: 按开发板 FEL 键，或通过 ADB 重启已开机设备
-  en: Press the board's FEL key, or reboot a running device over ADB
+  zh-CN: 持续等待设备，可更换固件和烧录方式；按 FEL 键或通过 ADB 重启后自动烧录
+  en: Waiting without a deadline. Firmware and modes remain editable. Press FEL or reboot over ADB to flash.
 flashing.hint.burning:
   zh-CN: 正在写入固件，请勿断开设备
   en: Writing firmware; do not disconnect the device
 flashing.hint.failed:
-  zh-CN: 查看日志后可以继续等待或重新选择固件
-  en: Check the log, then wait again or choose another firmware
+  zh-CN: 请查看日志；重新选择固件或烧录方式后自动等待
+  en: Check the log. Choose firmware or a flashing mode to wait again.
 flashing.hint.stopped:
-  zh-CN: 已停止；可以继续等待下一台设备
-  en: Stopped; wait again for the next device
+  zh-CN: 已停止；选择固件或烧录方式后重新等待
+  en: Stopped. Choose firmware or a flashing mode to wait again.
 flashing.result.success:
   zh-CN: 上一次烧录成功
   en: Last flash succeeded
@@ -95,6 +140,9 @@ flashing.mode.logical:
 flashing.mode.all:
   zh-CN: 全盘擦除
   en: Erase all
+flashing.mode.all_unavailable:
+  zh-CN: 此固件未提供全盘擦除所需的 usbtool 产品版本信息（1.0.0.1 或以上）；仍可选择保留数据或分区擦除
+  en: Full erase requires firmware with usbtool product version 1.0.0.1 or later. Keep data and logical erase remain available.
 flashing.adb.label:
   zh-CN: ADB 设备
   en: ADB device
@@ -141,11 +189,11 @@ flashing.log.ready:
   zh-CN: 烧录页已就绪；选择固件后会自动等待设备。
   en: The flashing page is ready. Choosing firmware starts waiting for a device.
 flashing.log.tool_missing:
-  zh-CN: 未找到 PhoenixConsole_Windows，请把工具放到程序旁边的 PhoenixConsole_Windows 目录。
-  en: PhoenixConsole_Windows was not found. Put it in the PhoenixConsole_Windows directory beside the program.
+  zh-CN: 未找到烧录工具，请选择包含 PhoenixConsole.exe 和 adb.exe 的工具目录，或把完整工具放到程序旁边的 PhoenixConsole_Windows 目录。
+  en: Choose a tool folder containing PhoenixConsole.exe and adb.exe, or place the complete tools in PhoenixConsole_Windows beside the program.
 flashing.log.pick_failed:
-  zh-CN: 选择固件失败：%{error}
-  en: "Could not choose firmware: %{error}"
+  zh-CN: 选择路径失败：%{error}
+  en: "Could not choose a path: %{error}"
 flashing.log.firmware_missing:
   zh-CN: "请选择有效的 .img 固件文件：%{path}"
   en: "Choose a valid .img firmware file: %{path}"

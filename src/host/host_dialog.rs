@@ -5,6 +5,7 @@ use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Icon, IconName, IndexPath, Sizable as _, WindowExt as _,
     button::{Button, ButtonVariants as _},
     checkbox::Checkbox,
+    collapsible::Collapsible,
     combobox::{Combobox, ComboboxEvent, ComboboxState},
     dialog::{Cancel, Confirm, DialogButtonProps, DialogFooter},
     form::{Field, Form},
@@ -276,6 +277,7 @@ pub struct HostForm {
     reconnect_delay: Entity<InputState>,
     terminal_encoding: Entity<SelectState<Vec<SharedString>>>,
     serial_linux_shell: bool,
+    serial_shell_expanded: bool,
     serial_dtr: bool,
     serial_rts: bool,
     monitor_channel: Entity<SelectState<Vec<SharedString>>>,
@@ -777,6 +779,7 @@ impl HostForm {
                 .protocol
                 .serial()
                 .is_some_and(|settings| settings.linux_shell),
+            serial_shell_expanded: false,
             serial_dtr: draft.protocol.serial().is_some_and(|settings| settings.dtr),
             serial_rts: draft.protocol.serial().is_some_and(|settings| settings.rts),
             monitor_channel,
@@ -2102,47 +2105,70 @@ impl HostForm {
                 ),
             )
             .child(
-                Field::new().col_span(4).child(
-                    Checkbox::new("host-serial-linux-shell")
-                        .small()
-                        .label(t!("serial.shell.enable"))
-                        .checked(self.serial_linux_shell)
-                        .tooltip(t!("serial.shell.description"))
-                        .on_click(cx.listener(|this, checked, _, cx| {
-                            this.serial_linux_shell = *checked;
-                            cx.notify();
-                        })),
+                Field::new().col_span(4).label_indent(false).child(
+                    Collapsible::new()
+                        .open(self.serial_linux_shell && self.serial_shell_expanded)
+                        .child(
+                            h_flex()
+                                .w_full()
+                                .gap_2()
+                                .child(
+                                    Checkbox::new("host-serial-linux-shell")
+                                        .small()
+                                        .label(t!("serial.shell.enable"))
+                                        .checked(self.serial_linux_shell)
+                                        .tooltip(t!("serial.shell.description"))
+                                        .on_click(cx.listener(|this, checked, _, cx| {
+                                            this.serial_linux_shell = *checked;
+                                            this.serial_shell_expanded = *checked;
+                                            cx.notify();
+                                        })),
+                                )
+                                .child(
+                                    Button::new("host-serial-shell-details")
+                                        .small()
+                                        .ghost()
+                                        .ml_auto()
+                                        .label(t!("serial.shell.settings"))
+                                        .icon(if self.serial_shell_expanded {
+                                            IconName::ChevronDown
+                                        } else {
+                                            IconName::ChevronRight
+                                        })
+                                        .disabled(!self.serial_linux_shell)
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.serial_shell_expanded =
+                                                !this.serial_shell_expanded;
+                                            cx.notify();
+                                        })),
+                                ),
+                        )
+                        .content(
+                            Form::new()
+                                .mt_2()
+                                .child(
+                                    Field::new().label(t!("monitor.route.channel")).child(
+                                        Select::new(&self.monitor_channel)
+                                            .id("host-monitor-channel")
+                                            .small(),
+                                    ),
+                                )
+                                .child(Field::new().label(t!("monitor.route.adb_device")).child(
+                                    Input::new(&self.monitor_adb).id("host-monitor-adb").small(),
+                                ))
+                                .child(
+                                    Field::new()
+                                        .label(t!("monitor.route.ssh_host"))
+                                        .child(
+                                            Select::new(&self.monitor_ssh)
+                                                .id("host-monitor-ssh")
+                                                .small(),
+                                        )
+                                        .description(t!("monitor.route.config_note")),
+                                ),
+                        ),
                 ),
             )
-            .when(self.serial_linux_shell, |form| {
-                form.child(
-                    Field::new()
-                        .col_span(4)
-                        .label(t!("monitor.route.channel"))
-                        .child(
-                            Select::new(&self.monitor_channel)
-                                .id("host-monitor-channel")
-                                .small(),
-                        ),
-                )
-                .child(
-                    Field::new()
-                        .col_span(4)
-                        .label(t!("monitor.route.adb_device"))
-                        .child(Input::new(&self.monitor_adb).id("host-monitor-adb").small()),
-                )
-                .child(
-                    Field::new()
-                        .col_span(4)
-                        .label(t!("monitor.route.ssh_host"))
-                        .child(
-                            Select::new(&self.monitor_ssh)
-                                .id("host-monitor-ssh")
-                                .small(),
-                        )
-                        .description(t!("monitor.route.config_note")),
-                )
-            })
     }
 
     /// 「连接方式」: the choice, and below it what the choice needs.

@@ -14,6 +14,7 @@ use gpui_kit::component::{
         NumberFieldOptions, SelectIndex, SettingField, SettingGroup, SettingItem, SettingPage,
         Settings,
     },
+    switch::Switch,
     tooltip::Tooltip,
     v_flex,
 };
@@ -21,9 +22,8 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::app::{
-    CatalogIcon, CenterTab, CheckForUpdates, CloseSettings, CopyAgentSkill, DownloadUpdate,
-    InstallAgentSkill, InstallCliCommand, OpenDownloadPage, OpenWebsite, RefreshCliIntegration,
-    RemoveAgentSkill, RemoveCliCommand, ShowUpdate,
+    CatalogIcon, CenterTab, CloseSettings, CopyAgentSkill, InstallAgentSkill, InstallCliCommand,
+    RefreshCliIntegration, RemoveAgentSkill, RemoveCliCommand,
 };
 use crate::cli::{AgentKind, BinaryStatus, CliIntegration, IntegrationStatus, SkillStatus};
 use crate::explorer::{FileIcon, FileIconKind};
@@ -36,7 +36,7 @@ use crate::terminal::{
     TerminalFontPreview, TerminalHighlights, is_font_installed, monospace_font_families,
     system_font_families,
 };
-use crate::update::{Phase, Tone, UpdateSnapshot, UpdateStep, Updater, build_info, platform};
+use crate::update::{build_info, platform};
 
 use super::background_images::{BackgroundImagesEditor, background_group};
 use super::highlight_rules::HighlightRulesEditor;
@@ -66,8 +66,6 @@ pub struct SettingsPanel {
     store: Entity<SettingsStore>,
     /// What of the external CLI is installed, for 外部 CLI.
     integration: Entity<CliIntegration>,
-    /// Where updating stands, for 关于.
-    updater: Entity<Updater>,
     /// Where sync stands, for 同步.
     sync: Entity<SyncService>,
     lan_page: Option<Entity<crate::lan::LanPage>>,
@@ -90,7 +88,7 @@ pub struct SettingsPanel {
     shown_category: Rc<Cell<usize>>,
     focus_handle: FocusHandle,
     tab_group: Option<WeakEntity<TabGroup>>,
-    _subscriptions: [Subscription; 7],
+    _subscriptions: [Subscription; 6],
     _font_scan: Task<()>,
     _lock_subscription: Option<Subscription>,
 }
@@ -99,7 +97,6 @@ impl SettingsPanel {
     pub fn new(
         store: Entity<SettingsStore>,
         integration: Entity<CliIntegration>,
-        updater: Entity<Updater>,
         sync: Entity<SyncService>,
         cmder: Entity<crate::terminal::Cmder>,
         window: &mut Window,
@@ -115,7 +112,6 @@ impl SettingsPanel {
             cx.observe(&shortcuts, |_, _, cx| cx.notify()),
             cx.observe(&local_shell, |_, _, cx| cx.notify()),
             cx.observe(&integration, |_, _, cx| cx.notify()),
-            cx.observe(&updater, |_, _, cx| cx.notify()),
             cx.observe(&sync, |_, _, cx| cx.notify()),
         ];
         // Loading every family takes a moment the first time; the process
@@ -142,7 +138,6 @@ impl SettingsPanel {
             _lock_subscription: lock_subscription,
             store,
             integration,
-            updater,
             sync,
             lan_page: None,
             lan_subscription: None,
@@ -1114,9 +1109,7 @@ fn application_groups(panel: &SettingsPanel, cx: &App) -> Vec<SettingGroup> {
     } else {
         window_group
     };
-    let mut groups = update_privacy_groups(panel, cx);
-    groups.push(window_group);
-    groups.push(app_lock_group(&panel.store, cx));
+    let mut groups = vec![window_group, app_lock_group(&panel.store, cx)];
     if cfg!(windows) {
         groups.push(
             SettingGroup::new()
@@ -1140,6 +1133,32 @@ fn application_groups(panel: &SettingsPanel, cx: &App) -> Vec<SettingGroup> {
                 )
                 .description(t!("serial.maintenance.settings_description"))
                 .keywords(keywords(t!("serial.maintenance.keywords")))]),
+        );
+    }
+    if cfg!(windows) {
+        let store = panel.store.clone();
+        groups.push(
+            SettingGroup::new()
+                .title(t!("flashing.title"))
+                .items([SettingItem::new(
+                    t!("flashing.settings.enabled"),
+                    SettingField::render(move |options, _, cx| {
+                        let enabled = store.read(cx).settings().flashing_enabled;
+                        let writer = store.clone();
+                        Switch::new("flashing-enabled")
+                            .with_size(options.size())
+                            .accessibility_label(t!("flashing.settings.enabled"))
+                            .checked(enabled)
+                            .on_change(move |enabled, _, cx| {
+                                writer.update(cx, |store, cx| {
+                                    store
+                                        .update(|settings| settings.flashing_enabled = *enabled, cx)
+                                });
+                            })
+                    }),
+                )
+                .description(t!("flashing.settings.description"))
+                .keywords(keywords(t!("flashing.title")))]),
         );
     }
     groups
@@ -1317,71 +1336,6 @@ fn external_cli_groups(panel: &SettingsPanel, cx: &App) -> Vec<SettingGroup> {
     ]
 }
 
-/// 应用: updates, the channel, 自动升级, privacy and the website.
-fn update_privacy_groups(panel: &SettingsPanel, cx: &App) -> Vec<SettingGroup> {
-    let snapshot = panel.updater.read(cx).snapshot();
-    let (reader, writer) = (panel.store.clone(), panel.store.clone());
-    let (analytics_reader, analytics_writer) = (panel.store.clone(), panel.store.clone());
-    vec![
-        SettingGroup::new()
-            .title(t!("settings.about.updates"))
-            .items([
-                current_version_item(snapshot),
-                SettingItem::new(
-                    t!("settings.about.channel"),
-                    choice_field(
-                        &panel.store,
-                        |settings| settings.update.channel,
-                        |settings, channel| settings.update.channel = channel,
-                    ),
-                )
-                .description(t!("settings.about.channel_description")),
-                SettingItem::new(
-                    t!("settings.about.automatic"),
-                    SettingField::switch(
-                        move |cx| reader.read(cx).settings().update.automatic,
-                        move |automatic, cx| {
-                            writer.update(cx, |store, cx| {
-                                store.update(|settings| settings.update.automatic = automatic, cx)
-                            });
-                        },
-                    )
-                    .default_value(true),
-                )
-                .description(t!("settings.about.automatic_description")),
-            ]),
-        SettingGroup::new()
-            .title(t!("settings.about.privacy"))
-            .items([SettingItem::new(
-                t!("settings.about.analytics"),
-                SettingField::switch(
-                    move |cx| analytics_reader.read(cx).settings().analytics.enabled,
-                    move |enabled, cx| {
-                        analytics_writer.update(cx, |store, cx| {
-                            store.update(|settings| settings.analytics.enabled = enabled, cx)
-                        });
-                    },
-                )
-                .default_value(true),
-            )
-            .description(t!("settings.about.analytics_description"))]),
-        SettingGroup::new()
-            .title(crate::app::APP_NAME)
-            .items([SettingItem::new(
-                t!("settings.about.website"),
-                SettingField::render(|options, _, _| {
-                    Button::new("open-website")
-                        .outline()
-                        .with_size(options.size())
-                        .icon(Icon::new(CatalogIcon::ExternalLink))
-                        .label("shellrs.com")
-                        .on_click(|_, window, cx| window.dispatch_action(Box::new(OpenWebsite), cx))
-                }),
-            )
-            .description(t!("settings.about.website_description"))]),
-    ]
-}
-
 /// 关于: the version only.
 fn about_groups(_: &SettingsPanel, _: &App) -> Vec<SettingGroup> {
     vec![
@@ -1389,6 +1343,7 @@ fn about_groups(_: &SettingsPanel, _: &App) -> Vec<SettingGroup> {
             .title(crate::app::APP_NAME)
             .items([SettingItem::render(|_, _, cx| {
                 let version = SharedString::from(format!("v{}", build_info::VERSION));
+                let build = SharedString::from(build_description());
                 h_flex()
                     .w_full()
                     .justify_between()
@@ -1402,120 +1357,14 @@ fn about_groups(_: &SettingsPanel, _: &App) -> Vec<SettingGroup> {
                             .text_sm()
                             .font_family(cx.theme().mono_font_family.clone())
                             .text_color(cx.theme().muted_foreground)
-                            .child(version),
-                    )
-            })
-            .keywords(keywords(t!("settings.about.version_keywords")))]),
-    ]
-}
-
-/// 当前版本: where updating stands under the title, and the version with the
-/// one button that applies: 检查更新, or the step the version on offer
-/// needs. Laid out like the page's other rows.
-fn current_version_item(snapshot: UpdateSnapshot) -> SettingItem {
-    SettingItem::render(move |options, _, cx| {
-        let (text, tone) = snapshot.status_line();
-        let color = match tone {
-            Tone::Plain => cx.theme().muted_foreground,
-            Tone::Warning => cx.theme().warning,
-            Tone::Danger => cx.theme().danger,
-        };
-        let version = SharedString::from(format!("v{}", build_info::VERSION));
-        let build = SharedString::from(build_description());
-        let step = snapshot.step().map(|step| -> (_, _, Box<dyn Action>) {
-            match step {
-                UpdateStep::Restart => (
-                    "show-update",
-                    t!("settings.about.restart"),
-                    Box::new(ShowUpdate),
-                ),
-                UpdateStep::DownloadPage => (
-                    "open-download-page",
-                    t!("settings.about.download_page"),
-                    Box::new(OpenDownloadPage),
-                ),
-                UpdateStep::Download { retry } => (
-                    "download-update",
-                    if retry {
-                        t!("settings.about.retry_download")
-                    } else {
-                        t!("settings.about.download")
-                    },
-                    Box::new(DownloadUpdate),
-                ),
-            }
-        });
-        let button = match step {
-            Some((id, label, action)) => Some(
-                Button::new(id)
-                    .primary()
-                    .with_size(options.size())
-                    .label(label)
-                    .on_click(move |_, window, cx| {
-                        window.dispatch_action(action.boxed_clone(), cx)
-                    }),
-            ),
-            None => (snapshot.phase != Phase::Off).then(|| {
-                Button::new("check-for-updates")
-                    .outline()
-                    .with_size(options.size())
-                    .icon(Icon::new(CatalogIcon::RefreshCw))
-                    .label(t!("settings.about.check"))
-                    .loading(snapshot.phase == Phase::Checking)
-                    .disabled(!snapshot.can_check())
-                    .on_click(|_, window, cx| window.dispatch_action(Box::new(CheckForUpdates), cx))
-            }),
-        };
-        // A narrow page stacks each row, the controls under the text.
-        let stacked = options.layout() == Axis::Vertical;
-        let row = if stacked {
-            v_flex()
-        } else {
-            h_flex().justify_between().items_center()
-        };
-        row.w_full()
-            .gap_3()
-            .child(
-                v_flex()
-                    .map(|text| {
-                        if stacked {
-                            text.w_full()
-                        } else {
-                            text.flex_1().max_w_3_5()
-                        }
-                    })
-                    .child(Label::new(t!("settings.about.version")).text_sm())
-                    .child(
-                        div()
-                            .id("update-status")
-                            .test_support()
-                            .aria_label(text.clone())
-                            .text_sm()
-                            .text_color(color)
-                            .child(text),
-                    ),
-            )
-            .child(
-                h_flex()
-                    .gap_3()
-                    .flex_shrink_0()
-                    .child(
-                        div()
-                            .id("about-version")
-                            .test_support()
-                            .aria_label(version.clone())
-                            .text_sm()
-                            .font_family(cx.theme().mono_font_family.clone())
-                            .text_color(cx.theme().muted_foreground)
                             .tooltip(move |window, cx| {
                                 Tooltip::new(build.clone()).build(window, cx)
                             })
                             .child(version),
                     )
-                    .children(button),
-            )
-    })
-    .keywords(keywords(t!("settings.about.version_keywords")))
+            })
+            .keywords(keywords(t!("settings.about.version_keywords")))]),
+    ]
 }
 
 /// The version's tooltip: which build this is, and for which system.

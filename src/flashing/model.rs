@@ -1,7 +1,44 @@
 use std::collections::BTreeMap;
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct FirmwarePartition {
+    pub index: u32,
+    pub name: String,
+}
+
+pub(super) fn parse_partitions(output: &str) -> Result<Vec<FirmwarePartition>, String> {
+    let (_, listing) = output
+        .split_once("Firmware partition list:")
+        .ok_or_else(|| output.trim().to_string())?;
+    let mut partitions = Vec::new();
+    for line in listing.lines() {
+        let Some((index, name)) = line.trim().split_once('.') else {
+            continue;
+        };
+        let Ok(index) = index.trim().parse::<u32>() else {
+            continue;
+        };
+        let name = name.trim();
+        if name.is_empty()
+            || name.len() > 256
+            || partitions.len() >= 256
+            || partitions
+                .iter()
+                .any(|part: &FirmwarePartition| part.index == index)
+        {
+            return Err("Invalid firmware partition list".into());
+        }
+        partitions.push(FirmwarePartition {
+            index,
+            name: name.to_string(),
+        });
+    }
+    Ok(partitions)
+}
+
 /// How much of the device's storage PhoenixConsole erases before writing.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum EraseMode {
     /// `-e 10`: upgrade mode, keep user data.
     #[default]
@@ -70,7 +107,11 @@ pub fn parse_line(line: &str) -> ParsedLine {
         return ParsedLine::NoDeviceTimeout;
     }
     if (text.starts_with("device:[") && text.ends_with("fes plugin"))
-        || (text.starts_with("Detected ") && text.ends_with(" device, flashing..."))
+        || text
+            .strip_prefix("Detected ")
+            .and_then(|text| text.strip_suffix(" device, flashing..."))
+            .and_then(|count| count.parse::<u32>().ok())
+            .is_some_and(|count| count > 0)
     {
         return ParsedLine::DeviceDetected;
     }
@@ -152,7 +193,16 @@ impl FlashProgress {
                 }
             }
             ParsedLine::RunFinished { success } => {
-                self.result = Some(self.result != Some(false) && success)
+                self.result = Some(self.result != Some(false) && success);
+                if success {
+                    for device in self
+                        .devices
+                        .values_mut()
+                        .filter(|device| !device.finished || device.success)
+                    {
+                        device.percent = 100;
+                    }
+                }
             }
             ParsedLine::Listening
             | ParsedLine::NoDeviceTimeout
@@ -216,6 +266,8 @@ pub(super) enum Completion {
 pub enum Phase {
     #[default]
     NoFirmware,
+    ReadingFirmware,
+    Ready,
     Waiting,
     Burning,
     Failed,
@@ -236,7 +288,29 @@ impl Phase {
 mod tests {
     use super::{
         Completion, DeviceProgress, EraseMode, FlashProgress, ParsedLine, Phase, parse_line,
+        parse_partitions,
     };
+
+    #[test]
+    fn partition_listing_preserves_tool_indices_and_case() {
+        let partitions = parse_partitions(
+            "List partitions of image: firmware.img\nFirmware partition list:\n    0. BOOT-RESOURCE\n    1. ENV\n    2. BOOT\n    3. ROOTFS\n",
+        ).unwrap();
+        assert_eq!(
+            partitions
+                .iter()
+                .map(|part| (part.index, part.name.as_str()))
+                .collect::<Vec<_>>(),
+            [(0, "BOOT-RESOURCE"), (1, "ENV"), (2, "BOOT"), (3, "ROOTFS")]
+        );
+        assert!(
+            parse_partitions("Firmware partition list:\n  (no partition found)\n")
+                .unwrap()
+                .is_empty()
+        );
+        assert!(parse_partitions("Firmware partition list:\n  1. BOOT\n  1. ROOTFS\n").is_err());
+        assert!(parse_partitions("this tool does not support --list-parts").is_err());
+    }
 
     #[test]
     fn reads_both_progress_prefixes() {
@@ -258,6 +332,14 @@ mod tests {
 
     #[test]
     fn reads_stage_and_results() {
+        assert_eq!(
+            parse_line("Detected 0 device, flashing..."),
+            ParsedLine::Other
+        );
+        assert_eq!(
+            parse_line("Detected 1 device, flashing..."),
+            ParsedLine::DeviceDetected
+        );
         assert_eq!(
             parse_line("Burn bootloader_a partition data"),
             ParsedLine::Stage("bootloader_a".into())

@@ -196,6 +196,7 @@ impl WorkspaceStatus {
         let danger = cx.theme().danger;
         let has_system_info = system_info.is_some();
         StatusBar::new()
+            .text_sm()
             .left(
                 div()
                     .id("status-connection")

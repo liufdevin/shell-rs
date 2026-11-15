@@ -9,6 +9,7 @@ use crate::shared::{format_bytes, format_duration, format_percent, load_color};
 
 #[derive(Clone)]
 struct StatusValue {
+    id: SharedString,
     text: SharedString,
     detail: SharedString,
     load: Option<f32>,
@@ -27,7 +28,6 @@ struct StatusMetric {
     icon: IconName,
     tone: StatusTone,
     values: Vec<StatusValue>,
-    details: SharedString,
 }
 
 #[derive(IntoElement)]
@@ -44,11 +44,11 @@ impl MonitorStatus {
             icon: IconName::Info,
             tone: StatusTone::Muted,
             values: vec![StatusValue {
+                id: "status-value-system".into(),
                 text: text.clone(),
                 detail: details.clone(),
                 load: None,
             }],
-            details,
         };
         Self {
             metrics: vec![metric],
@@ -124,11 +124,11 @@ impl MonitorStatus {
                 icon: IconName::Cpu,
                 tone: StatusTone::Load(cpu.unwrap_or(0.)),
                 values: vec![StatusValue {
+                    id: "status-value-cpu".into(),
                     text: cpu_text.into(),
                     detail: cpu_details.into(),
                     load: cpu,
                 }],
-                details: cpu_detail,
             },
             StatusMetric {
                 id: "status-metric-memory",
@@ -136,11 +136,11 @@ impl MonitorStatus {
                 icon: IconName::MemoryStick,
                 tone: StatusTone::Load(memory_percent),
                 values: vec![StatusValue {
+                    id: "status-value-memory".into(),
                     text: memory_text.into(),
                     detail: memory_details.clone().into(),
                     load: Some(memory_percent),
                 }],
-                details: memory_details.into(),
             },
             StatusMetric {
                 id: "status-metric-upload",
@@ -148,11 +148,11 @@ impl MonitorStatus {
                 icon: IconName::ArrowUp,
                 tone: StatusTone::Info,
                 values: vec![StatusValue {
+                    id: "status-value-upload".into(),
                     text: upload.into(),
                     detail: upload_detail.clone(),
                     load: None,
                 }],
-                details: upload_detail,
             },
             StatusMetric {
                 id: "status-metric-download",
@@ -160,11 +160,11 @@ impl MonitorStatus {
                 icon: IconName::ArrowDown,
                 tone: StatusTone::Info,
                 values: vec![StatusValue {
+                    id: "status-value-download".into(),
                     text: download.into(),
                     detail: download_detail.clone(),
                     load: None,
                 }],
-                details: download_detail,
             },
             StatusMetric {
                 id: "status-metric-uptime",
@@ -172,11 +172,11 @@ impl MonitorStatus {
                 icon: IconName::Calendar,
                 tone: StatusTone::Muted,
                 values: vec![StatusValue {
+                    id: "status-value-uptime".into(),
                     text: uptime.into(),
                     detail: uptime_detail.clone(),
                     load: None,
                 }],
-                details: uptime_detail,
             },
         ];
 
@@ -184,6 +184,7 @@ impl MonitorStatus {
             let values: Vec<_> = disks
                 .iter()
                 .map(|disk| StatusValue {
+                    id: format!("status-disk:{}", disk.mount).into(),
                     text: format!("{} {}", disk.mount, format_percent(disk.percent())).into(),
                     detail: t!(
                         "monitor.status.disk_detail",
@@ -195,18 +196,12 @@ impl MonitorStatus {
                     load: Some(disk.percent()),
                 })
                 .collect();
-            let details = values
-                .iter()
-                .map(|value| value.detail.to_string())
-                .collect::<Vec<_>>()
-                .join("\n");
             metrics.push(StatusMetric {
                 id: "status-metric-disks",
                 label: t!("monitor.status.disks"),
                 icon: IconName::HardDrive,
                 tone: StatusTone::Info,
                 values,
-                details: details.into(),
             });
         }
 
@@ -283,23 +278,32 @@ impl RenderOnce for MonitorStatus {
                             .into_any_element(),
                     );
                 }
-                let muted = cx.theme().muted_foreground;
-                let color = value.load.map_or(muted, |load| {
+                let foreground = cx.theme().foreground;
+                let color = value.load.map_or(foreground, |load| {
                     if load >= 70. {
                         load_color(load, cx)
                     } else {
-                        muted
+                        foreground
                     }
                 });
                 values.push(
                     div()
-                        .id(SharedString::from(format!("{}-{value_index}", metric.id)))
+                        .id(value.id)
+                        .test_support()
+                        .aria_label(value.detail.clone())
                         .min_w_0()
                         .truncate()
                         .text_color(color)
-                        .font_family(cx.theme().mono_font_family.clone())
                         .tooltip(move |window, cx| {
-                            Tooltip::new(value.detail.clone()).build(window, cx)
+                            let detail = value.detail.clone();
+                            Tooltip::element(move |_, _| {
+                                div()
+                                    .id("status-metric-tooltip")
+                                    .test_support()
+                                    .aria_label(detail.clone())
+                                    .child(detail.clone())
+                            })
+                            .build(window, cx)
                         })
                         .child(value.text)
                         .into_any_element(),
@@ -319,10 +323,7 @@ impl RenderOnce for MonitorStatus {
                     .flex_shrink(shrink)
                     .items_center()
                     .gap_1()
-                    .tooltip(move |window, cx| {
-                        Tooltip::new(metric.details.clone()).build(window, cx)
-                    })
-                    .child(Icon::new(metric.icon).xsmall().text_color(tone))
+                    .child(Icon::new(metric.icon).small().text_color(tone))
                     .children(values)
                     .into_any_element(),
             );
