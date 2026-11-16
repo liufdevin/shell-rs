@@ -40,6 +40,14 @@ impl Workspace {
             return;
         };
         let generation = view.read(cx).generation(cx);
+        if let Some(login) = view.read(cx).serial_service_ssh(cx) {
+            self.install_serial_ssh_files(id, login, window, cx);
+            return;
+        }
+        if let Some(connection) = view.read(cx).serial_service_adb(cx) {
+            self.install_serial_adb_files(id, connection, window, cx);
+            return;
+        }
         if !self
             .tools
             .update(cx, |tools, cx| tools.begin_serial_check(id, generation, cx))
@@ -53,8 +61,31 @@ impl Workspace {
             return;
         };
         let detector = self.adb_detector.clone();
+        let shared = view.read(cx).has_serial_services();
         cx.spawn_in(window, async move |this, cx| {
             let result = exec_answer(reply, cx).await;
+            if shared {
+                this.update_in(cx, |this, window, cx| {
+                    if this.serial_file_target(id, cx).is_none_or(|current| {
+                        current != view || current.read(cx).generation(cx) != generation
+                    }) {
+                        return;
+                    }
+                    let adb = view.read(cx).serial_service_adb(cx);
+                    let ssh = view.read(cx).serial_service_ssh(cx);
+                    let status = view.read(cx).serial_service_label(cx);
+                    this.tools.update(cx, |tools, cx| {
+                        tools.finish_serial_check(id, generation, status.into(), cx)
+                    });
+                    if let Some(connection) = adb {
+                        this.install_serial_adb_files(id, connection, window, cx);
+                    } else if let Some(login) = ssh {
+                        this.install_serial_ssh_files(id, login, window, cx);
+                    }
+                })
+                .ok();
+                return;
+            }
             let boot_id = result
                 .as_ref()
                 .and_then(|result| result.as_ref().ok())
@@ -127,6 +158,7 @@ impl Workspace {
                         generation,
                         devices,
                         this.focus_handle.clone(),
+                        false,
                         window,
                         cx,
                     );
@@ -144,6 +176,16 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         let id = action.0;
+        self.choose_serial_adb(id, false, window, cx);
+    }
+
+    pub(super) fn choose_serial_adb(
+        &mut self,
+        id: RemoteTerminalId,
+        service_only: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(view) = self.serial_file_target(id, cx) else {
             return;
         };
@@ -166,6 +208,7 @@ impl Workspace {
                         generation,
                         vec![connection],
                         this.focus_handle.clone(),
+                        service_only,
                         window,
                         cx,
                     ),
@@ -174,6 +217,7 @@ impl Workspace {
                         generation,
                         devices,
                         this.focus_handle.clone(),
+                        service_only,
                         window,
                         cx,
                     ),
@@ -190,6 +234,22 @@ impl Workspace {
             .ok();
         })
         .detach();
+    }
+
+    pub(super) fn on_select_serial_service_adb(
+        &mut self,
+        action: &crate::app::SelectSerialServiceAdb,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let (id, generation, connection) = &action.0;
+        if let Some(view) = self.serial_file_target(*id, cx)
+            && view.read(cx).generation(cx) == *generation
+        {
+            view.update(cx, |view, cx| {
+                view.select_serial_adb(connection.clone(), cx)
+            });
+        }
     }
 
     pub(super) fn on_open_adb_files(
@@ -352,6 +412,7 @@ fn open_adb_chooser(
     generation: u64,
     devices: Vec<AdbConnection>,
     dispatch: FocusHandle,
+    service_only: bool,
     window: &mut Window,
     cx: &mut App,
 ) {
@@ -371,7 +432,7 @@ fn open_adb_chooser(
                     .gap_2()
                     .child(div().text_sm().child(t!("adb.choose_note")))
                     .children(devices.iter().map(|device| {
-                        let action = OpenAdbFiles((terminal, generation, device.clone()));
+                        let device = device.clone();
                         let dispatch = dispatch.clone();
                         let label = if device.display_name() == device.serial() {
                             SharedString::from(device.serial())
@@ -392,9 +453,23 @@ fn open_adb_chooser(
                         .on_click(move |_, window, cx| {
                             window.close_dialog(cx);
                             let dispatch = dispatch.clone();
-                            let action = action.clone();
+                            let device = device.clone();
                             window.defer(cx, move |window, cx| {
-                                dispatch.dispatch_action(&action, window, cx)
+                                if service_only {
+                                    dispatch.dispatch_action(
+                                        &crate::app::SelectSerialServiceAdb((
+                                            terminal, generation, device,
+                                        )),
+                                        window,
+                                        cx,
+                                    )
+                                } else {
+                                    dispatch.dispatch_action(
+                                        &OpenAdbFiles((terminal, generation, device)),
+                                        window,
+                                        cx,
+                                    )
+                                }
                             });
                         })
                     })),

@@ -1,4 +1,4 @@
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::ops::Range;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -312,6 +312,9 @@ struct HoveredLink {
 }
 
 pub struct TerminalView {
+    serial_service_config: Option<SerialServiceConfig>,
+    serial_services: RefCell<Option<(u64, std::sync::Arc<crate::monitor::SerialServices>)>>,
+    serial_service_override: Option<crate::host::MonitorChannel>,
     timestamp_subscription: Option<Subscription>,
     timestamp_target: Option<(
         Entity<crate::host::HostStore>,
@@ -366,6 +369,12 @@ pub struct TerminalView {
     reported_cell: Option<(usize, usize)>,
     _subscriptions: Vec<Subscription>,
     _blink_task: Task<()>,
+}
+
+struct SerialServiceConfig {
+    connector: std::sync::Arc<dyn crate::monitor::MonitorConnector>,
+    settings: crate::host::MonitorSettings,
+    candidates: Vec<(String, crate::host::HostLogin)>,
 }
 
 impl TerminalView {
@@ -521,6 +530,17 @@ impl TerminalView {
         let subscriptions = vec![
             cx.observe(&engine, |this, engine, cx| {
                 let engine = engine.read(cx);
+                let reset_route =
+                    this.serial_services
+                        .borrow()
+                        .as_ref()
+                        .is_some_and(|(generation, _)| {
+                            *generation != engine.generation()
+                                || engine.lifecycle() != &TerminalLifecycle::Running
+                        });
+                if reset_route {
+                    this.clear_serial_services();
+                }
                 if this.tab_active && engine.lifecycle() == &TerminalLifecycle::Running {
                     this.tab_activated = true;
                 }
@@ -617,6 +637,9 @@ impl TerminalView {
 
         Self {
             engine,
+            serial_service_config: None,
+            serial_services: RefCell::new(None),
+            serial_service_override: None,
             timestamp_target: None,
             timestamp_subscription: None,
             timestamp_marks: [None, None],
@@ -913,11 +936,13 @@ impl TerminalView {
     }
 
     pub fn shutdown(&mut self, cx: &mut Context<Self>) {
+        self.clear_serial_services();
         self.reset_interaction();
         self.engine.update(cx, |engine, cx| engine.shutdown(cx));
     }
 
     pub fn stop(&mut self, message: &str, cx: &mut Context<Self>) {
+        self.clear_serial_services();
         self.engine
             .update(cx, |engine, cx| engine.stop(message, cx));
     }
@@ -979,6 +1004,9 @@ impl TerminalView {
         command: String,
         cx: &App,
     ) -> Option<std::sync::mpsc::Receiver<super::ExecResult>> {
+        if let Some(service) = self.shared_serial_services(cx) {
+            return Some(service.execute(self.serial_service_sender(cx), command));
+        }
         self.engine.read(cx).exec(command)
     }
 
@@ -987,7 +1015,190 @@ impl TerminalView {
         command: String,
         cx: &App,
     ) -> Option<std::sync::mpsc::Receiver<super::ExecResult>> {
+        if let Some(service) = self.shared_serial_services(cx) {
+            return Some(service.execute_with_serial(
+                self.serial_service_sender(cx),
+                command,
+                None,
+            ));
+        }
         self.engine.read(cx).monitor(command)
+    }
+
+    pub(crate) fn configure_serial_services(
+        &mut self,
+        connector: std::sync::Arc<dyn crate::monitor::MonitorConnector>,
+        settings: crate::host::MonitorSettings,
+        candidates: Vec<(String, crate::host::HostLogin)>,
+        cx: &mut Context<Self>,
+    ) {
+        let changed = self.serial_service_config.as_ref().is_none_or(|current| {
+            current.settings != settings || !std::sync::Arc::ptr_eq(&current.connector, &connector)
+        });
+        self.serial_service_config = Some(SerialServiceConfig {
+            connector,
+            settings,
+            candidates,
+        });
+        if changed {
+            self.clear_serial_services();
+            self.serial_service_override = None;
+            cx.notify();
+        }
+    }
+
+    fn clear_serial_services(&self) {
+        if let Some((_, service)) = self.serial_services.borrow_mut().take() {
+            service.cancel();
+        }
+    }
+
+    fn shared_serial_services(
+        &self,
+        cx: &App,
+    ) -> Option<std::sync::Arc<crate::monitor::SerialServices>> {
+        let config = self.serial_service_config.as_ref()?;
+        if self.lifecycle(cx) != super::TerminalLifecycle::Running {
+            return None;
+        }
+        let generation = self.generation(cx);
+        let mut current = self.serial_services.borrow_mut();
+        if current.as_ref().is_none_or(|(on, _)| *on != generation) {
+            if let Some((_, previous)) = current.take() {
+                previous.cancel();
+            }
+            let mut settings = config.settings.clone();
+            if let Some(channel) = self.serial_service_override {
+                settings.channel = channel;
+            }
+            *current = Some((
+                generation,
+                crate::monitor::SerialServices::new(
+                    config.connector.clone(),
+                    settings,
+                    config.candidates.clone(),
+                ),
+            ));
+        }
+        current.as_ref().map(|(_, service)| service.clone())
+    }
+
+    fn serial_service_sender(
+        &self,
+        cx: &App,
+    ) -> Option<std::sync::mpsc::Sender<super::TerminalTransportCommand>> {
+        self.engine
+            .read(cx)
+            .serial_query_allowed()
+            .then(|| self.channels(cx).command_sender())
+            .flatten()
+    }
+
+    pub(crate) fn has_serial_services(&self) -> bool {
+        self.serial_service_config.is_some()
+    }
+
+    pub(crate) fn serial_service_channel(&self) -> crate::host::MonitorChannel {
+        self.serial_service_override
+            .or_else(|| {
+                self.serial_service_config
+                    .as_ref()
+                    .map(|config| config.settings.channel)
+            })
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn serial_service_label(&self, cx: &App) -> String {
+        self.serial_services
+            .borrow()
+            .as_ref()
+            .filter(|(on, _)| *on == self.generation(cx))
+            .map(|(_, service)| service.status().label)
+            .filter(|label| !label.is_empty())
+            .unwrap_or_else(|| t!("monitor.route.not_selected").to_string())
+    }
+
+    pub(crate) fn serial_service_link(
+        &self,
+        cx: &App,
+    ) -> Option<Box<dyn crate::monitor::MonitorLink>> {
+        Some(
+            self.shared_serial_services(cx)?
+                .monitor_link(self.serial_service_sender(cx)),
+        )
+    }
+
+    pub(crate) fn serial_service_monitor(
+        &self,
+        command: String,
+        serial_command: String,
+        cx: &App,
+    ) -> Option<std::sync::mpsc::Receiver<super::ExecResult>> {
+        Some(self.shared_serial_services(cx)?.execute_with_serial(
+            self.serial_service_sender(cx),
+            command,
+            Some(serial_command),
+        ))
+    }
+
+    pub(crate) fn serial_service_adb(&self, cx: &App) -> Option<crate::adb::AdbConnection> {
+        self.serial_services
+            .borrow()
+            .as_ref()
+            .filter(|(on, _)| *on == self.generation(cx))?
+            .1
+            .status()
+            .adb
+    }
+
+    pub(crate) fn serial_service_ssh(&self, cx: &App) -> Option<crate::host::HostLogin> {
+        self.serial_services
+            .borrow()
+            .as_ref()
+            .filter(|(on, _)| *on == self.generation(cx))?
+            .1
+            .status()
+            .ssh
+    }
+
+    pub(crate) fn adopt_serial_adb(&self, device: crate::adb::AdbConnection, cx: &App) {
+        if let Some(service) = self.shared_serial_services(cx) {
+            service.adopt_adb(device);
+        }
+    }
+
+    pub(crate) fn adopt_serial_ssh(&self, id: String, login: crate::host::HostLogin, cx: &App) {
+        if let Some(service) = self.shared_serial_services(cx) {
+            service.adopt_ssh(id, login);
+        }
+    }
+
+    pub(crate) fn select_serial_service(
+        &mut self,
+        channel: crate::host::MonitorChannel,
+        cx: &mut Context<Self>,
+    ) {
+        let adb = (channel == crate::host::MonitorChannel::Adb)
+            .then(|| self.serial_service_adb(cx))
+            .flatten();
+        self.serial_service_override = Some(channel);
+        self.clear_serial_services();
+        if let Some(device) = adb {
+            self.adopt_serial_adb(device, cx);
+        }
+        let _ = self.exec(":".to_string(), cx);
+        cx.notify();
+    }
+
+    pub(crate) fn select_serial_adb(
+        &mut self,
+        device: crate::adb::AdbConnection,
+        cx: &mut Context<Self>,
+    ) {
+        self.serial_service_override = Some(crate::host::MonitorChannel::Adb);
+        self.clear_serial_services();
+        self.adopt_serial_adb(device, cx);
+        cx.notify();
     }
 
     /// Take up an `exec --terminal` run; see [`TerminalEngine::run_command`].

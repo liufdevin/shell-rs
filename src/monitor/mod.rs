@@ -7,10 +7,12 @@ mod hardware;
 mod linux;
 mod model;
 mod monitor_panel;
+mod serial_route;
 mod status;
 
 pub use connection::{MonitorConnector, MonitorLink, SystemMonitorConnector};
 pub use monitor_panel::MonitorPanel;
+pub(crate) use serial_route::SerialServices;
 pub use status::MonitorStatus;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

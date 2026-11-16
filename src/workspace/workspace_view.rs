@@ -1146,7 +1146,39 @@ impl Workspace {
             crate::host::AuthKind::Password,
             None,
         );
-        self.install_serial_file_route(terminal, draft, SftpRoute::NetworkSidebar, window, cx);
+        self.install_serial_file_route(
+            terminal,
+            draft,
+            SftpRoute::NetworkSidebar,
+            None,
+            window,
+            cx,
+        );
+    }
+
+    pub(super) fn install_serial_ssh_files(
+        &mut self,
+        terminal: RemoteTerminalId,
+        login: HostLogin,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let draft = crate::host::HostDraft::new(
+            &login.host,
+            &login.host,
+            login.port,
+            &login.user,
+            crate::host::AuthKind::NoPassword,
+            None,
+        );
+        self.install_serial_file_route(
+            terminal,
+            draft,
+            SftpRoute::NetworkSidebar,
+            Some(login),
+            window,
+            cx,
+        );
     }
 
     pub(super) fn install_serial_adb_files(
@@ -1156,6 +1188,13 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if let Some(panel) = self.terminals.get(&terminal) {
+            panel
+                .read(cx)
+                .terminal()
+                .read(cx)
+                .adopt_serial_adb(connection.clone(), cx);
+        }
         let name = format!("ADB · {}", connection.serial());
         let draft = crate::host::HostDraft::new(
             &name,
@@ -1169,6 +1208,7 @@ impl Workspace {
             terminal,
             draft,
             SftpRoute::ExternalSidebar(Arc::new(connection)),
+            None,
             window,
             cx,
         );
@@ -1179,6 +1219,7 @@ impl Workspace {
         terminal: RemoteTerminalId,
         draft: crate::host::HostDraft,
         route: SftpRoute,
+        login_override: Option<HostLogin>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -1195,6 +1236,7 @@ impl Workspace {
                 store.login(host_id).unwrap(),
             )
         };
+        let login = login_override.unwrap_or(login);
         let id = ExplorerId(self.next_explorer_id);
         self.next_explorer_id += 1;
         let (panel, subscription) = new_explorer_panel(self, id, host, login, route, window, cx);
@@ -2368,6 +2410,18 @@ impl Workspace {
             return;
         }
         panel.update(cx, |panel, cx| panel.command(command, cx));
+    }
+
+    fn on_check_flashing_driver(
+        &mut self,
+        _: &crate::app::CheckFlashingDriver,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(settings) = &self.settings_tab {
+            let driver = settings.read(cx).flashing_driver_check().clone();
+            driver.update(cx, |driver, cx| driver.check(cx));
+        }
     }
 
     pub(super) fn flashing_needs_confirmation(&self, cx: &mut App) -> bool {
@@ -4000,6 +4054,7 @@ fn new_explorer_panel(
     window: &mut Window,
     cx: &mut Context<Workspace>,
 ) -> (Entity<ExplorerPanel>, Subscription) {
+    let service_login = matches!(route, SftpRoute::NetworkSidebar).then(|| login.clone());
     let panel = cx.new(|cx| {
         ExplorerPanel::new(
             id,
@@ -4018,7 +4073,7 @@ fn new_explorer_panel(
     let subscription = cx.subscribe_in(
         &panel,
         window,
-        |this, _, event: &ExplorerPanelEvent, window, cx| match event {
+        move |this, _, event: &ExplorerPanelEvent, window, cx| match event {
             ExplorerPanelEvent::Activated(id) => {
                 this.set_active_tab(Some(CenterTab::Explorer(*id)), window, cx)
             }
@@ -4042,6 +4097,18 @@ fn new_explorer_panel(
                 this.forget_unused_temporary_host(*host_id, window, cx);
             }
             ExplorerPanelEvent::StateChanged(id, host_id) => {
+                if let Some(panel) = this.explorers.get(id)
+                    && panel.read(cx).connection_state() == ConnectionState::Connected
+                    && panel.read(cx).host().address != "adb"
+                    && let Some(terminal) = this.file_sidebars.iter().find(|(_, explorer)| **explorer == *id).and_then(|(terminal, _)| this.terminals.get(terminal))
+                    && terminal.read(cx).host().is_serial()
+                    && matches!(terminal.read(cx).terminal().read(cx).serial_service_channel(), crate::host::MonitorChannel::Auto | crate::host::MonitorChannel::Ssh)
+                    && terminal.read(cx).terminal().read(cx).serial_service_ssh(cx).is_none()
+                    && let Some(login) = &service_login
+                {
+                    let public_id = panel.read(cx).host().public_id.as_str().to_owned();
+                    terminal.read(cx).terminal().read(cx).adopt_serial_ssh(public_id, login.clone(), cx);
+                }
                 if let Some(panel) = this.explorers.get(id) {
                     let generation = panel.read(cx).generation();
                     this.prompt_queue.retain(|(owner,_,_)| !matches!(owner,PromptOwner::Sftp(s,g) if s == id && *g != generation));
@@ -4524,6 +4591,7 @@ impl Workspace {
             .on_action(cx.listener(Self::on_open_settings))
             .on_action(cx.listener(Self::on_open_flashing))
             .on_action(cx.listener(Self::on_flashing_action))
+            .on_action(cx.listener(Self::on_check_flashing_driver))
             .on_action(cx.listener(Self::on_close_flashing))
             .on_action(cx.listener(Self::on_install_cli_command))
             .on_action(cx.listener(Self::on_remove_cli_command))
@@ -4604,6 +4672,7 @@ impl Workspace {
             .on_action(cx.listener(Self::on_open_adb_devices))
             .on_action(cx.listener(Self::on_adb_device_action))
             .on_action(cx.listener(Self::on_open_adb_files))
+            .on_action(cx.listener(Self::on_select_serial_service_adb))
             .on_action(cx.listener(Self::on_refresh_gpu))
             .on_action(cx.listener(Self::on_toggle_gpu_device))
             .on_action(cx.listener(Self::on_toggle_all_gpu_devices))
@@ -4828,7 +4897,7 @@ impl Workspace {
     fn on_utility_action(
         &mut self,
         action: &crate::app::UtilityAction,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let view = if let crate::utilities::UtilityCommand::Pick(owner, _) = &action.0 {
@@ -4845,6 +4914,24 @@ impl Workspace {
             self.tools.read(cx).utilities_target(cx)
         };
         if let Some(view) = view {
+            match &action.0 {
+                crate::utilities::UtilityCommand::SelectService(channel) => {
+                    view.update(cx, |view, cx| view.select_serial_service(*channel, cx));
+                    return;
+                }
+                crate::utilities::UtilityCommand::ChooseServiceAdb => {
+                    if let Some(id) = self
+                        .terminals
+                        .iter()
+                        .find(|(_, panel)| panel.read(cx).terminal() == &view)
+                        .map(|(id, _)| *id)
+                    {
+                        self.choose_serial_adb(id, true, window, cx);
+                    }
+                    return;
+                }
+                _ => {}
+            }
             view.update(cx, |view, cx| view.timestamp_command(&action.0, cx));
         }
     }

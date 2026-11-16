@@ -64,6 +64,7 @@ pub enum SettingsPanelEvent {
 /// changes.
 pub struct SettingsPanel {
     store: Entity<SettingsStore>,
+    flashing_driver_check: Entity<crate::flashing::DriverCheck>,
     /// What of the external CLI is installed, for 外部 CLI.
     integration: Entity<CliIntegration>,
     /// Where sync stands, for 同步.
@@ -88,7 +89,7 @@ pub struct SettingsPanel {
     shown_category: Rc<Cell<usize>>,
     focus_handle: FocusHandle,
     tab_group: Option<WeakEntity<TabGroup>>,
-    _subscriptions: [Subscription; 6],
+    _subscriptions: [Subscription; 7],
     _font_scan: Task<()>,
     _lock_subscription: Option<Subscription>,
 }
@@ -106,6 +107,7 @@ impl SettingsPanel {
         let background_images = cx.new(|cx| BackgroundImagesEditor::new(store.clone(), window, cx));
         let shortcuts = cx.new(|cx| ShortcutsEditor::new(store.clone(), window, cx));
         let local_shell = cx.new(|cx| LocalShellEditor::new(store.clone(), cmder, window, cx));
+        let flashing_driver_check = cx.new(|_| crate::flashing::DriverCheck::default());
         let subscriptions = [
             cx.observe(&store, |_, _, cx| cx.notify()),
             cx.observe(&background_images, |_, _, cx| cx.notify()),
@@ -113,6 +115,7 @@ impl SettingsPanel {
             cx.observe(&local_shell, |_, _, cx| cx.notify()),
             cx.observe(&integration, |_, _, cx| cx.notify()),
             cx.observe(&sync, |_, _, cx| cx.notify()),
+            cx.observe(&flashing_driver_check, |_, _, cx| cx.notify()),
         ];
         // Loading every family takes a moment the first time; the process
         // keeps the answer, so later tabs have it at once.
@@ -137,6 +140,7 @@ impl SettingsPanel {
         Self {
             _lock_subscription: lock_subscription,
             store,
+            flashing_driver_check,
             integration,
             sync,
             lan_page: None,
@@ -157,6 +161,10 @@ impl SettingsPanel {
 
     pub fn tab_group(&self) -> Option<WeakEntity<TabGroup>> {
         self.tab_group.clone()
+    }
+
+    pub fn flashing_driver_check(&self) -> &Entity<crate::flashing::DriverCheck> {
+        &self.flashing_driver_check
     }
 
     pub fn set_lan(
@@ -1113,10 +1121,11 @@ fn application_groups(panel: &SettingsPanel, cx: &App) -> Vec<SettingGroup> {
     }
     if cfg!(windows) {
         let store = panel.store.clone();
+        let driver = panel.flashing_driver_check.read(cx);
+        let checking = driver.is_checking();
         groups.push(
-            SettingGroup::new()
-                .title(t!("flashing.title"))
-                .items([SettingItem::new(
+            SettingGroup::new().title(t!("flashing.title")).items([
+                SettingItem::new(
                     t!("flashing.settings.enabled"),
                     SettingField::render(move |options, _, cx| {
                         let enabled = store.read(cx).settings().flashing_enabled;
@@ -1134,7 +1143,28 @@ fn application_groups(panel: &SettingsPanel, cx: &App) -> Vec<SettingGroup> {
                     }),
                 )
                 .description(t!("flashing.settings.description"))
-                .keywords(keywords(t!("flashing.title")))]),
+                .keywords(keywords(t!("flashing.title"))),
+                SettingItem::new(
+                    t!("flashing.driver.title"),
+                    SettingField::render(move |options, _, _| {
+                        Button::new("flashing-driver-check")
+                            .outline()
+                            .with_size(options.size())
+                            .label(if checking {
+                                t!("flashing.driver.checking")
+                            } else {
+                                t!("flashing.driver.check")
+                            })
+                            .disabled(checking)
+                            .on_click(|_, window, cx| {
+                                window
+                                    .dispatch_action(Box::new(crate::app::CheckFlashingDriver), cx)
+                            })
+                    }),
+                )
+                .description(driver.message())
+                .keywords(keywords(t!("flashing.driver.title"))),
+            ]),
         );
     }
     groups

@@ -77,6 +77,12 @@ pub struct SftpChannelRequest {
 pub struct TerminalChannels(Arc<Mutex<Option<mpsc::Sender<TerminalTransportCommand>>>>);
 
 impl TerminalChannels {
+    pub(crate) fn command_sender(&self) -> Option<mpsc::Sender<TerminalTransportCommand>> {
+        self.0
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone()
+    }
     pub(crate) fn attach(&self, commands: mpsc::Sender<TerminalTransportCommand>) {
         *self.0.lock().unwrap_or_else(|error| error.into_inner()) = Some(commands);
     }

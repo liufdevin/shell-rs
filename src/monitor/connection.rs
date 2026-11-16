@@ -19,6 +19,9 @@ pub trait MonitorLink: Send {
     fn adb_connection(&self) -> Option<AdbConnection> {
         None
     }
+    fn ssh_login(&self) -> Option<HostLogin> {
+        None
+    }
 }
 
 pub trait MonitorConnector: Send + Sync {
@@ -85,6 +88,7 @@ impl MonitorConnector for SystemMonitorConnector {
         if matches!(settings.channel, MonitorChannel::Auto | MonitorChannel::Ssh)
             && let Some(connector) = &self.ssh
         {
+            let mut attempted = 0;
             for (id, login) in candidates {
                 let explicit = !settings.ssh_host.is_empty();
                 if (explicit && id != &settings.ssh_host)
@@ -97,6 +101,10 @@ impl MonitorConnector for SystemMonitorConnector {
                 {
                     continue;
                 }
+                if attempted >= 2 {
+                    break;
+                }
+                attempted += 1;
                 match SshMonitor::connect(connector, login, boot.as_deref(), cancel) {
                     Ok(link) => return Ok(Some(Box::new(link))),
                     Err(error) => problem = Some(error),
@@ -140,6 +148,7 @@ impl MonitorLink for AdbConnection {
 }
 
 struct SshMonitor {
+    login: HostLogin,
     runtime: tokio::runtime::Runtime,
     handle: SshHandle,
     endpoint: String,
@@ -163,7 +172,7 @@ impl SshMonitor {
         let config = SshConnectionConfig::from(login);
         let (handle, _) = runtime.block_on(async {
             tokio::select! {
-                result = tokio::time::timeout(Duration::from_secs(8), connector.connect(&config, prompts)) => {
+                result = tokio::time::timeout(Duration::from_secs(3), connector.connect(&config, prompts)) => {
                     result.map_err(|_| t!("monitor.route.ssh_unavailable").to_string())?
                         .map_err(|error| crate::ssh::describe_login_error(&error))
                 }
@@ -171,6 +180,7 @@ impl SshMonitor {
             }
         })?;
         let mut link = Self {
+            login: login.clone(),
             runtime,
             handle,
             endpoint: format!("{}@{}:{}", login.user, login.host, login.port),
@@ -189,6 +199,9 @@ async fn cancelled(cancel: &AtomicBool) {
 }
 
 impl MonitorLink for SshMonitor {
+    fn ssh_login(&self) -> Option<HostLogin> {
+        Some(self.login.clone())
+    }
     fn label(&self) -> String {
         format!("SSH · {}", self.endpoint)
     }

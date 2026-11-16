@@ -170,9 +170,9 @@ Pausing only changes a compact status in the existing channel row. It does not o
 
 Legacy adbd versions that only allocate a PTY automatically use a compatibility mode requiring `base64` on the device. Shell results are encoded before crossing the PTY to preserve directory records and filenames despite newline conversion. Only an explicit PTY capability error triggers a retry; ordinary command failures are never replayed. File bytes still use ADB push/pull, not the PTY.
 
-## Firmware flashing on Windows
+## AW firmware flashing on Windows
 
-Keep the complete `PhoenixConsole_Windows` folder next to ShellLF, and install the Allwinner USB flashing driver first. Open **Firmware flashing** from the title bar, choose the erase mode, then select an `.img` file. Selecting the file starts waiting immediately, so leave only the target board connected.
+Keep the complete `PhoenixConsole_Windows` folder next to ShellLF, and install the Allwinner USB flashing driver first. Open **AW firmware flashing** from the title bar, choose the erase mode, then select an `.img` file. Selecting the file starts waiting immediately, so leave only the target board connected.
 
 - **Board button:** Follow the board's instructions to enter FEL/FES. PhoenixConsole detects it and starts flashing automatically.
 - **Running board:** Connect one authorized USB ADB device and click **Start flashing** while waiting. This sends `adb shell reboot efex`; PhoenixConsole takes over when the board enters flashing mode.

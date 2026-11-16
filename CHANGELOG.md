@@ -6,6 +6,12 @@ One section per version, titled `## [version]`, optionally followed by a date. E
 
 ## [0.1.22]
 
+- Rename Allwinner flashing to “AW firmware flashing” throughout the title bar, tab, settings and confirmation text, distinguishing it from future flashing backends.
+
+- Add a read-only Allwinner FEL driver check in Application settings, showing only whether an Allwinner USBDrv package was detected, with a separate failure message and no INF filenames or extra result details. ADB drivers and bundled INF files are not mistaken for installed flashing drivers.
+
+- Share SSH/ADB routing across serial sidebar tools and explicitly selected file devices, cap automatic discovery at two attempts, and add channel status, rediscovery and SSH/ADB/device selection to Utilities without replaying failed control commands.
+- Make flashing logs selectable and copyable character by character. Mark background starts and completions with the same tab indicator as terminals, clearing it on entry. Preserve ANSI controls while removing backspace/repaint residue, and decode each complete line as UTF-8 or GBK to remove garbled result suffixes.
 - Keep the selected firmware path through temporary deletion or network outages, reload it automatically once available and stable without copying the IMG, remap partitions by name, and respect explicit stop and tab closure.
 - Support up to eight concurrent Allwinner devices with independent progress, timers and results. Reusing a slot resets only that device; process exit interrupts unfinished devices only. Disable the batch-count exit in the verified temporary tool copy to keep other slots running.
 - Identify flash results by the actual device number and show only one progress bar for a single device.

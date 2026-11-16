@@ -1289,6 +1289,14 @@ async fn diagnostic_link(
     cancel: &Arc<AtomicBool>,
     cx: &mut AsyncApp,
 ) -> Result<Option<Box<dyn MonitorLink>>, Problem> {
+    if target.serial.is_some()
+        && let Ok(Some(link)) = target
+            .exec
+            .view
+            .read_with(cx, |view, cx| view.serial_service_link(cx))
+    {
+        return Ok(Some(link));
+    }
     let Some(mut settings) = target.serial.clone() else {
         return Ok(None);
     };

@@ -148,6 +148,7 @@ gpui_kit::actions!(
         OpenAdbDevices,
         /// Open the firmware flashing tab.
         OpenFlashing,
+        CheckFlashingDriver,
         /// Open the new-credential dialog.
         NewCredential,
         /// Open the new-credential dialog at a key it generates.
@@ -401,6 +402,7 @@ id_actions! {
     ToggleMonitorChannel((RemoteTerminalId, String));
     ChooseAdbDevice(RemoteTerminalId);
     OpenAdbFiles((RemoteTerminalId, u64, crate::adb::AdbConnection));
+    SelectSerialServiceAdb((RemoteTerminalId, u64, crate::adb::AdbConnection));
     /// Unfold a device of GPU/NPU to its details, or fold them away again,
     /// by its key.
     ToggleGpuDevice(String);

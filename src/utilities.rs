@@ -4,12 +4,19 @@ use crate::{
     terminal::{LineTimestamp, TerminalView},
 };
 use gpui_kit::component::{
-    ActiveTheme as _, Disableable as _, Sizable as _, button::Button, switch::Switch, v_flex,
+    ActiveTheme as _, Disableable as _, Selectable as _, Sizable as _,
+    button::{Button, ButtonGroup},
+    scroll::ScrollableElement as _,
+    switch::Switch,
+    v_flex,
 };
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum UtilityCommand {
+    SelectService(crate::host::MonitorChannel),
+    ChooseServiceAdb,
     SetBoundary(bool),
     Toggle(bool),
     Pick(EntityId, LineTimestamp),
@@ -21,6 +28,7 @@ pub enum UtilityCommand {
 pub struct UtilitiesPanel {
     view: Option<WeakEntity<TerminalView>>,
     observer: Option<Subscription>,
+    route_task: Option<Task<()>>,
 }
 
 impl UtilitiesPanel {
@@ -28,6 +36,7 @@ impl UtilitiesPanel {
         Self {
             view: None,
             observer: None,
+            route_task: None,
         }
     }
     pub fn set_target(&mut self, view: Option<WeakEntity<TerminalView>>, cx: &mut Context<Self>) {
@@ -39,6 +48,27 @@ impl UtilitiesPanel {
             .and_then(WeakEntity::upgrade)
             .map(|view| cx.observe(&view, |_, _, cx| cx.notify()));
         self.view = view;
+        self.route_task = None;
+        if let Some(view) = self.view.clone() {
+            self.route_task = Some(cx.spawn(async move |this, cx| {
+                let mut previous = String::new();
+                loop {
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_millis(500))
+                        .await;
+                    let Ok(label) = view.read_with(cx, |view, cx| view.serial_service_label(cx))
+                    else {
+                        break;
+                    };
+                    if label != previous {
+                        previous = label;
+                        if this.update(cx, |_, cx| cx.notify()).is_err() {
+                            break;
+                        }
+                    }
+                }
+            }));
+        }
         cx.notify();
     }
     pub fn target(&self) -> Option<Entity<TerminalView>> {
@@ -88,6 +118,77 @@ impl Render for UtilitiesPanel {
             .p_3()
             .gap_3()
             .size_full()
+            .when(
+                view.as_ref()
+                    .is_some_and(|view| view.read(cx).has_serial_services()),
+                |panel| {
+                    let view = view.as_ref().unwrap().read(cx);
+                    let status = view.serial_service_label(cx);
+                    let selected = view.serial_service_channel();
+                    panel.child(
+                        v_flex()
+                            .gap_2()
+                            .child(div().text_sm().child(t!("monitor.route.shared")))
+                            .child(
+                                div()
+                                    .id("serial-service-status")
+                                    .test_support()
+                                    .aria_label(status.clone())
+                                    .text_xs()
+                                    .child(status),
+                            )
+                            .child(ButtonGroup::new("serial-service-choices").children(
+                                crate::host::MonitorChannel::ALL.into_iter().map(|channel| {
+                                    let (id, label) = match channel {
+                                        crate::host::MonitorChannel::Auto => {
+                                            ("serial-service-auto", t!("monitor.route.redetect"))
+                                        }
+                                        crate::host::MonitorChannel::Ssh => {
+                                            ("serial-service-ssh", "SSH".into())
+                                        }
+                                        crate::host::MonitorChannel::Adb => {
+                                            ("serial-service-adb", "ADB".into())
+                                        }
+                                        crate::host::MonitorChannel::Serial => {
+                                            ("serial-service-serial", t!("monitor.route.serial"))
+                                        }
+                                    };
+                                    Button::new(id)
+                                        .small()
+                                        .label(label)
+                                        .selected(selected == channel)
+                                        .on_click(move |_, window, cx| {
+                                            window.dispatch_action(
+                                                Box::new(UtilityAction(
+                                                    UtilityCommand::SelectService(channel),
+                                                )),
+                                                cx,
+                                            )
+                                        })
+                                }),
+                            ))
+                            .child(
+                                Button::new("serial-service-choose-adb")
+                                    .small()
+                                    .label(t!("monitor.route.choose_adb"))
+                                    .on_click(|_, window, cx| {
+                                        window.dispatch_action(
+                                            Box::new(UtilityAction(
+                                                UtilityCommand::ChooseServiceAdb,
+                                            )),
+                                            cx,
+                                        )
+                                    }),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(t!("monitor.route.shared_help")),
+                            ),
+                    )
+                },
+            )
             .child(
                 Switch::new("utilities-timestamps")
                     .label(t!("utilities.timestamps"))
@@ -177,5 +278,6 @@ impl Render for UtilitiesPanel {
                         window.dispatch_action(Box::new(UtilityAction(UtilityCommand::Copy)), cx)
                     }),
             )
+            .overflow_y_scrollbar()
     }
 }

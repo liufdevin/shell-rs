@@ -136,6 +136,8 @@ pub enum SidebarTarget {
 /// it keeps its state, told which terminal is in front and whether it is on
 /// screen.
 pub struct ToolSidebar {
+    store: Entity<HostStore>,
+    monitor_connector: Option<std::sync::Arc<dyn crate::monitor::MonitorConnector>>,
     serial_tools: Option<Entity<crate::serial::SerialToolsPanel>>,
     utilities: Entity<crate::utilities::UtilitiesPanel>,
     tool: ToolKind,
@@ -181,6 +183,8 @@ impl ToolSidebar {
         cx: &mut Context<Self>,
     ) -> Self {
         Self {
+            store: store.clone(),
+            monitor_connector: None,
             serial_tools: None,
             utilities: cx.new(|_| crate::utilities::UtilitiesPanel::new()),
             tool: ToolKind::default(),
@@ -253,6 +257,7 @@ impl ToolSidebar {
         connector: std::sync::Arc<dyn crate::monitor::MonitorConnector>,
         cx: &mut Context<Self>,
     ) {
+        self.monitor_connector = Some(connector.clone());
         self.logs
             .update(cx, |logs, cx| logs.set_connector(connector.clone(), cx));
         self.monitor
@@ -506,6 +511,30 @@ impl ToolSidebar {
     /// Point each tool at the SSH terminal, running only the one on screen;
     /// at none beside a local terminal.
     fn sync_tools(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let (Some(connector), Some(terminal)) = (
+            self.monitor_connector.clone(),
+            self.remote()
+                .filter(|terminal| terminal.serial && !terminal.shell_only)
+                .cloned(),
+        ) && let Some(view) = terminal.view.upgrade()
+        {
+            let candidates = self
+                .store
+                .read(cx)
+                .hosts()
+                .iter()
+                .filter(|host| host.is_ssh())
+                .filter_map(|host| {
+                    self.store
+                        .read(cx)
+                        .login(host.id)
+                        .map(|login| (host.public_id.as_str().to_owned(), login))
+                })
+                .collect();
+            view.update(cx, |view, cx| {
+                view.configure_serial_services(connector, terminal.monitor_settings, candidates, cx)
+            });
+        }
         let serial_target = self
             .remote()
             .filter(|terminal| terminal.serial && self.shown && self.tool == ToolKind::Serial)

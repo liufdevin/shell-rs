@@ -346,6 +346,39 @@ impl MonitorPanel {
                 let outcome = if !running {
                     route = SerialRoute::default();
                     Outcome::NotConnected
+                } else if serial.is_some()
+                    && target
+                        .view
+                        .read_with(cx, |view, _| view.has_serial_services())
+                        .unwrap_or(false)
+                {
+                    let reply = target
+                        .view
+                        .update(cx, |view, cx| {
+                            view.serial_service_monitor(
+                                linux::command_with_hardware(parts, true),
+                                linux::command_with_hardware(parts, false),
+                                cx,
+                            )
+                        })
+                        .ok()
+                        .flatten();
+                    let output = match reply {
+                        Some(reply) => exec_answer(reply, cx).await,
+                        None => None,
+                    };
+                    source = target
+                        .view
+                        .read_with(cx, |view, cx| view.serial_service_label(cx))
+                        .unwrap_or_default();
+                    hardware_enabled = source.starts_with("ADB") || source.starts_with("SSH");
+                    match output {
+                        Some(Err(error)) if error == crate::terminal::MONITOR_PAUSED => {
+                            Outcome::Paused
+                        }
+                        Some(result) => Outcome::Output(result),
+                        None => Outcome::NotConnected,
+                    }
                 } else if let Some((_, settings)) = &serial {
                     let discover = connector.is_some()
                         && settings.channel != MonitorChannel::Serial

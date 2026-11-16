@@ -1,13 +1,40 @@
 _version: 2
 flashing.title:
-  zh-CN: 固件烧录
-  en: Firmware flashing
+  zh-CN: AW固件烧录
+  en: AW firmware flashing
 flashing.settings.enabled:
-  zh-CN: 启用固件烧录
-  en: Enable firmware flashing
+  zh-CN: 启用AW固件烧录
+  en: Enable AW firmware flashing
 flashing.settings.description:
-  zh-CN: 在标题栏显示固件烧录入口。默认关闭，开启后可选择烧录工具目录和 IMG 固件。
-  en: Show firmware flashing in the title bar. Off by default; enable it to choose a tool folder and IMG firmware.
+  zh-CN: 在标题栏显示AW固件烧录入口，用于全志开发板。默认关闭，开启后可选择烧录工具目录和 IMG 固件。
+  en: Show AW firmware flashing for Allwinner boards in the title bar. Off by default; enable it to choose a tool folder and IMG firmware.
+flashing.driver.title:
+  zh-CN: 全志烧录驱动
+  en: Allwinner flashing driver
+flashing.driver.check:
+  zh-CN: 检测驱动
+  en: Check driver
+flashing.driver.checking:
+  zh-CN: 正在检测驱动…
+  en: Checking driver…
+flashing.driver.description:
+  zh-CN: 只读检查系统已安装的全志 FEL 烧录驱动包，无需连接开发板，不会安装或卸载驱动。ADB 驱动不能代替 FEL 烧录驱动。
+  en: Check installed Allwinner FEL driver packages without connecting a board. No drivers are installed or removed. An ADB driver cannot replace the FEL flashing driver.
+flashing.driver.installed:
+  zh-CN: 已检测到全志 USBDrv 烧录驱动包
+  en: Allwinner USBDrv driver package detected
+flashing.driver.missing:
+  zh-CN: 未检测到全志 USBDrv 烧录驱动包
+  en: Allwinner USBDrv driver package not detected
+flashing.driver.failed:
+  zh-CN: 驱动检测失败，请重新检测
+  en: Driver check failed. Try again.
+flashing.driver.windows_only:
+  zh-CN: 全志烧录驱动检测仅支持 Windows。
+  en: Allwinner driver detection is only available on Windows.
+flashing.driver.worker_stopped:
+  zh-CN: 驱动检测线程意外退出，请重新检测。
+  en: The driver-check worker stopped unexpectedly. Check again.
 flashing.tool.choose:
   zh-CN: 选择工具目录…
   en: Choose tool folder…
@@ -39,8 +66,8 @@ flashing.stop:
   zh-CN: 停止
   en: Stop
 flashing.stop_title:
-  zh-CN: 中断固件烧录？
-  en: Interrupt firmware flashing?
+  zh-CN: 中断AW固件烧录？
+  en: Interrupt AW firmware flashing?
 flashing.interruption:
   zh-CN: 如果设备正在写入固件，中断可能导致设备无法启动。
   en: Interrupting a firmware write may leave the device unable to start.

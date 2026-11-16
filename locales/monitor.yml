@@ -1,4 +1,31 @@
 _version: 2
+monitor.route.shared:
+  zh-CN: 串口右侧工具共用通道
+  en: Shared serial-tool channel
+monitor.route.redetect:
+  zh-CN: 重新检测
+  en: Detect again
+monitor.route.choose_adb:
+  zh-CN: 选择 ADB 设备…
+  en: Choose ADB device…
+monitor.route.shared_help:
+  zh-CN: 文件、监控、系统服务、进程和网络工具共用当前连接的通道。自动检测最多两轮，失败后不再自动重试；可在这里重新检测或切换。
+  en: Files, monitoring, services, processes and network tools share this connection's channel. Automatic discovery stops after two attempts; retry or switch here.
+monitor.route.detecting:
+  zh-CN: 正在检测可用通道…
+  en: Detecting an available channel…
+monitor.route.not_selected:
+  zh-CN: 尚未匹配服务通道，请重新检测或选择 ADB 设备
+  en: No service channel matched. Detect again or choose an ADB device.
+monitor.route.connection_lost:
+  zh-CN: 服务通道已断开，请在实用工具中重新检测
+  en: Service channel disconnected. Detect again in Utilities.
+monitor.route.queue_busy:
+  zh-CN: 服务通道正在处理其他请求，请稍后刷新
+  en: The service channel is busy. Refresh shortly.
+monitor.route.timed_out:
+  zh-CN: 服务通道响应超时，请在实用工具中重新检测
+  en: Service channel timed out. Detect again in Utilities.
 monitor.status.cpu:
   zh-CN: CPU
   en: CPU

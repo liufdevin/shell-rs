@@ -1352,6 +1352,13 @@ impl TerminalEngine {
         Some(answer)
     }
 
+    pub(crate) fn serial_query_allowed(&self) -> bool {
+        !self.mode().contains(TermMode::ALT_SCREEN)
+            && !self.runtime.transferring()
+            && !self.io.displays_hex()
+            && !self.sends_hex()
+    }
+
     pub fn serial_transfer(&self, command: String) -> Option<mpsc::Receiver<ExecResult>> {
         if !matches!(self.lifecycle, TerminalLifecycle::Running) || self.serial_name.is_none() {
             return None;

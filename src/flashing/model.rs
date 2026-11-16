@@ -149,7 +149,7 @@ pub fn parse_line(line: &str) -> ParsedLine {
     }
 
     if let Some(result) = text.strip_prefix("device burn result=") {
-        let success = result.trim() == "1";
+        let success = result.chars().find(|character| character.is_ascii_digit()) == Some('1');
         return ParsedLine::RunFinished { success };
     }
 
@@ -477,6 +477,14 @@ mod tests {
         assert_eq!(
             parse_line("device burn result=00"),
             ParsedLine::RunFinished { success: false }
+        );
+        assert_eq!(
+            parse_line("line[2199], device burn result=2 烧录完成"),
+            ParsedLine::RunFinished { success: false }
+        );
+        assert_eq!(
+            parse_line("line[2200], device burn result=1 烧录完成"),
+            ParsedLine::RunFinished { success: true }
         );
     }
 

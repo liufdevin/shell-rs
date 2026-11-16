@@ -8,21 +8,32 @@ use std::{
     time::{Duration, Instant},
 };
 
-use alacritty_terminal::vte::{Params, Parser, Perform};
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 
-use super::process::RunEvent;
+use super::process::{RunEvent, decode};
 
 struct ConsoleLines {
-    pending: String,
+    pending: Vec<u8>,
     sender: mpsc::SyncSender<RunEvent>,
     queries: mpsc::Sender<()>,
     connected: bool,
+    escape: ParserState,
+}
+
+#[derive(Default)]
+enum ParserState {
+    #[default]
+    Text,
+    Start,
+    Control(Vec<u8>),
+    Osc,
+    OscEnd,
 }
 
 impl ConsoleLines {
     fn flush(&mut self) {
-        let text = std::mem::take(&mut self.pending);
+        let bytes = std::mem::take(&mut self.pending);
+        let text = decode(&bytes).trim_end_matches('\0').to_string();
         if !text.trim().is_empty() && self.connected {
             self.connected = self
                 .sender
@@ -33,29 +44,59 @@ impl ConsoleLines {
                 .is_ok();
         }
     }
-}
 
-impl Perform for ConsoleLines {
-    fn print(&mut self, character: char) {
-        if self.pending.len() < 8192 {
-            self.pending.push(character);
-        }
-    }
-
-    fn execute(&mut self, byte: u8) {
-        if matches!(byte, b'\r' | b'\n') {
-            self.flush();
-        }
-    }
-
-    fn csi_dispatch(&mut self, params: &Params, _: &[u8], ignore: bool, action: char) {
-        if ignore {
-            return;
-        }
-        if action == 'n' && params.iter().next() == Some([6].as_slice()) {
-            let _ = self.queries.send(());
-        } else if matches!(action, 'H' | 'f') {
-            self.flush();
+    fn advance(&mut self, bytes: &[u8]) {
+        for byte in bytes {
+            let byte = *byte;
+            match std::mem::take(&mut self.escape) {
+                ParserState::Text if byte == 0x1b => self.escape = ParserState::Start,
+                ParserState::Text if matches!(byte, b'\r' | b'\n') => self.flush(),
+                ParserState::Text if byte == 0x08 => {
+                    if self.pending.last().is_some_and(|value| value.is_ascii()) {
+                        self.pending.pop();
+                    }
+                }
+                ParserState::Text if byte == b'\t' => {
+                    if self.pending.len() < 8192 {
+                        self.pending.push(byte);
+                    }
+                }
+                ParserState::Text if byte >= 0x20 && byte != 0x7f => {
+                    if self.pending.len() < 8192 {
+                        self.pending.push(byte);
+                    }
+                }
+                ParserState::Text => {}
+                ParserState::Start if byte == b'[' => {
+                    self.escape = ParserState::Control(Vec::new())
+                }
+                ParserState::Start if matches!(byte, b']' | b'P' | b'X' | b'^' | b'_') => {
+                    self.escape = ParserState::Osc;
+                }
+                ParserState::Start => {}
+                ParserState::Control(mut parameters) => {
+                    if (0x40..=0x7e).contains(&byte) {
+                        if byte == b'n' && parameters == b"6" {
+                            let _ = self.queries.send(());
+                        } else if matches!(byte, b'H' | b'f' | b'J')
+                            || (byte == b'K' && parameters.contains(&b'2'))
+                        {
+                            self.flush();
+                        }
+                    } else {
+                        if parameters.len() < 64 {
+                            parameters.push(byte);
+                        }
+                        self.escape = ParserState::Control(parameters);
+                    }
+                }
+                ParserState::Osc if byte == 0x07 => {}
+                ParserState::Osc if byte == 0x1b => self.escape = ParserState::OscEnd,
+                ParserState::Osc => self.escape = ParserState::Osc,
+                ParserState::OscEnd if byte == b'\\' => {}
+                ParserState::OscEnd if byte == 0x1b => self.escape = ParserState::OscEnd,
+                ParserState::OscEnd => self.escape = ParserState::Osc,
+            }
         }
     }
 }
@@ -106,18 +147,18 @@ pub(super) fn run_console(
     };
     let (queries, requests) = mpsc::channel();
     let output = std::thread::spawn(move || {
-        let mut parser = Parser::<1024>::new();
         let mut lines = ConsoleLines {
-            pending: String::new(),
+            pending: Vec::new(),
             sender,
             queries,
             connected: true,
+            escape: ParserState::Text,
         };
         let mut buffer = [0u8; 4096];
         while lines.connected {
             match reader.read(&mut buffer) {
                 Ok(0) | Err(_) => break,
-                Ok(count) => parser.advance(&mut lines, &buffer[..count]),
+                Ok(count) => lines.advance(&buffer[..count]),
             }
         }
         lines.flush();
@@ -173,18 +214,18 @@ mod tests {
         let (sender, receiver) = mpsc::sync_channel(32);
         let (queries, requests) = mpsc::channel();
         let mut lines = ConsoleLines {
-            pending: String::new(),
+            pending: Vec::new(),
             sender,
             queries,
             connected: true,
+            escape: ParserState::Text,
         };
-        let mut parser = Parser::<1024>::new();
         for chunk in [
             b"\x1b[6n\x1b[32mline[2141], device:[3] fes plugin\x1b[0m\r\n".as_slice(),
             b"line[2153], device [3] progress = 12%\r",
             b"\nline[2172], device:[3] burn finish, result=Success\r\n",
         ] {
-            parser.advance(&mut lines, chunk);
+            lines.advance(chunk);
         }
         assert!(requests.try_recv().is_ok());
         let parsed: Vec<_> = receiver
@@ -208,6 +249,35 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn gbk_suffixes_backspaces_and_repaint_sequences_do_not_corrupt_results() {
+        let (sender, receiver) = mpsc::sync_channel(32);
+        let (queries, _requests) = mpsc::channel();
+        let mut lines = ConsoleLines {
+            pending: Vec::new(),
+            sender,
+            queries,
+            connected: true,
+            escape: ParserState::Text,
+        };
+        let (gbk, _, _) = encoding_rs::GBK.encode("烧录完成");
+        let mut output = b"\x1b[32mline[2199], device burn result=2 ".to_vec();
+        output.extend_from_slice(&gbk);
+        output.extend_from_slice(b"\x08\x08\x08\x08 continue\r\n");
+        output.extend_from_slice(b"line[2200], device burn result=1\x1b[2K\r\n");
+        lines.advance(&output);
+        let messages: Vec<_> = receiver
+            .try_iter()
+            .filter_map(|event| match event {
+                RunEvent::Line { text, .. } => Some(text),
+                _ => None,
+            })
+            .collect();
+        assert!(messages[0].contains("device burn result=2 烧录完成 continue"));
+        assert!(!messages[0].contains('\u{fffd}'));
+        assert_eq!(messages[1], "line[2200], device burn result=1");
     }
 
     #[test]

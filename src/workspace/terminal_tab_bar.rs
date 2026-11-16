@@ -17,6 +17,7 @@ use gpui_kit::{
 };
 
 use crate::{
+    flashing::FlashingPanel,
     i18n::t,
     terminal::{LocalTerminalPanel, TerminalPanel},
 };
@@ -189,6 +190,9 @@ fn unread(panel: &Arc<dyn BasePanelView>, cx: &App) -> bool {
     }
     if let Ok(terminal) = panel.view().downcast::<LocalTerminalPanel>() {
         return terminal.read(cx).terminal().read(cx).has_unread_output();
+    }
+    if let Ok(flashing) = panel.view().downcast::<FlashingPanel>() {
+        return flashing.read(cx).has_unread_output();
     }
     false
 }

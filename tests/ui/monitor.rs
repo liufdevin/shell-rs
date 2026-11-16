@@ -439,17 +439,33 @@ struct IndependentMonitor {
     samples: Arc<AtomicUsize>,
     failed: Arc<std::sync::atomic::AtomicBool>,
     discoveries: AtomicUsize,
+    ssh: bool,
 }
 
 struct IndependentLink {
     commands: Arc<Mutex<Vec<String>>>,
     samples: Arc<AtomicUsize>,
     failed: Arc<std::sync::atomic::AtomicBool>,
+    ssh: bool,
 }
 
 impl shellrs::monitor::MonitorLink for IndependentLink {
+    fn ssh_login(&self) -> Option<HostLogin> {
+        self.ssh.then(|| {
+            HostLogin::new(
+                "192.0.2.3",
+                22,
+                "root",
+                shellrs::host::LoginMethod::NoPassword,
+            )
+        })
+    }
     fn label(&self) -> String {
-        "ADB · Helper A133 (board-a)".into()
+        if self.ssh {
+            "SSH · root@192.0.2.3:22".into()
+        } else {
+            "ADB · Helper A133 (board-a)".into()
+        }
     }
     fn sample(
         &mut self,
@@ -483,6 +499,7 @@ impl shellrs::monitor::MonitorConnector for IndependentMonitor {
             commands: self.commands.clone(),
             samples: self.samples.clone(),
             failed: self.failed.clone(),
+            ssh: self.ssh,
         })))
     }
 }
@@ -629,6 +646,115 @@ async fn independent_adb_monitor_never_competes_with_busy_serial_and_falls_back_
             .iter()
             .all(|command| !command.contains("@@mtop"))
     );
+}
+
+#[gpui_kit::test]
+async fn serial_tools_share_the_selected_adb_route_and_offer_manual_redetection(
+    cx: &mut TestAppContext,
+) {
+    let identity =
+        "@@boot_id\n00000000-0000-4000-8000-000000000001\n@@user\nroot\n@@addresses\n192.0.2.3\n";
+    let next_identity = format!("{FIRST}\n{identity}");
+    let line = Arc::new(FakeTerminalFactory::answering(&[identity, &next_identity]));
+    let connector = Arc::new(IndependentMonitor::default());
+    let (handle, workspace) = serial_monitor(cx, line.clone(), Some(connector.clone())).await;
+    wait_for_label(cx, handle, "monitor-channel", "ADB · Helper A133 (board-a)").await;
+    for tool in [
+        "tool-files",
+        "tool-services",
+        "tool-processes",
+        "tool-connections",
+        "tool-monitor",
+    ] {
+        let count = connector.samples.load(Ordering::SeqCst);
+        in_frame(cx, handle, |window, cx| window.click(tool, cx));
+        cx.wait_for(handle.into(), Duration::from_secs(5), |_, _| {
+            connector.samples.load(Ordering::SeqCst) > count
+        })
+        .await;
+        assert_eq!(connector.discoveries.load(Ordering::SeqCst), 1);
+        assert_eq!(line.exec_count(), 1);
+    }
+    in_frame(cx, handle, |window, cx| window.click("tool-utilities", cx));
+    in_frame(cx, handle, |window, _| {
+        assert!(window.find("serial-service-adb").visible());
+        assert!(window.find("serial-service-ssh").visible());
+        assert!(window.find("serial-service-choose-adb").visible());
+        assert_eq!(
+            window.find("serial-service-status").label(),
+            Some("ADB · Helper A133 (board-a)")
+        );
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.click("serial-service-auto", cx)
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(5), |_, _| {
+        connector.discoveries.load(Ordering::SeqCst) == 2
+    })
+    .await;
+    assert_eq!(line.exec_count(), 2);
+    struct ManualAdb;
+    impl shellrs::adb::AdbDetector for ManualAdb {
+        fn detect(&self, _: Option<&str>) -> shellrs::adb::AdbDetection {
+            shellrs::adb::AdbDetection::Matched(
+                shellrs::adb::AdbConnection::new(
+                    std::path::PathBuf::from("injected-adb-not-executed"),
+                    "manual-board".into(),
+                )
+                .unwrap(),
+            )
+        }
+    }
+    workspace.update(cx, |workspace, _| {
+        workspace.set_adb_detector(Arc::new(ManualAdb))
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.click("serial-service-choose-adb", cx)
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(5), |window, _| {
+        window.try_find("adb-device-picker").is_some()
+    })
+    .await;
+    in_frame(cx, handle, |window, cx| {
+        window.click("adb-device:manual-board", cx)
+    });
+    wait_for_label(
+        cx,
+        handle,
+        "serial-service-status",
+        "ADB · manual-board (manual-board)",
+    )
+    .await;
+    workspace.read_with(cx, |workspace, _| {
+        assert!(workspace.file_sidebar(RemoteTerminalId(1)).is_none())
+    });
+    assert_eq!(connector.discoveries.load(Ordering::SeqCst), 2);
+}
+
+#[gpui_kit::test]
+async fn serial_files_reuse_the_route_already_selected_by_another_tool(cx: &mut TestAppContext) {
+    let identity =
+        "@@boot_id\n00000000-0000-4000-8000-000000000001\n@@user\nroot\n@@addresses\n192.0.2.3\n";
+    let line = Arc::new(FakeTerminalFactory::answering(&[identity]));
+    let connector = Arc::new(IndependentMonitor {
+        ssh: true,
+        ..Default::default()
+    });
+    let (handle, workspace) = serial_monitor(cx, line.clone(), Some(connector.clone())).await;
+    wait_for_label(cx, handle, "monitor-channel", "SSH · root@192.0.2.3:22").await;
+    in_frame(cx, handle, |window, cx| window.click("tool-files", cx));
+    cx.wait_for(handle.into(), Duration::from_secs(5), |_, cx| {
+        workspace
+            .read(cx)
+            .file_sidebar(RemoteTerminalId(1))
+            .is_some_and(|panel| panel.read(cx).connection_state() == ConnectionState::Connected)
+    })
+    .await;
+    in_frame(cx, handle, |window, _| {
+        assert!(window.find(("remote-pane", 1u64)).visible());
+    });
+    assert_eq!(connector.discoveries.load(Ordering::SeqCst), 1);
+    assert_eq!(line.exec_count(), 1);
 }
 
 #[gpui_kit::test]

@@ -401,7 +401,7 @@ pub fn start_wait(
     (run, receiver)
 }
 
-fn decode(bytes: &[u8]) -> String {
+pub(super) fn decode(bytes: &[u8]) -> String {
     match std::str::from_utf8(bytes) {
         Ok(text) => text.to_string(),
         Err(_) => {

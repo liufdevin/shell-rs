@@ -5,6 +5,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use gpui_kit::base::SelectableText;
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Sizable as _,
     button::{Button, ButtonVariants as _},
@@ -63,7 +64,6 @@ enum Tone {
 struct LogLine {
     at: Duration,
     text: String,
-    tone: Tone,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -114,6 +114,8 @@ pub struct FlashingPanel {
     adb_run: Option<Run>,
     adb_trigger: Option<Receiver<Result<AdbReboot, String>>>,
     last_result: Option<bool>,
+    tab_active: bool,
+    unread_output: bool,
     shown_second: u64,
     tab_group: Option<WeakEntity<TabGroup>>,
     _ticks: Task<()>,
@@ -177,6 +179,8 @@ impl FlashingPanel {
             adb_run: None,
             adb_trigger: None,
             last_result: None,
+            tab_active: false,
+            unread_output: false,
             shown_second: 0,
             tab_group: None,
             _ticks: Task::ready(()),
@@ -203,6 +207,8 @@ impl FlashingPanel {
     }
 
     pub fn show(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.tab_active = true;
+        self.unread_output = false;
         window.focus(&self.focus_handle, cx);
         cx.emit(FlashingPanelEvent::Activated);
         cx.notify();
@@ -214,6 +220,10 @@ impl FlashingPanel {
 
     pub(crate) fn is_burning(&self) -> bool {
         self.phase.is_burning()
+    }
+
+    pub(crate) fn has_unread_output(&self) -> bool {
+        self.unread_output
     }
 
     pub(crate) fn is_rebooting(&self) -> bool {
@@ -1021,7 +1031,7 @@ impl FlashingPanel {
                     }
                     _ => Tone::Normal,
                 };
-                self.append(line, tone, at);
+                self.append(normalize_result_line(&line), tone, at);
                 if finished
                     && self.progress.all_finished()
                     && self.last_result.is_none()
@@ -1048,6 +1058,7 @@ impl FlashingPanel {
                     self.last_result = Some(false);
                     self.phase = Phase::Waiting;
                     self.restart_at = Some(at + Duration::from_millis(400));
+                    self.mark_background_activity();
                 } else {
                     self.phase = Phase::Failed;
                 }
@@ -1102,6 +1113,7 @@ impl FlashingPanel {
                     self.last_result = Some(false);
                     self.phase = Phase::Waiting;
                     self.restart_at = Some(at + Duration::from_millis(400));
+                    self.mark_background_activity();
                     if let Some(started) = self.burn_started.take() {
                         self.last_duration = Some(at.saturating_duration_since(started));
                     }
@@ -1128,6 +1140,7 @@ impl FlashingPanel {
         self.listening = false;
         self.wait_timed_out = false;
         self.device_lost_at = None;
+        self.mark_background_activity();
     }
 
     fn fel_arrived(&mut self, at: Instant) {
@@ -1159,14 +1172,35 @@ impl FlashingPanel {
             at,
         );
         self.append(t!("flashing.log.next_device"), Tone::Muted, at);
+        self.mark_background_activity();
     }
 
-    fn append(&mut self, text: impl ToString, tone: Tone, now: Instant) {
+    fn mark_background_activity(&mut self) {
+        if !self.tab_active {
+            self.unread_output = true;
+        }
+    }
+
+    fn log_text(&self) -> String {
+        self.logs
+            .iter()
+            .map(|line| {
+                let clock = self.log_clock(line.at);
+                format!(
+                    "{:02}:{:02} {}\n",
+                    clock.as_secs() / 60,
+                    clock.as_secs() % 60,
+                    line.text
+                )
+            })
+            .collect()
+    }
+
+    fn append(&mut self, text: impl ToString, _tone: Tone, now: Instant) {
         let at = now.saturating_duration_since(self.started);
         self.logs.push_back(LogLine {
             at,
             text: text.to_string(),
-            tone,
         });
         while self.logs.len() > MAX_LOG_LINES {
             self.logs.pop_front();
@@ -1708,6 +1742,7 @@ impl FlashingPanel {
 
     fn log_card(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let dispatch = self.dispatch.clone();
+        let log_text = self.log_text();
         v_flex()
             .flex_1()
             .min_h_0()
@@ -1780,37 +1815,14 @@ impl FlashingPanel {
                     .text_sm()
                     .overflow_y_scroll()
                     .track_scroll(&self.scroll)
-                    .children(self.logs.iter().map(|line| {
-                        let clock = self.log_clock(line.at);
-                        h_flex()
-                            .gap_2()
-                            .items_start()
-                            .child(
-                                div()
-                                    .w_10()
-                                    .flex_shrink_0()
-                                    .text_xs()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child(format!(
-                                        "{:02}:{:02}",
-                                        clock.as_secs() / 60,
-                                        clock.as_secs() % 60
-                                    )),
-                            )
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .whitespace_normal()
-                                    .text_color(match line.tone {
-                                        Tone::Normal => cx.theme().foreground,
-                                        Tone::Muted => cx.theme().muted_foreground,
-                                        Tone::Success => cx.theme().success,
-                                        Tone::Danger => cx.theme().danger,
-                                    })
-                                    .child(line.text.clone()),
-                            )
-                    })),
+                    .child(
+                        div()
+                            .id("flashing-log-text")
+                            .test_support()
+                            .w_full()
+                            .text_color(cx.theme().foreground)
+                            .child(SelectableText::new("flashing-log-content", log_text)),
+                    ),
             )
     }
 }
@@ -1840,8 +1852,13 @@ impl BasePanel for FlashingPanel {
     }
 
     fn set_active(&mut self, active: bool, window: &mut Window, cx: &mut Context<Self>) {
+        self.tab_active = active;
         if active {
+            self.unread_output = false;
             self.show(window, cx);
+        } else if self.is_burning() {
+            self.unread_output = true;
+            cx.notify();
         }
     }
 
@@ -1864,6 +1881,7 @@ impl Panel for FlashingPanel {
     fn title(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let (group, panel) = (self.tab_group.clone(), cx.entity_id());
         ClosableTabTitle::new("flashing-tab", super::FlashingMark, t!("flashing.title"))
+            .unread(self.unread_output)
             .closable("close-flashing", Box::new(CloseFlashing))
             .context_menu(move |menu, _, cx| tab_menu(menu, group.clone(), panel, cx))
     }
@@ -2004,12 +2022,44 @@ fn tab_menu(
     close_tab_items(menu, CenterTab::Flashing, group, panel, cx)
 }
 
+fn normalize_result_line(line: &str) -> String {
+    let Some((before, result)) = line.split_once("device burn result=") else {
+        return line.to_string();
+    };
+    let Some((index, digit)) = result
+        .char_indices()
+        .find(|(_, character)| character.is_ascii_digit())
+    else {
+        return line.to_string();
+    };
+    let suffix = &result[index + digit.len_utf8()..];
+    if !suffix
+        .chars()
+        .any(|character| character.is_ascii_alphanumeric())
+    {
+        return line.to_string();
+    }
+    format!("{before}device burn result={digit}")
+}
+
 #[cfg(test)]
 mod tests {
-    use gpui_kit::{AppContext as _, TestAppContext};
+    use gpui_kit::{
+        AppContext as _, Context, Entity, IntoElement, Render, TestAppContext, Window,
+        component::dock::Panel as _,
+    };
     use std::time::{Duration, Instant};
 
     use super::{FlashingPanel, Phase, RunEvent};
+
+    struct FlashingTitle(Entity<FlashingPanel>);
+
+    impl Render for FlashingTitle {
+        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            self.0
+                .update(cx, |panel, cx| panel.title(window, cx).into_any_element())
+        }
+    }
 
     fn line_event(text: &str) -> RunEvent {
         RunEvent::Line {
@@ -2032,6 +2082,113 @@ mod tests {
             instance: r"USB\VID_1F3A&PID_EFE8\BOARD".into(),
             present,
         }
+    }
+
+    #[test]
+    fn corrupted_result_suffixes_are_removed_without_hiding_clean_chinese_text() {
+        assert_eq!(
+            super::normalize_result_line("line[2199], device burn result=21222222p..."),
+            "line[2199], device burn result=2"
+        );
+        assert_eq!(
+            super::normalize_result_line("line[2200], device burn result=1 烧录完成"),
+            "line[2200], device burn result=1 烧录完成"
+        );
+    }
+
+    #[gpui_kit::test]
+    fn background_burn_marks_the_flashing_tab_until_it_is_opened(cx: &mut TestAppContext) {
+        use gpui_kit::{component::Root, px, size, test::TestWindowExt as _};
+
+        crate::i18n::isolate_thread();
+        crate::i18n::set_locale("zh-CN");
+        cx.update(crate::init);
+        let settings = cx.new(|_| crate::settings::SettingsStore::in_memory());
+        let panel = cx.new(|cx| FlashingPanel::new(cx.focus_handle(), settings, cx));
+        let (run, _stopped) = super::Run::test_run();
+        panel.update(cx, |panel, _| {
+            panel.phase = Phase::Waiting;
+            panel.run = Some(run);
+            panel.tab_active = false;
+        });
+        let title = cx.new(|_| FlashingTitle(panel.clone()));
+        let handle = cx.open_window(size(px(360.), px(80.)), |window, cx| {
+            Root::new(title, window, cx)
+        });
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            assert!(
+                window
+                    .within("flashing-tab")
+                    .try_find("new-output")
+                    .is_none()
+            );
+            panel.update(cx, |panel, cx| {
+                panel.handle_event(line_event("device:[2] fes plugin"));
+                cx.notify();
+            });
+            window.render_frame(cx);
+            assert!(window.within("flashing-tab").find("new-output").visible());
+            panel.update(cx, |panel, cx| panel.show(window, cx));
+            window.render_frame(cx);
+            assert!(
+                window
+                    .within("flashing-tab")
+                    .try_find("new-output")
+                    .is_none()
+            );
+            panel.update(cx, |panel, cx| {
+                gpui_kit::base::dock::Panel::set_active(panel, false, window, cx);
+                panel.handle_event(line_event("device:[2] burn finish, result=Success"));
+                panel.handle_event(line_event("device burn result=2"));
+                cx.notify();
+            });
+            window.render_frame(cx);
+            assert!(window.within("flashing-tab").find("new-output").visible());
+        })
+        .unwrap();
+        panel.update(cx, |panel, _| {
+            assert!(panel.has_unread_output());
+        });
+    }
+
+    #[gpui_kit::test]
+    fn the_flash_log_can_be_selected_and_copied_without_a_copy_button(cx: &mut TestAppContext) {
+        use gpui_kit::base::TextSelection;
+        use gpui_kit::component::Root;
+        use gpui_kit::{point, px, size, test::TestWindowExt as _};
+
+        crate::i18n::isolate_thread();
+        crate::i18n::set_locale("zh-CN");
+        cx.update(crate::init);
+        let settings = cx.new(|_| crate::settings::SettingsStore::in_memory());
+        let panel = cx.new(|cx| FlashingPanel::new(cx.focus_handle(), settings, cx));
+        panel.update(cx, |panel, _| {
+            panel.phase = Phase::Waiting;
+            panel.handle_event(line_event("line[2180], device [2] progress = 86%"));
+            panel.handle_event(line_event("line[2199], device burn result=2 烧录完成"));
+        });
+        let handle = cx.open_window(size(px(1000.), px(800.)), |window, cx| {
+            Root::new(panel, window, cx)
+        });
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            assert!(window.try_find("flashing-copy-log").is_none());
+            let bounds = window.find("flashing-log-text").bounds();
+            window.drag(
+                point(bounds.left() + px(2.), bounds.top() + px(3.)),
+                point(bounds.left() + px(4.), bounds.bottom() - px(3.)),
+                cx,
+            );
+            window.render_frame(cx);
+            let selected = TextSelection::selected_text(window, cx);
+            assert!(selected.contains("device [2] progress = 86%"));
+            window.press("secondary-c", cx);
+        })
+        .unwrap();
+        let copied = cx.read_from_clipboard().unwrap().text().unwrap();
+        assert!(copied.contains("device [2] progress = 86%"));
+        assert!(copied.contains("device burn result=2 烧录完成"));
     }
 
     #[gpui_kit::test]
