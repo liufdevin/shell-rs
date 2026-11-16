@@ -1,7 +1,7 @@
 use std::{
     collections::{BTreeSet, VecDeque},
     path::PathBuf,
-    sync::mpsc::{self, Receiver, TryRecvError},
+    sync::mpsc::{Receiver, TryRecvError},
     time::{Duration, Instant},
 };
 
@@ -25,14 +25,15 @@ use crate::settings::SettingsStore;
 use crate::shared::{ClosableTabTitle, close_tab_items};
 
 use super::firmware::FirmwareCapabilities;
-use super::model::FirmwarePartition;
-use super::process::{FirmwareInfo, inspect_firmware};
+use super::model::{DeviceProgress, FirmwarePartition};
+use super::process::{AdbReboot, FirmwareInfo, inspect_firmware, start_adb_reboot};
+use super::source::{self, Observation, SourceState};
 use super::{
-    Completion, EraseMode, FlashProgress, ParsedLine, Phase, Run, RunEvent, adb_devices,
-    reboot_to_efex, start_wait, tool_dir,
+    Completion, EraseMode, FlashProgress, ParsedLine, Phase, Run, RunEvent, start_wait, tool_dir,
 };
 
 const MAX_LOG_LINES: usize = 4000;
+const DEVICE_CLAIM_NOTICE: Duration = Duration::from_secs(15);
 
 /// The page's commands. Buttons dispatch these to the workspace, which owns
 /// the panel and gives them back to it.
@@ -85,6 +86,12 @@ pub struct FlashingPanel {
     capabilities: Option<FirmwareCapabilities>,
     inspection: Option<Run>,
     inspection_receiver: Option<Receiver<Result<FirmwareInfo, String>>>,
+    source: SourceState,
+    source_probe: Option<Receiver<Observation>>,
+    next_source_probe: Instant,
+    source_reload_pending: bool,
+    source_retry_at: Option<Instant>,
+    source_partition_names: Option<BTreeSet<String>>,
     retiring: Option<Run>,
     phase: Phase,
     progress: FlashProgress,
@@ -93,6 +100,7 @@ pub struct FlashingPanel {
     scroll: ScrollHandle,
     started: Instant,
     burn_started: Option<Instant>,
+    burn_log_started: Option<Duration>,
     last_duration: Option<Duration>,
     run: Option<Run>,
     receiver: Option<Receiver<RunEvent>>,
@@ -100,11 +108,11 @@ pub struct FlashingPanel {
     picking: bool,
     listening: bool,
     wait_timed_out: bool,
-    adb: Option<Vec<String>>,
-    adb_error: Option<String>,
-    adb_poll_at: Instant,
-    adb_receiver: Option<Receiver<Result<Vec<String>, String>>>,
-    adb_trigger: Option<Receiver<Result<String, String>>>,
+    fel_devices: BTreeSet<String>,
+    device_lost_at: Option<Instant>,
+    closed: bool,
+    adb_run: Option<Run>,
+    adb_trigger: Option<Receiver<Result<AdbReboot, String>>>,
     last_result: Option<bool>,
     shown_second: u64,
     tab_group: Option<WeakEntity<TabGroup>>,
@@ -141,6 +149,12 @@ impl FlashingPanel {
             capabilities: None,
             inspection: None,
             inspection_receiver: None,
+            source: SourceState::default(),
+            source_probe: None,
+            next_source_probe: Instant::now(),
+            source_reload_pending: false,
+            source_retry_at: None,
+            source_partition_names: None,
             retiring: None,
             phase,
             progress: FlashProgress::default(),
@@ -149,6 +163,7 @@ impl FlashingPanel {
             scroll: ScrollHandle::new(),
             started: Instant::now(),
             burn_started: None,
+            burn_log_started: None,
             last_duration: None,
             run: None,
             receiver: None,
@@ -156,10 +171,10 @@ impl FlashingPanel {
             picking: false,
             listening: false,
             wait_timed_out: false,
-            adb: None,
-            adb_error: None,
-            adb_poll_at: Instant::now(),
-            adb_receiver: None,
+            fel_devices: BTreeSet::new(),
+            device_lost_at: None,
+            closed: false,
+            adb_run: None,
             adb_trigger: None,
             last_result: None,
             shown_second: 0,
@@ -190,7 +205,6 @@ impl FlashingPanel {
     pub fn show(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         window.focus(&self.focus_handle, cx);
         cx.emit(FlashingPanelEvent::Activated);
-        self.adb_poll_at = Instant::now();
         cx.notify();
     }
 
@@ -207,7 +221,13 @@ impl FlashingPanel {
     }
 
     fn running(&self) -> bool {
-        self.phase.is_waiting() || self.is_burning()
+        self.phase.is_waiting()
+            || self.is_burning()
+            || self.source_retry_at.is_some()
+            || matches!(
+                self.phase,
+                Phase::Unclaimed | Phase::FirmwareMissing | Phase::FirmwareUpdating
+            )
     }
 
     fn can_configure(&self) -> bool {
@@ -233,27 +253,21 @@ impl FlashingPanel {
 
     fn can_wait(&self) -> bool {
         self.can_configure()
+            && !matches!(self.phase, Phase::FirmwareMissing | Phase::FirmwareUpdating)
+            && !self.source_reload_pending
             && self.firmware.is_some()
             && self.partition_error.is_none()
             && (!self.partition_mode || !self.selected_partitions.is_empty())
     }
 
-    fn adb_target(&self) -> Option<&str> {
-        if !self.listening
-            || !self.phase.is_waiting()
-            || self.is_rebooting()
-            || self.adb_error.is_some()
-        {
-            return None;
-        }
-        if let [serial] = self.adb.as_deref()? {
-            Some(serial)
-        } else {
-            None
-        }
+    fn can_reboot(&self) -> bool {
+        self.listening && self.phase.is_waiting() && !self.is_rebooting()
     }
 
     pub fn command(&mut self, command: FlashingCommand, cx: &mut Context<Self>) {
+        if self.closed {
+            return;
+        }
         if self.drain_run_events() {
             cx.notify();
         }
@@ -376,9 +390,6 @@ impl FlashingPanel {
         } else {
             Phase::NoFirmware
         };
-        self.adb = None;
-        self.adb_error = None;
-        self.adb_receiver = None;
         self.append(
             t!("flashing.tool.ready", path = path.display()),
             Tone::Normal,
@@ -426,11 +437,10 @@ impl FlashingPanel {
     }
 
     fn select_firmware(&mut self, path: PathBuf, cx: &mut Context<Self>) {
-        if !path.is_file()
-            || !path
-                .extension()
-                .and_then(|value| value.to_str())
-                .is_some_and(|value| value.eq_ignore_ascii_case("img"))
+        if !path
+            .extension()
+            .and_then(|value| value.to_str())
+            .is_some_and(|value| value.eq_ignore_ascii_case("img"))
         {
             self.append(
                 t!("flashing.log.firmware_missing", path = path.display()),
@@ -440,6 +450,12 @@ impl FlashingPanel {
             return;
         }
         self.retire_listener();
+        self.source = SourceState::default();
+        self.source_probe = None;
+        self.next_source_probe = Instant::now();
+        self.source_reload_pending = false;
+        self.source_retry_at = None;
+        self.source_partition_names = None;
         self.firmware = Some(path.clone());
         self.settings.update(cx, |store, cx| {
             store.update(
@@ -453,6 +469,7 @@ impl FlashingPanel {
         self.capabilities = None;
         self.last_result = None;
         self.last_duration = None;
+        self.burn_log_started = None;
         self.burn_started = None;
         self.progress.clear();
         self.append(
@@ -466,16 +483,24 @@ impl FlashingPanel {
 
     fn retire_listener(&mut self) {
         self.stop_process();
+        self.fel_devices.clear();
+        self.device_lost_at = None;
         self.receiver = None;
         if let Some(run) = self.run.take() {
             self.retiring = Some(run);
         }
-        self.adb = None;
-        self.adb_error = None;
-        self.adb_receiver = None;
     }
 
     fn configure_wait(&mut self) {
+        if self.source_partition_names.is_some() {
+            self.source_partition_names = Some(
+                self.partitions
+                    .iter()
+                    .filter(|part| self.selected_partitions.contains(&part.index))
+                    .map(|part| part.name.clone())
+                    .collect(),
+            );
+        }
         self.retire_listener();
         self.progress.clear();
         self.last_result = None;
@@ -491,7 +516,7 @@ impl FlashingPanel {
     }
 
     fn start_wait(&mut self, cx: &mut Context<Self>) {
-        if !self.can_wait() || self.retiring.is_some() {
+        if !self.can_wait() || self.retiring.is_some() || !self.source.ready() {
             return;
         }
         let Some(tool_dir) = self.tool_dir.clone() else {
@@ -515,12 +540,8 @@ impl FlashingPanel {
         let rearming = self.phase.is_waiting();
         self.listening = false;
         self.wait_timed_out = false;
-        self.adb = None;
-        self.adb_error = None;
-        self.adb_receiver = None;
         self.phase = Phase::Waiting;
         self.burn_started = None;
-        self.adb_poll_at = Instant::now();
         if !rearming {
             self.append(t!("flashing.log.waiting"), Tone::Muted, Instant::now());
         }
@@ -535,6 +556,26 @@ impl FlashingPanel {
 
     fn firmware_ready(&mut self, info: FirmwareInfo, cx: &mut Context<Self>) {
         self.partitions = info.partitions;
+        self.partition_error = None;
+        self.source_retry_at = None;
+        if let Some(names) = self.source_partition_names.take() {
+            let selected: BTreeSet<_> = self
+                .partitions
+                .iter()
+                .filter(|part| names.contains(&part.name))
+                .map(|part| part.index)
+                .collect();
+            if selected.len() == names.len() {
+                self.selected_partitions = selected;
+            } else {
+                self.selected_partitions.clear();
+                self.append(
+                    t!("flashing.source.partitions_changed"),
+                    Tone::Muted,
+                    Instant::now(),
+                );
+            }
+        }
         self.capabilities = Some(info.capabilities);
         if !self.supports_mode(self.mode) {
             self.mode = EraseMode::KeepData;
@@ -557,11 +598,32 @@ impl FlashingPanel {
         self.restart_at = None;
     }
 
+    fn shutdown(&mut self) {
+        self.closed = true;
+        self.picking = false;
+        self.phase = Phase::Stopped;
+        self.stop_process();
+        self.receiver = None;
+        self.inspection_receiver = None;
+        self.adb_trigger = None;
+        self.source_probe = None;
+        self.source_reload_pending = false;
+        self.source_retry_at = None;
+        self.adb_run = None;
+        self.run = None;
+        self.inspection = None;
+        self.retiring = None;
+        self.burn_started = None;
+    }
+
     fn stop(&mut self, cx: &mut Context<Self>) {
         if !self.running() || self.is_rebooting() {
             return;
         }
         self.retire_listener();
+        self.source_probe = None;
+        self.source_retry_at = None;
+        self.progress.interrupt_active(Instant::now());
         if let Some(started) = self.burn_started.take() {
             self.last_duration = Some(started.elapsed());
         }
@@ -574,20 +636,12 @@ impl FlashingPanel {
         if self.drain_run_events() {
             cx.notify();
         }
-        let (Some(tool_dir), Some(serial)) =
-            (self.tool_dir.clone(), self.adb_target().map(str::to_owned))
-        else {
+        if !self.can_reboot() {
             return;
-        };
-        self.append(
-            t!("flashing.log.adb_reboot", serial = serial),
-            Tone::Muted,
-            Instant::now(),
-        );
-        let (sender, receiver) = mpsc::channel();
-        std::thread::spawn(move || {
-            let _ = sender.send(reboot_to_efex(&tool_dir, &serial));
-        });
+        }
+        self.append(t!("flashing.log.adb_checking"), Tone::Muted, Instant::now());
+        let (run, receiver) = start_adb_reboot();
+        self.adb_run = Some(run);
         self.adb_trigger = Some(receiver);
         cx.notify();
     }
@@ -602,6 +656,7 @@ impl FlashingPanel {
                 Ok(event) => self.handle_event(event),
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => self.handle_event(RunEvent::Exited {
+                    at: Instant::now(),
                     code: None,
                     stopped: false,
                 }),
@@ -611,15 +666,171 @@ impl FlashingPanel {
         changed
     }
 
+    fn update_source(&mut self, observation: Observation, at: Instant) -> bool {
+        let initial = self.source.observation().is_none();
+        if !self.source.update(observation, at) {
+            return false;
+        }
+        if !initial || !self.source.ready() {
+            if self.source_partition_names.is_none() {
+                self.source_partition_names = Some(
+                    self.partitions
+                        .iter()
+                        .filter(|part| self.selected_partitions.contains(&part.index))
+                        .map(|part| part.name.clone())
+                        .collect(),
+                );
+            }
+            self.source_reload_pending = true;
+        }
+        true
+    }
+
+    fn poll_source(&mut self) -> bool {
+        if self.phase == Phase::Stopped || self.picking {
+            return false;
+        }
+        let mut changed = false;
+        if let Some(receiver) = self.source_probe.take() {
+            match receiver.try_recv() {
+                Ok(observation) => changed = self.update_source(observation, Instant::now()),
+                Err(TryRecvError::Empty) => self.source_probe = Some(receiver),
+                Err(TryRecvError::Disconnected) => {
+                    changed = self.update_source(
+                        Observation::Unavailable(
+                            t!("flashing.source.check_interrupted").to_string(),
+                        ),
+                        Instant::now(),
+                    );
+                }
+            }
+        }
+        if self.source_probe.is_none()
+            && Instant::now() >= self.next_source_probe
+            && let Some(path) = &self.firmware
+        {
+            self.source_probe = Some(source::probe(path.clone()));
+            self.next_source_probe = Instant::now() + source::CHECK_INTERVAL;
+        }
+        changed
+    }
+
+    fn apply_source_reload(&mut self) -> bool {
+        if !self.source_reload_pending
+            || self.progress.has_active()
+            || self.is_rebooting()
+            || self.phase == Phase::Stopped
+        {
+            return false;
+        }
+        let phase = if self.source.ready() {
+            if self.tool_dir.is_some() {
+                Phase::ReadingFirmware
+            } else {
+                Phase::NoFirmware
+            }
+        } else if matches!(
+            self.source.observation(),
+            Some(Observation::Missing | Observation::Unavailable(_))
+        ) {
+            Phase::FirmwareMissing
+        } else {
+            Phase::FirmwareUpdating
+        };
+        let changed = self.phase != phase;
+        if self.source.ready() {
+            self.source_reload_pending = false;
+        }
+        if changed || self.run.is_some() || self.inspection.is_some() {
+            self.retire_listener();
+            if let Some(inspection) = self.inspection.take() {
+                inspection.stop();
+                self.retiring = Some(inspection);
+            }
+            self.inspection_receiver = None;
+            self.phase = phase;
+            self.burn_started = None;
+            self.source_retry_at = None;
+            if changed {
+                if let Some(message) = self.source_hint() {
+                    self.append(message, Tone::Muted, Instant::now());
+                } else {
+                    self.append(t!("flashing.source.restored"), Tone::Muted, Instant::now());
+                }
+            }
+        }
+        changed
+    }
+
+    fn source_hint(&self) -> Option<SharedString> {
+        match self.source.observation() {
+            Some(Observation::Missing) => Some(t!("flashing.source.missing")),
+            Some(Observation::Unavailable(error)) => {
+                Some(t!("flashing.source.unavailable", error = error))
+            }
+            Some(Observation::Present(_)) if !self.source.ready() => {
+                Some(t!("flashing.source.updating"))
+            }
+            _ if self.source_reload_pending => Some(t!("flashing.source.pending")),
+            _ => None,
+        }
+    }
+
     fn tick(&mut self, cx: &mut Context<Self>) {
+        if self.closed {
+            return;
+        }
         let mut changed = self.drain_run_events();
+        changed |= self.poll_source();
+        changed |= self.apply_source_reload();
+        if matches!(self.phase, Phase::Preparing | Phase::Unclaimed)
+            && self.fel_devices.is_empty()
+            && self
+                .device_lost_at
+                .is_some_and(|at| at.elapsed() >= Duration::from_secs(2))
+        {
+            self.phase = Phase::Waiting;
+            self.burn_started = None;
+            self.burn_log_started = None;
+            self.device_lost_at = None;
+            self.append(
+                t!("flashing.log.device_removed"),
+                Tone::Muted,
+                Instant::now(),
+            );
+            changed = true;
+        }
+        if self.phase == Phase::Preparing
+            && self
+                .burn_started
+                .is_some_and(|at| at.elapsed() >= DEVICE_CLAIM_NOTICE)
+        {
+            self.phase = Phase::Unclaimed;
+            self.append(
+                t!("flashing.log.device_unclaimed"),
+                Tone::Muted,
+                Instant::now(),
+            );
+            changed = true;
+        }
         if self.retiring.as_ref().is_some_and(Run::is_finished) {
             self.retiring = None;
+            changed = true;
+        }
+        if self.source_retry_at.is_some_and(|at| Instant::now() >= at)
+            && self.source.ready()
+            && !self.source_reload_pending
+            && self.phase == Phase::Failed
+        {
+            self.source_retry_at = None;
+            self.phase = Phase::ReadingFirmware;
             changed = true;
         }
         if self.phase == Phase::ReadingFirmware
             && self.inspection.is_none()
             && self.retiring.is_none()
+            && self.source.ready()
+            && self.source_probe.is_none()
             && let (Some(tool_dir), Some(firmware)) = (&self.tool_dir, &self.firmware)
         {
             let (inspection, receiver) = inspect_firmware(tool_dir, firmware);
@@ -634,13 +845,17 @@ impl FlashingPanel {
                     match result {
                         Ok(info) => self.firmware_ready(info, cx),
                         Err(error) => {
+                            let repeated = self.partition_error.as_ref() == Some(&error);
                             self.partition_error = Some(error.clone());
                             self.phase = Phase::Failed;
-                            self.append(
-                                t!("flashing.partitions.failed", error = error),
-                                Tone::Danger,
-                                Instant::now(),
-                            );
+                            self.source_retry_at = Some(Instant::now() + Duration::from_secs(5));
+                            if !repeated {
+                                self.append(
+                                    t!("flashing.partitions.failed", error = error),
+                                    Tone::Danger,
+                                    Instant::now(),
+                                );
+                            }
                         }
                     }
                 }
@@ -649,26 +864,40 @@ impl FlashingPanel {
                     self.inspection = None;
                     self.partition_error = Some(t!("flashing.partitions.interrupted").to_string());
                     self.phase = Phase::Failed;
+                    self.source_retry_at = Some(Instant::now() + Duration::from_secs(5));
                     changed = true;
                 }
             }
         }
         if let Some(receiver) = self.adb_trigger.take() {
             match receiver.try_recv() {
-                Ok(Ok(output)) => {
+                Ok(Ok(AdbReboot::Rebooted { serial, output })) => {
                     changed = true;
+                    self.append(
+                        t!("flashing.log.adb_reboot", serial = serial),
+                        Tone::Muted,
+                        Instant::now(),
+                    );
                     if !output.is_empty() {
                         self.append(output, Tone::Normal, Instant::now());
                     }
                 }
+                Ok(Ok(AdbReboot::NoDevice)) => {
+                    changed = true;
+                    self.append(
+                        t!("flashing.log.adb_no_device"),
+                        Tone::Muted,
+                        Instant::now(),
+                    );
+                }
+                Ok(Ok(AdbReboot::MultipleDevices)) => {
+                    changed = true;
+                    self.append(t!("flashing.adb.multiple"), Tone::Danger, Instant::now());
+                }
                 Ok(Err(error)) => {
                     changed = true;
                     self.append(
-                        if error.is_empty() {
-                            t!("flashing.log.adb_changed")
-                        } else {
-                            t!("flashing.log.adb_failed", error = error)
-                        },
+                        t!("flashing.log.adb_failed", error = error),
                         Tone::Danger,
                         Instant::now(),
                     );
@@ -676,35 +905,8 @@ impl FlashingPanel {
                 Err(TryRecvError::Empty) => self.adb_trigger = Some(receiver),
                 Err(TryRecvError::Disconnected) => changed = true,
             }
-        }
-        if let Some(receiver) = self.adb_receiver.take() {
-            match receiver.try_recv() {
-                Ok(Ok(devices)) => {
-                    changed = true;
-                    self.adb = Some(devices);
-                    self.adb_error = None;
-                }
-                Ok(Err(error)) => {
-                    changed = true;
-                    self.adb = None;
-                    self.adb_error = Some(error);
-                }
-                Err(TryRecvError::Empty) => self.adb_receiver = Some(receiver),
-                Err(TryRecvError::Disconnected) => changed = true,
-            }
-        }
-        if self.listening
-            && self.phase.is_waiting()
-            && self.adb_receiver.is_none()
-            && self.adb_poll_at.elapsed() >= Duration::from_secs(3)
-        {
-            self.adb_poll_at = Instant::now();
-            if let Some(tool_dir) = self.tool_dir.clone() {
-                let (sender, receiver) = mpsc::channel();
-                std::thread::spawn(move || {
-                    let _ = sender.send(adb_devices(&tool_dir));
-                });
-                self.adb_receiver = Some(receiver);
+            if self.adb_trigger.is_none() {
+                self.adb_run = None;
             }
         }
         if let Some(at) = self.restart_at
@@ -719,8 +921,8 @@ impl FlashingPanel {
                 changed = true;
             }
         }
-        if let Some(started) = self.burn_started {
-            let second = started.elapsed().as_secs();
+        if self.burn_started.is_some() || self.progress.has_active() {
+            let second = self.started.elapsed().as_secs();
             if second != self.shown_second {
                 self.shown_second = second;
                 changed = true;
@@ -733,7 +935,43 @@ impl FlashingPanel {
 
     fn handle_event(&mut self, event: RunEvent) {
         match event {
-            RunEvent::Line(line) => {
+            RunEvent::DevicesPresent { at, devices } => {
+                let arrived = devices
+                    .iter()
+                    .any(|instance| !self.fel_devices.contains(instance));
+                self.fel_devices = devices;
+                if arrived {
+                    self.fel_arrived(at);
+                } else if self.fel_devices.is_empty()
+                    && matches!(self.phase, Phase::Preparing | Phase::Unclaimed)
+                {
+                    self.device_lost_at = Some(at);
+                }
+            }
+            RunEvent::DeviceChanged {
+                at,
+                instance,
+                present,
+            } => {
+                if present {
+                    if self.fel_devices.insert(instance) {
+                        self.fel_arrived(at);
+                    }
+                } else if self.fel_devices.remove(&instance)
+                    && self.fel_devices.is_empty()
+                    && matches!(self.phase, Phase::Preparing | Phase::Unclaimed)
+                {
+                    self.device_lost_at = Some(at);
+                }
+            }
+            RunEvent::DetectionUnavailable { at, error } => {
+                self.append(
+                    t!("flashing.log.device_monitor_unavailable", error = error),
+                    Tone::Muted,
+                    at,
+                );
+            }
+            RunEvent::Line { at, text: line } => {
                 let parsed = super::parse_line(&line);
                 match &parsed {
                     ParsedLine::Listening => {
@@ -741,7 +979,6 @@ impl FlashingPanel {
                             return;
                         }
                         self.listening = true;
-                        self.adb_poll_at = Instant::now() - Duration::from_secs(3);
                     }
                     ParsedLine::NoDeviceTimeout if self.phase.is_waiting() => {
                         self.wait_timed_out = true;
@@ -752,71 +989,83 @@ impl FlashingPanel {
                 if line.contains("Device checkIn time is 30s") && self.phase.is_waiting() {
                     return;
                 }
-                if matches!(
-                    parsed,
-                    ParsedLine::DeviceDetected
-                        | ParsedLine::Stage(_)
-                        | ParsedLine::Progress { .. }
-                        | ParsedLine::DeviceFinished { .. }
-                ) && self.phase.is_waiting()
+                if self.progress.is_activity(&parsed)
+                    && (self.phase.is_waiting()
+                        || matches!(self.phase, Phase::Preparing | Phase::Unclaimed))
                 {
+                    if self.phase.is_waiting() {
+                        self.begin_attempt(at);
+                    }
                     self.phase = Phase::Burning;
-                    self.progress.clear();
-                    self.burn_started = Some(Instant::now());
-                    self.last_duration = None;
-                    self.last_result = None;
-                    self.shown_second = 0;
-                    self.listening = false;
-                    self.wait_timed_out = false;
-                    self.append(
-                        t!("flashing.log.device_found"),
-                        Tone::Success,
-                        Instant::now(),
-                    );
+                    self.device_lost_at = None;
+                    self.append(t!("flashing.log.device_found"), Tone::Success, at);
                 }
+                let finished = matches!(
+                    parsed,
+                    ParsedLine::RunFinished { .. }
+                        | ParsedLine::DeviceFinished { .. }
+                        | ParsedLine::DeviceMissing { .. }
+                );
+                self.progress.apply_at(parsed.clone(), at);
                 let tone = match &parsed {
-                    super::ParsedLine::DeviceFinished { success: true, .. }
-                    | super::ParsedLine::RunFinished { success: true } => Tone::Success,
-                    super::ParsedLine::DeviceFinished { success: false, .. }
-                    | super::ParsedLine::RunFinished { success: false } => Tone::Danger,
+                    super::ParsedLine::DeviceFinished { success: true, .. } => Tone::Success,
+                    super::ParsedLine::DeviceFinished { success: false, .. } => Tone::Danger,
+                    super::ParsedLine::RunFinished { .. } => {
+                        if self.progress.has_active() {
+                            Tone::Muted
+                        } else if self.progress.completion(Some(0), false) == Completion::Success {
+                            Tone::Success
+                        } else {
+                            Tone::Danger
+                        }
+                    }
                     _ => Tone::Normal,
                 };
-                let finished = match &parsed {
-                    ParsedLine::RunFinished { success } if self.phase.is_burning() => {
-                        Some(*success)
-                    }
-                    _ => None,
-                };
-                self.progress.apply(parsed);
-                self.append(line, tone, Instant::now());
-                if let Some(success) = finished {
+                self.append(line, tone, at);
+                if finished
+                    && self.progress.all_finished()
+                    && self.last_result.is_none()
+                    && self.phase == Phase::Burning
+                {
                     self.finish_burn(
-                        success && self.progress.completion(Some(0), false) == Completion::Success,
+                        self.progress.completion(Some(0), false) == Completion::Success,
+                        at,
                     );
                 }
             }
-            RunEvent::Failed(error) => {
+            RunEvent::Failed { at, error } => {
                 self.run = None;
                 self.receiver = None;
                 self.listening = false;
+                self.restart_at = None;
                 if self.phase == Phase::Stopped {
                     return;
                 }
-                self.phase = Phase::Failed;
+                let attempted_burn = self.phase == Phase::Burning
+                    || (!self.progress.is_empty() && self.last_result.is_none());
+                if attempted_burn {
+                    self.progress.interrupt_active(at);
+                    self.last_result = Some(false);
+                    self.phase = Phase::Waiting;
+                    self.restart_at = Some(at + Duration::from_millis(400));
+                } else {
+                    self.phase = Phase::Failed;
+                }
                 if let Some(started) = self.burn_started.take() {
-                    self.last_duration = Some(started.elapsed());
+                    self.last_duration = Some(at.saturating_duration_since(started));
                 }
                 self.append(
                     t!("flashing.log.start_failed", error = error),
                     Tone::Danger,
-                    Instant::now(),
+                    at,
                 );
             }
-            RunEvent::Exited { code, stopped } => {
+            RunEvent::Exited { at, code, stopped } => {
                 self.run = None;
                 self.receiver = None;
                 self.listening = false;
                 if stopped || self.phase == Phase::Stopped {
+                    self.progress.interrupt_active(at);
                     if self.phase != Phase::Stopped {
                         self.phase = Phase::Stopped;
                     }
@@ -825,6 +1074,7 @@ impl FlashingPanel {
                 let completion = self
                     .progress
                     .completion(code, self.phase.is_waiting() && self.wait_timed_out);
+                self.progress.interrupt_active(at);
                 if completion == Completion::WaitAgain {
                     self.restart_at = Some(Instant::now() + Duration::from_millis(400));
                     return;
@@ -832,14 +1082,28 @@ impl FlashingPanel {
                 let success = completion == Completion::Success;
                 if success {
                     if self.last_result != Some(true) {
-                        self.finish_burn(true);
+                        self.finish_burn(true, at);
                     }
                     self.restart_at = Some(Instant::now() + Duration::from_millis(400));
                 } else {
+                    if self.last_result.is_some() {
+                        self.phase = Phase::Waiting;
+                        self.restart_at = Some(at + Duration::from_millis(400));
+                        return;
+                    }
+                    let attempted_burn = self.phase == Phase::Burning || !self.progress.is_empty();
+                    if !attempted_burn {
+                        self.burn_started = None;
+                        self.burn_log_started = None;
+                        self.phase = Phase::Waiting;
+                        self.restart_at = Some(at + Duration::from_millis(400));
+                        return;
+                    }
                     self.last_result = Some(false);
-                    self.phase = Phase::Failed;
+                    self.phase = Phase::Waiting;
+                    self.restart_at = Some(at + Duration::from_millis(400));
                     if let Some(started) = self.burn_started.take() {
-                        self.last_duration = Some(started.elapsed());
+                        self.last_duration = Some(at.saturating_duration_since(started));
                     }
                     self.append(
                         t!(
@@ -847,20 +1111,44 @@ impl FlashingPanel {
                             code = code.map_or_else(|| "—".to_string(), |code| code.to_string())
                         ),
                         Tone::Danger,
-                        Instant::now(),
+                        at,
                     );
                 }
             }
         }
     }
 
-    fn finish_burn(&mut self, success: bool) {
-        self.last_duration = self.burn_started.take().map(|started| started.elapsed());
+    fn begin_attempt(&mut self, at: Instant) {
+        self.progress.clear();
+        self.burn_started = Some(at);
+        self.burn_log_started = Some(at.saturating_duration_since(self.started));
+        self.last_duration = None;
+        self.last_result = None;
+        self.shown_second = 0;
+        self.listening = false;
+        self.wait_timed_out = false;
+        self.device_lost_at = None;
+    }
+
+    fn fel_arrived(&mut self, at: Instant) {
+        self.device_lost_at = None;
+        if self.phase.is_waiting() {
+            self.begin_attempt(at);
+            self.phase = Phase::Preparing;
+            self.append(t!("flashing.log.fel_found"), Tone::Success, at);
+        }
+    }
+
+    fn finish_burn(&mut self, success: bool, at: Instant) {
+        self.last_duration = self
+            .burn_started
+            .take()
+            .map(|started| at.saturating_duration_since(started));
         self.last_result = Some(success);
         self.phase = Phase::Waiting;
         self.listening = true;
         self.wait_timed_out = false;
-        self.adb_poll_at = Instant::now() - Duration::from_secs(3);
+        self.device_lost_at = None;
         self.append(
             if success {
                 t!("flashing.log.success")
@@ -868,9 +1156,9 @@ impl FlashingPanel {
                 t!("flashing.result.failed")
             },
             if success { Tone::Success } else { Tone::Danger },
-            Instant::now(),
+            at,
         );
-        self.append(t!("flashing.log.next_device"), Tone::Muted, Instant::now());
+        self.append(t!("flashing.log.next_device"), Tone::Muted, at);
     }
 
     fn append(&mut self, text: impl ToString, tone: Tone, now: Instant) {
@@ -898,12 +1186,22 @@ impl FlashingPanel {
         format!("{:02}:{:02}", seconds / 60, seconds % 60)
     }
 
+    fn log_clock(&self, at: Duration) -> Duration {
+        self.burn_log_started
+            .filter(|started| at >= *started)
+            .map_or(at, |started| at - started)
+    }
+
     fn phase_label(&self) -> SharedString {
         match self.phase {
             Phase::NoFirmware => t!("flashing.phase.no_firmware"),
             Phase::ReadingFirmware => t!("flashing.phase.reading"),
+            Phase::FirmwareMissing => t!("flashing.phase.firmware_missing"),
+            Phase::FirmwareUpdating => t!("flashing.phase.firmware_updating"),
             Phase::Ready => t!("flashing.phase.ready"),
             Phase::Waiting => t!("flashing.phase.waiting"),
+            Phase::Preparing => t!("flashing.phase.preparing"),
+            Phase::Unclaimed => t!("flashing.phase.unclaimed"),
             Phase::Burning => t!("flashing.phase.burning"),
             Phase::Failed => t!("flashing.phase.failed"),
             Phase::Stopped => t!("flashing.phase.stopped"),
@@ -914,8 +1212,20 @@ impl FlashingPanel {
         match self.phase {
             Phase::NoFirmware => t!("flashing.hint.no_firmware"),
             Phase::ReadingFirmware => t!("flashing.hint.reading"),
+            Phase::FirmwareMissing => self
+                .source_hint()
+                .unwrap_or_else(|| t!("flashing.source.missing")),
+            Phase::FirmwareUpdating => t!("flashing.source.updating"),
             Phase::Ready => t!("flashing.partitions.hint"),
+            Phase::Waiting if self.last_result == Some(true) => {
+                t!("flashing.hint.waiting_after_success")
+            }
+            Phase::Waiting if self.last_result == Some(false) => {
+                t!("flashing.hint.waiting_after_failure")
+            }
             Phase::Waiting => t!("flashing.hint.waiting"),
+            Phase::Preparing => t!("flashing.hint.preparing"),
+            Phase::Unclaimed => t!("flashing.hint.unclaimed"),
             Phase::Burning => t!("flashing.hint.burning"),
             Phase::Failed => t!("flashing.hint.failed"),
             Phase::Stopped => t!("flashing.hint.stopped"),
@@ -926,7 +1236,10 @@ impl FlashingPanel {
         match self.phase {
             Phase::Burning => cx.theme().success,
             Phase::Failed => cx.theme().danger,
-            Phase::Waiting => cx.theme().primary,
+            Phase::Unclaimed | Phase::FirmwareMissing | Phase::FirmwareUpdating => {
+                cx.theme().warning
+            }
+            Phase::Waiting | Phase::Preparing => cx.theme().primary,
             Phase::NoFirmware | Phase::Stopped | Phase::ReadingFirmware | Phase::Ready => {
                 cx.theme().muted_foreground
             }
@@ -950,7 +1263,7 @@ impl FlashingPanel {
     }
 
     fn toolbar(&self) -> impl IntoElement {
-        let adb_ready = self.adb_target().is_some();
+        let adb_ready = self.can_reboot();
         let busy = self.running();
         let mode_dispatch = self.dispatch.clone();
         h_flex()
@@ -1107,6 +1420,24 @@ impl FlashingPanel {
 
     fn progress_card(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let percent = self.progress.overall_percent();
+        let device_count = self.progress.devices().count();
+        let progress_label = if device_count == 1 {
+            let (device, _) = self.progress.devices().next().unwrap();
+            t!("flashing.device.progress", number = device)
+        } else {
+            t!("flashing.progress")
+        };
+        let progress_text: SharedString = percent
+            .map(|percent| format!("{percent}%").into())
+            .unwrap_or_else(|| {
+                if self.phase == Phase::Unclaimed {
+                    t!("flashing.progress.unclaimed")
+                } else if self.is_burning() {
+                    t!("flashing.progress.preparing")
+                } else {
+                    "—".into()
+                }
+            });
         let color = self.phase_color(cx);
         v_flex()
             .gap_2()
@@ -1120,6 +1451,9 @@ impl FlashingPanel {
                     .gap_2()
                     .child(
                         div()
+                            .id("flashing-phase")
+                            .test_support()
+                            .aria_label(self.phase_label())
                             .px_2()
                             .py_0p5()
                             .rounded_full()
@@ -1141,9 +1475,16 @@ impl FlashingPanel {
                             .text_xs()
                             .text_color(cx.theme().muted_foreground)
                             .when(
-                                self.burn_started.is_some() || self.last_duration.is_some(),
+                                device_count == 0
+                                    && (self.burn_started.is_some()
+                                        || self.last_duration.is_some()),
                                 |label| {
-                                    let text = if self.burn_started.is_some() {
+                                    let text = if matches!(
+                                        self.phase,
+                                        Phase::Preparing | Phase::Unclaimed
+                                    ) {
+                                        t!("flashing.detected_elapsed", time = self.elapsed())
+                                    } else if self.burn_started.is_some() {
                                         t!("flashing.elapsed", time = self.elapsed())
                                     } else {
                                         t!("flashing.last_elapsed", time = self.elapsed())
@@ -1159,48 +1500,67 @@ impl FlashingPanel {
                             ),
                     ),
             )
-            .child(
-                h_flex()
-                    .gap_2()
-                    .justify_between()
-                    .child(
-                        div()
-                            .text_sm()
-                            .font_weight(FontWeight::MEDIUM)
-                            .child(t!("flashing.overall")),
-                    )
-                    .child(
-                        div()
-                            .text_lg()
-                            .text_color(color)
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child(
-                                percent
-                                    .map(|percent| format!("{percent}%"))
-                                    .unwrap_or_else(|| "—".into()),
-                            ),
-                    ),
-            )
-            .child(
-                Progress::new("flashing-overall")
-                    .accessibility_label(t!("flashing.overall"))
-                    .rounded_full()
-                    .color(color)
-                    .loading(self.is_burning() && percent.is_none())
-                    .value(percent.map_or(0., f32::from)),
-            )
-            .when_some(self.progress.stage().map(str::to_string), |card, stage| {
+            .when(device_count <= 1, |card| {
                 card.child(
-                    div()
-                        .text_xs()
-                        .text_color(cx.theme().muted_foreground)
-                        .child(t!("flashing.stage", stage = stage)),
+                    h_flex()
+                        .gap_2()
+                        .justify_between()
+                        .child(
+                            div()
+                                .id("flashing-progress-label")
+                                .test_support()
+                                .aria_label(progress_label.clone())
+                                .text_sm()
+                                .font_weight(FontWeight::MEDIUM)
+                                .child(progress_label.clone()),
+                        )
+                        .child(
+                            div()
+                                .id("flashing-progress-value")
+                                .test_support()
+                                .aria_label(progress_text.clone())
+                                .text_lg()
+                                .text_color(color)
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child(progress_text),
+                        ),
+                )
+                .child(
+                    div().id("flashing-primary-progress").test_support().child(
+                        Progress::new("flashing-overall")
+                            .accessibility_label(progress_label)
+                            .rounded_full()
+                            .color(color)
+                            .loading(self.is_burning() && percent.is_none())
+                            .value(percent.map_or(0., f32::from)),
+                    ),
+                )
+                .children(
+                    self.progress
+                        .devices()
+                        .map(|(device, state)| self.device_info(*device, state, cx)),
                 )
             })
-            .when(!self.progress.is_empty(), |card| {
+            .when_some(
+                self.progress
+                    .stage()
+                    .filter(|_| device_count <= 1)
+                    .map(str::to_string),
+                |card, stage| {
+                    card.child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(t!("flashing.stage", stage = stage)),
+                    )
+                },
+            )
+            .when(device_count > 1, |card| {
                 card.child(v_flex().gap_1p5().children(self.progress.devices().map(
                     |(device, state)| {
                         h_flex()
+                            .id(("flashing-device-progress", u64::from(*device)))
+                            .test_support()
                             .gap_2()
                             .child(
                                 div()
@@ -1231,6 +1591,7 @@ impl FlashingPanel {
                                     .text_color(cx.theme().muted_foreground)
                                     .child(format!("{}%", state.percent)),
                             )
+                            .child(self.device_info(*device, state, cx))
                             .child(
                                 div()
                                     .max_w_40()
@@ -1242,23 +1603,107 @@ impl FlashingPanel {
                     },
                 )))
             })
-            .when_some(self.last_result, |card, success| {
-                card.child(
-                    div()
-                        .text_sm()
-                        .font_weight(FontWeight::MEDIUM)
-                        .text_color(if success {
-                            cx.theme().success
+            .when(
+                self.last_result.is_some()
+                    || self.progress.devices().any(|(_, state)| state.finished),
+                |card| card.child(self.result_summary(cx)),
+            )
+    }
+
+    fn device_info(&self, device: u32, state: &DeviceProgress, cx: &App) -> impl IntoElement {
+        let status = if state.interrupted {
+            t!("flashing.device.state.interrupted")
+        } else if !state.finished {
+            t!("flashing.phase.burning")
+        } else if state.success {
+            t!("flashing.device.state.success")
+        } else {
+            t!("flashing.device.state.failed")
+        };
+        let elapsed = state.elapsed(Instant::now()).as_secs();
+        let elapsed = t!(
+            "flashing.elapsed",
+            time = format!("{:02}:{:02}", elapsed / 60, elapsed % 60)
+        );
+        h_flex()
+            .gap_2()
+            .text_xs()
+            .child(
+                div()
+                    .id(("flashing-device-state", u64::from(device)))
+                    .test_support()
+                    .aria_label(status.clone())
+                    .text_color(if !state.finished {
+                        cx.theme().primary
+                    } else if state.success {
+                        cx.theme().success
+                    } else {
+                        cx.theme().danger
+                    })
+                    .child(status),
+            )
+            .child(
+                div()
+                    .id(("flashing-device-elapsed", u64::from(device)))
+                    .test_support()
+                    .aria_label(elapsed.clone())
+                    .text_color(cx.theme().muted_foreground)
+                    .child(elapsed),
+            )
+    }
+
+    fn result_summary(&self, cx: &App) -> impl IntoElement {
+        v_flex()
+            .gap_1()
+            .text_sm()
+            .font_weight(FontWeight::MEDIUM)
+            .when_some(
+                self.last_result.filter(|_| self.progress.is_empty()),
+                |summary, success| {
+                    let text = if success {
+                        t!("flashing.result.success")
+                    } else {
+                        t!("flashing.result.failed")
+                    };
+                    summary.child(
+                        div()
+                            .id("flashing-result-summary")
+                            .test_support()
+                            .aria_label(text.clone())
+                            .text_color(if success {
+                                cx.theme().success
+                            } else {
+                                cx.theme().danger
+                            })
+                            .child(text),
+                    )
+                },
+            )
+            .children(
+                self.progress
+                    .devices()
+                    .filter(|(_, state)| state.finished)
+                    .map(|(device, state)| {
+                        let device_success = state.success;
+                        let text = if state.interrupted {
+                            t!("flashing.device.interrupted", number = device)
+                        } else if device_success {
+                            t!("flashing.device.success", number = device)
                         } else {
-                            cx.theme().danger
-                        })
-                        .child(if success {
-                            t!("flashing.result.success")
-                        } else {
-                            t!("flashing.result.failed")
-                        }),
-                )
-            })
+                            t!("flashing.device.failed", number = device)
+                        };
+                        div()
+                            .id(("flashing-result-device", u64::from(*device)))
+                            .test_support()
+                            .aria_label(text.clone())
+                            .text_color(if device_success {
+                                cx.theme().success
+                            } else {
+                                cx.theme().danger
+                            })
+                            .child(text)
+                    }),
+            )
     }
 
     fn log_card(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1336,6 +1781,7 @@ impl FlashingPanel {
                     .overflow_y_scroll()
                     .track_scroll(&self.scroll)
                     .children(self.logs.iter().map(|line| {
+                        let clock = self.log_clock(line.at);
                         h_flex()
                             .gap_2()
                             .items_start()
@@ -1347,8 +1793,8 @@ impl FlashingPanel {
                                     .text_color(cx.theme().muted_foreground)
                                     .child(format!(
                                         "{:02}:{:02}",
-                                        line.at.as_secs() / 60,
-                                        line.at.as_secs() % 60
+                                        clock.as_secs() / 60,
+                                        clock.as_secs() % 60
                                     )),
                             )
                             .child(
@@ -1371,6 +1817,12 @@ impl FlashingPanel {
 
 impl EventEmitter<PanelEvent> for FlashingPanel {}
 impl EventEmitter<FlashingPanelEvent> for FlashingPanel {}
+
+impl Drop for FlashingPanel {
+    fn drop(&mut self) {
+        self.shutdown();
+    }
+}
 
 impl Focusable for FlashingPanel {
     fn focus_handle(&self, _: &App) -> FocusHandle {
@@ -1402,11 +1854,8 @@ impl BasePanel for FlashingPanel {
         if crate::shared::is_panel_transfer(cx.entity_id(), cx) {
             return;
         }
-        self.picking = false;
-        self.phase = Phase::Stopped;
-        self.stop_process();
-        self.inspection = None;
-        self.inspection_receiver = None;
+        self.shutdown();
+        self._ticks = Task::ready(());
         cx.emit(FlashingPanelEvent::Closed);
     }
 }
@@ -1445,16 +1894,6 @@ impl Render for FlashingPanel {
             .as_ref()
             .map(|path| path.display().to_string())
             .unwrap_or_else(|| t!("flashing.no_firmware").to_string());
-        let adb_state = match (&self.adb, &self.adb_error) {
-            (_, Some(error)) => t!("flashing.adb.error", error = error),
-            (Some(devices), _) if devices.len() > 1 => t!("flashing.adb.multiple"),
-            (Some(devices), _) if devices.len() == 1 => {
-                t!("flashing.adb.ready", serial = devices.join(", "))
-            }
-            (Some(_), _) => t!("flashing.adb.empty"),
-            (None, _) if self.listening => t!("flashing.adb.checking"),
-            (None, _) => t!("flashing.adb.idle"),
-        };
         v_flex()
             .id("flashing")
             .test_support()
@@ -1532,35 +1971,17 @@ impl Render for FlashingPanel {
                                     .child(firmware),
                             ),
                     )
-                    .when(
-                        self.listening || self.adb.is_some() || self.adb_error.is_some(),
-                        |card| {
-                            card.child(
-                                h_flex()
-                                    .id("flashing-adb")
+                    .when_some(
+                        self.source_hint().filter(|_| self.progress.has_active()),
+                        |panel, hint| {
+                            panel.child(
+                                div()
+                                    .id("flashing-source-status")
                                     .test_support()
-                                    .gap_2()
-                                    .child(
-                                        div()
-                                            .w_16()
-                                            .flex_shrink_0()
-                                            .text_xs()
-                                            .text_color(cx.theme().muted_foreground)
-                                            .child(t!("flashing.adb.label")),
-                                    )
-                                    .child(
-                                        div()
-                                            .flex_1()
-                                            .min_w_0()
-                                            .truncate()
-                                            .text_xs()
-                                            .text_color(if self.adb_error.is_some() {
-                                                cx.theme().danger
-                                            } else {
-                                                cx.theme().muted_foreground
-                                            })
-                                            .child(adb_state),
-                                    ),
+                                    .aria_label(hint.clone())
+                                    .text_sm()
+                                    .text_color(cx.theme().warning)
+                                    .child(hint),
                             )
                         },
                     )
@@ -1586,47 +2007,744 @@ fn tab_menu(
 #[cfg(test)]
 mod tests {
     use gpui_kit::{AppContext as _, TestAppContext};
+    use std::time::{Duration, Instant};
 
     use super::{FlashingPanel, Phase, RunEvent};
 
+    fn line_event(text: &str) -> RunEvent {
+        RunEvent::Line {
+            at: Instant::now(),
+            text: text.into(),
+        }
+    }
+
+    fn exited_event(code: Option<i32>) -> RunEvent {
+        RunEvent::Exited {
+            at: Instant::now(),
+            code,
+            stopped: false,
+        }
+    }
+
+    fn usb_event(at: Instant, present: bool) -> RunEvent {
+        RunEvent::DeviceChanged {
+            at,
+            instance: r"USB\VID_1F3A&PID_EFE8\BOARD".into(),
+            present,
+        }
+    }
+
     #[gpui_kit::test]
-    fn a_completed_burn_rearms_while_a_failed_burn_stops(cx: &mut TestAppContext) {
+    fn missing_firmware_is_retained_and_recovers_while_the_tab_is_inactive(
+        cx: &mut TestAppContext,
+    ) {
+        use gpui_kit::component::{Root, dock::BasePanel as _};
+        use gpui_kit::test::TestWindowExt as _;
+        use gpui_kit::{px, size};
+
+        crate::i18n::isolate_thread();
+        crate::i18n::set_locale("zh-CN");
+        cx.update(crate::init);
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("firmware.img");
+        std::fs::write(&path, b"first image").unwrap();
+        let settings = cx.new(|_| crate::settings::SettingsStore::in_memory());
+        let panel = cx.new(|cx| FlashingPanel::new(cx.focus_handle(), settings.clone(), cx));
+        let (run, stopped) = super::Run::test_run();
+        let at = Instant::now();
+        panel.update(cx, |panel, cx| {
+            panel.select_firmware(path.clone(), cx);
+            panel.tool_dir = Some(directory.path().to_path_buf());
+            panel.update_source(super::source::observe(&path), at);
+            panel.firmware_ready(
+                super::FirmwareInfo {
+                    partitions: vec![super::FirmwarePartition {
+                        index: 1,
+                        name: "ROOTFS".into(),
+                    }],
+                    capabilities: super::FirmwareCapabilities::default(),
+                },
+                cx,
+            );
+            panel.partition_mode = true;
+            panel.selected_partitions.insert(1);
+            panel.run = Some(run);
+            panel.restart_at = None;
+            panel.next_source_probe = at + Duration::from_secs(3600);
+        });
+        let handle = cx.open_window(size(px(1280.), px(800.)), |window, cx| {
+            Root::new(panel.clone(), window, cx)
+        });
+        std::fs::remove_file(&path).unwrap();
+        cx.update_window(handle.into(), |_, window, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.set_active(false, window, cx);
+                let (sender, receiver) = std::sync::mpsc::channel();
+                sender.send(super::Observation::Missing).unwrap();
+                panel.source_probe = Some(receiver);
+                panel.tick(cx);
+                assert_eq!(panel.phase, Phase::FirmwareMissing);
+                assert!(panel.firmware.as_ref() == Some(&path));
+                assert!(stopped.load(std::sync::atomic::Ordering::Relaxed));
+                let count = panel.logs.len();
+                panel.update_source(super::Observation::Missing, at + Duration::from_secs(300));
+                panel.tick(cx);
+                assert_eq!(panel.logs.len(), count);
+            });
+            window.render_frame(cx);
+            assert_eq!(window.find("flashing-phase").label(), Some("文件不存在"));
+            assert_eq!(window.find("flashing-firmware-path").label(), path.to_str());
+        })
+        .unwrap();
+        std::fs::write(&path, b"second image with a new partition layout").unwrap();
+        let present = super::source::observe(&path);
+        panel.update(cx, |panel, cx| {
+            panel.update_source(present.clone(), at + Duration::from_secs(301));
+            panel.tick(cx);
+            assert_eq!(panel.phase, Phase::FirmwareUpdating);
+            panel.update_source(present, at + Duration::from_secs(306));
+            panel.apply_source_reload();
+            assert_eq!(panel.phase, Phase::ReadingFirmware);
+            let (inspection, _) = super::Run::test_run();
+            panel.inspection = Some(inspection);
+            let (sender, receiver) = std::sync::mpsc::channel();
+            sender
+                .send(Ok(super::FirmwareInfo {
+                    partitions: vec![super::FirmwarePartition {
+                        index: 3,
+                        name: "ROOTFS".into(),
+                    }],
+                    capabilities: super::FirmwareCapabilities::default(),
+                }))
+                .unwrap();
+            panel.inspection_receiver = Some(receiver);
+            panel.tick(cx);
+            assert_eq!(panel.phase, Phase::Waiting);
+            assert!(panel.selected_partitions.contains(&3));
+            assert!(!panel.selected_partitions.contains(&1));
+            assert!(panel.restart_at.is_some());
+            assert_eq!(
+                settings.read(cx).settings().flashing_firmware_path.as_ref(),
+                Some(&path)
+            );
+        });
+        assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 1);
+    }
+
+    #[gpui_kit::test]
+    fn source_changes_do_not_kill_active_devices_and_stop_prevents_automatic_recovery(
+        cx: &mut TestAppContext,
+    ) {
+        let settings = cx.new(|_| crate::settings::SettingsStore::in_memory());
+        let panel = cx.new(|cx| FlashingPanel::new(cx.focus_handle(), settings, cx));
+        let (run, stopped) = super::Run::test_run();
+        panel.update(cx, |panel, cx| {
+            panel.phase = Phase::Waiting;
+            panel.run = Some(run);
+            panel.handle_event(line_event("device:[2] fes plugin"));
+            panel.handle_event(line_event("device [2] progress = 30%"));
+            panel.update_source(super::Observation::Missing, Instant::now());
+            assert!(!panel.apply_source_reload());
+            assert_eq!(panel.phase, Phase::Burning);
+            assert!(!stopped.load(std::sync::atomic::Ordering::Relaxed));
+            assert!(panel.source_hint().is_some());
+            panel.handle_event(line_event("device:[2] burn finish, result=Success"));
+            panel.apply_source_reload();
+            assert_eq!(panel.phase, Phase::FirmwareMissing);
+            assert!(stopped.load(std::sync::atomic::Ordering::Relaxed));
+            assert!(panel.progress.devices().next().unwrap().1.success);
+            panel.stop(cx);
+            assert_eq!(panel.phase, Phase::Stopped);
+            panel.tick(cx);
+            assert!(panel.source_probe.is_none());
+            assert!(!panel.apply_source_reload());
+            let (sender, receiver) = std::sync::mpsc::channel();
+            panel.source_probe = Some(receiver);
+            panel.shutdown();
+            assert!(sender.send(super::Observation::Missing).is_err());
+        });
+    }
+
+    #[gpui_kit::test]
+    fn rendered_status_changes_on_usb_arrival_before_the_first_percentage(cx: &mut TestAppContext) {
+        use gpui_kit::component::Root;
+        use gpui_kit::test::TestWindowExt as _;
+        use gpui_kit::{px, size};
+
+        crate::i18n::isolate_thread();
+        crate::i18n::set_locale("zh-CN");
+        cx.update(crate::init);
+        let settings = cx.new(|_| crate::settings::SettingsStore::in_memory());
+        let panel = cx.new(|cx| FlashingPanel::new(cx.focus_handle(), settings, cx));
+        panel.update(cx, |panel, _| panel.phase = Phase::Waiting);
+        let handle = cx.open_window(size(px(1280.), px(800.)), |window, cx| {
+            Root::new(panel.clone(), window, cx)
+        });
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            assert_eq!(window.find("flashing-phase").label(), Some("等待设备"));
+            panel.update(cx, |panel, cx| {
+                panel.handle_event(usb_event(Instant::now(), true));
+                cx.notify();
+            });
+            window.render_frame(cx);
+            assert_eq!(window.find("flashing-phase").label(), Some("已检测设备"));
+            assert_eq!(
+                window.find("flashing-progress-value").label(),
+                Some("准备写入…")
+            );
+            panel.update(cx, |panel, cx| {
+                panel.burn_started = Some(Instant::now() - super::DEVICE_CLAIM_NOTICE);
+                panel.tick(cx);
+            });
+            window.render_frame(cx);
+            assert_eq!(window.find("flashing-phase").label(), Some("等待工具接管"));
+            assert_eq!(
+                window.find("flashing-progress-value").label(),
+                Some("尚未确认写入")
+            );
+            panel.update(cx, |panel, cx| {
+                assert!(panel.progress.overall_percent().is_none());
+                panel.handle_event(line_event("device [3] progress = 1%"));
+                cx.notify();
+            });
+            window.render_frame(cx);
+            assert_eq!(window.find("flashing-phase").label(), Some("正在烧录"));
+            assert_eq!(window.find("flashing-progress-value").label(), Some("1%"));
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn eight_device_ui_keeps_other_writes_running_after_success_failure_and_slot_reuse(
+        cx: &mut TestAppContext,
+    ) {
+        use gpui_kit::component::Root;
+        use gpui_kit::test::TestWindowExt as _;
+        use gpui_kit::{px, size};
+
+        crate::i18n::isolate_thread();
+        crate::i18n::set_locale("zh-CN");
+        cx.update(crate::init);
+        let settings = cx.new(|_| crate::settings::SettingsStore::in_memory());
+        let panel = cx.new(|cx| FlashingPanel::new(cx.focus_handle(), settings, cx));
+        let start = Instant::now() - Duration::from_secs(20);
+        let (run, stopped) = super::Run::test_run();
+        panel.update(cx, |panel, _| {
+            panel.phase = Phase::Waiting;
+            panel.run = Some(run);
+            for device in 1..=8 {
+                panel.handle_event(RunEvent::Line {
+                    at: start + Duration::from_secs(device as u64),
+                    text: format!("device:[{device}] fes plugin"),
+                });
+                panel.handle_event(RunEvent::Line {
+                    at: start + Duration::from_secs(9),
+                    text: format!("device [{device}] progress = {}%", device * 5),
+                });
+            }
+            assert_eq!(panel.progress.devices().count(), 8);
+        });
+        let handle = cx.open_window(size(px(1400.), px(900.)), |window, cx| {
+            Root::new(panel.clone(), window, cx)
+        });
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            assert!(window.try_find("flashing-primary-progress").is_none());
+            for device in 1..=8_u64 {
+                assert!(window.find(("flashing-device-progress", device)).visible());
+                assert_eq!(
+                    window.find(("flashing-device-state", device)).label(),
+                    Some("正在烧录")
+                );
+                assert!(window.find(("flashing-device-elapsed", device)).visible());
+            }
+            panel.update(cx, |panel, cx| {
+                panel.handle_event(RunEvent::Line {
+                    at: start + Duration::from_secs(10),
+                    text: "device:[1] burn finish, result=Success".into(),
+                });
+                panel.handle_event(line_event("device burn result=2"));
+                panel.handle_event(RunEvent::Line {
+                    at: start + Duration::from_secs(12),
+                    text: "device:[2] burn finish, result=Failed".into(),
+                });
+                panel.handle_event(line_event("device [3] progress = 62%"));
+                assert_eq!(panel.phase, Phase::Burning);
+                assert!(panel.last_result.is_none());
+                assert!(!panel.can_configure());
+                assert!(panel.restart_at.is_none());
+                assert!(!stopped.load(std::sync::atomic::Ordering::Relaxed));
+                cx.notify();
+            });
+            window.render_frame(cx);
+            assert_eq!(
+                window.find(("flashing-device-elapsed", 1_u64)).label(),
+                Some("已用时 00:09")
+            );
+            assert_eq!(
+                window.find(("flashing-device-elapsed", 2_u64)).label(),
+                Some("已用时 00:10")
+            );
+            assert_eq!(
+                window.find(("flashing-result-device", 1_u64)).label(),
+                Some("设备 1 烧录成功")
+            );
+            assert_eq!(
+                window.find(("flashing-result-device", 2_u64)).label(),
+                Some("设备 2 烧录失败")
+            );
+            assert_eq!(
+                window.find(("flashing-device-state", 8_u64)).label(),
+                Some("正在烧录")
+            );
+            panel.update(cx, |panel, cx| {
+                let other = panel
+                    .progress
+                    .devices()
+                    .find(|(device, _)| **device == 8)
+                    .unwrap()
+                    .1
+                    .clone();
+                panel.handle_event(line_event("device:[1] fes plugin"));
+                panel.handle_event(line_event("device [1] progress = 1%"));
+                assert_eq!(
+                    panel
+                        .progress
+                        .devices()
+                        .find(|(device, _)| **device == 8)
+                        .unwrap()
+                        .1,
+                    &other
+                );
+                assert_eq!(panel.phase, Phase::Burning);
+                assert!(panel.restart_at.is_none());
+                cx.notify();
+            });
+            window.render_frame(cx);
+            assert!(window.try_find(("flashing-result-device", 1_u64)).is_none());
+            assert_eq!(
+                window.find(("flashing-device-state", 1_u64)).label(),
+                Some("正在烧录")
+            );
+            assert_eq!(
+                window.find(("flashing-device-elapsed", 2_u64)).label(),
+                Some("已用时 00:10")
+            );
+            panel.update(cx, |panel, cx| {
+                panel.handle_event(exited_event(Some(-1073741819)));
+                cx.notify();
+            });
+            window.render_frame(cx);
+            assert_eq!(
+                window.find(("flashing-result-device", 2_u64)).label(),
+                Some("设备 2 烧录失败")
+            );
+            assert_eq!(
+                window.find(("flashing-device-state", 8_u64)).label(),
+                Some("已中断")
+            );
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn progress_bars_follow_actual_device_count_and_results_name_each_device(
+        cx: &mut TestAppContext,
+    ) {
+        use gpui_kit::component::Root;
+        use gpui_kit::test::TestWindowExt as _;
+        use gpui_kit::{px, size};
+
+        crate::i18n::isolate_thread();
+        crate::i18n::set_locale("zh-CN");
+        cx.update(crate::init);
+        let settings = cx.new(|_| crate::settings::SettingsStore::in_memory());
+        let panel = cx.new(|cx| FlashingPanel::new(cx.focus_handle(), settings, cx));
+        panel.update(cx, |panel, _| panel.phase = Phase::Waiting);
+        let handle = cx.open_window(size(px(1280.), px(800.)), |window, cx| {
+            Root::new(panel.clone(), window, cx)
+        });
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            assert_eq!(
+                window.find("flashing-progress-label").label(),
+                Some("烧录进度")
+            );
+            panel.update(cx, |panel, cx| {
+                panel.handle_event(line_event("device [2] progress = 40%"));
+                cx.notify();
+            });
+            window.render_frame(cx);
+            assert!(window.find("flashing-primary-progress").visible());
+            assert_eq!(
+                window.find("flashing-progress-label").label(),
+                Some("设备 2 烧录进度")
+            );
+            assert_eq!(window.find("flashing-progress-value").label(), Some("40%"));
+            assert!(
+                window
+                    .try_find(("flashing-device-progress", 2_u64))
+                    .is_none()
+            );
+            panel.update(cx, |panel, cx| {
+                panel.handle_event(line_event("device:[2] burn finish, result=Success"));
+                cx.notify();
+            });
+            window.render_frame(cx);
+            assert_eq!(
+                window.find(("flashing-result-device", 2_u64)).label(),
+                Some("设备 2 烧录成功")
+            );
+            assert!(window.try_find("flashing-result-summary").is_none());
+            panel.update(cx, |panel, cx| {
+                panel.handle_event(line_event("device:[2] fes plugin"));
+                panel.handle_event(line_event("device [3] progress = 20%"));
+                panel.handle_event(line_event("device:[2] burn finish, result=Success"));
+                cx.notify();
+            });
+            window.render_frame(cx);
+            assert!(window.try_find("flashing-primary-progress").is_none());
+            assert!(window.try_find("flashing-progress-label").is_none());
+            assert!(window.find(("flashing-device-progress", 2_u64)).visible());
+            assert!(window.find(("flashing-device-progress", 3_u64)).visible());
+            assert!(window.try_find(("flashing-result-device", 3_u64)).is_none());
+            panel.update(cx, |panel, cx| {
+                panel.handle_event(line_event("device:[3] burn finish, result=Failed"));
+                panel.handle_event(line_event("device burn result=2"));
+                cx.notify();
+            });
+            window.render_frame(cx);
+            assert_eq!(
+                window.find(("flashing-result-device", 2_u64)).label(),
+                Some("设备 2 烧录成功")
+            );
+            assert_eq!(
+                window.find(("flashing-result-device", 3_u64)).label(),
+                Some("设备 3 烧录失败")
+            );
+            panel.update(cx, |panel, cx| {
+                panel.handle_event(line_event("device:[5] fes plugin"));
+                panel.handle_event(line_event("device [5] progress = 1%"));
+                cx.notify();
+            });
+            window.render_frame(cx);
+            assert!(window.find("flashing-primary-progress").visible());
+            assert_eq!(
+                window.find("flashing-progress-label").label(),
+                Some("设备 5 烧录进度")
+            );
+            for device in [2_u64, 3_u64, 5_u64] {
+                assert!(
+                    window
+                        .try_find(("flashing-device-progress", device))
+                        .is_none()
+                );
+                assert!(
+                    window
+                        .try_find(("flashing-result-device", device))
+                        .is_none()
+                );
+            }
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn a_detected_device_without_tool_confirmation_shows_recovery_without_restarting(
+        cx: &mut TestAppContext,
+    ) {
+        let settings = cx.new(|_| crate::settings::SettingsStore::in_memory());
+        let panel = cx.new(|cx| FlashingPanel::new(cx.focus_handle(), settings, cx));
+        panel.update(cx, |panel, cx| {
+            panel.phase = Phase::Waiting;
+            let (run, stopped) = super::Run::test_run();
+            panel.run = Some(run);
+            let detected = Instant::now() - super::DEVICE_CLAIM_NOTICE - Duration::from_secs(1);
+            panel.handle_event(usb_event(detected, true));
+            panel.tick(cx);
+            assert_eq!(panel.phase, Phase::Unclaimed);
+            assert!(panel.can_configure());
+            assert!(panel.running());
+            assert!(!panel.is_burning());
+            assert!(panel.last_result.is_none());
+            assert!(panel.restart_at.is_none());
+            assert!(!stopped.load(std::sync::atomic::Ordering::Relaxed));
+            let count = panel.logs.len();
+            panel.tick(cx);
+            panel.handle_event(usb_event(Instant::now(), true));
+            assert_eq!(panel.logs.len(), count);
+            assert_eq!(panel.phase, Phase::Unclaimed);
+            panel.handle_event(line_event("device [3] progress = 1%"));
+            assert_eq!(panel.phase, Phase::Burning);
+            assert_eq!(panel.burn_started, Some(detected));
+            panel.tick(cx);
+            assert_eq!(panel.phase, Phase::Burning);
+        });
+    }
+
+    #[gpui_kit::test]
+    fn preparation_exit_is_not_a_failed_burn_and_start_errors_do_not_override_last_success(
+        cx: &mut TestAppContext,
+    ) {
+        let settings = cx.new(|_| crate::settings::SettingsStore::in_memory());
+        let panel = cx.new(|cx| FlashingPanel::new(cx.focus_handle(), settings, cx));
+        panel.update(cx, |panel, cx| {
+            panel.phase = Phase::Waiting;
+            panel.handle_event(usb_event(Instant::now() - Duration::from_secs(30), true));
+            panel.tick(cx);
+            assert_eq!(panel.phase, Phase::Unclaimed);
+            panel.handle_event(line_event("device burn result=2"));
+            assert_eq!(panel.phase, Phase::Unclaimed);
+            assert!(panel.last_result.is_none());
+            panel.handle_event(exited_event(Some(2)));
+            assert_eq!(panel.phase, Phase::Waiting);
+            assert!(panel.last_result.is_none());
+            assert!(panel.burn_started.is_none());
+            panel.last_result = Some(true);
+            panel.progress.apply(super::ParsedLine::DeviceFinished {
+                device: 3,
+                success: true,
+            });
+            panel.handle_event(RunEvent::Failed {
+                at: Instant::now(),
+                error: "PhoenixSuit.exe is running".into(),
+            });
+            assert_eq!(panel.phase, Phase::Failed);
+            assert_eq!(panel.last_result, Some(true));
+            assert!(panel.restart_at.is_none());
+        });
+    }
+
+    #[gpui_kit::test]
+    fn fel_arrival_shows_activity_before_any_console_output_and_preserves_the_clock(
+        cx: &mut TestAppContext,
+    ) {
         let settings = cx.new(|_| crate::settings::SettingsStore::in_memory());
         let panel = cx.new(|cx| FlashingPanel::new(cx.focus_handle(), settings, cx));
         panel.update(cx, |panel, _| {
             panel.phase = Phase::Waiting;
-            panel.handle_event(RunEvent::Line("line[42], device:[1] fes plugin".into()));
-            assert_eq!(panel.phase, Phase::Burning);
-            panel.handle_event(RunEvent::Line("line[43], device [1] progress = 45%".into()));
-            assert_eq!(panel.progress.overall_percent(), Some(45));
-            panel.handle_event(RunEvent::Line("line[44], device burn result=1".into()));
-            panel.handle_event(RunEvent::Exited {
-                code: Some(0),
-                stopped: false,
+            panel.last_result = Some(false);
+            panel.progress.apply(super::ParsedLine::Progress {
+                device: 3,
+                percent: 83,
             });
+            let detected_at = Instant::now() - Duration::from_secs(8);
+            panel.handle_event(usb_event(detected_at, true));
+            assert_eq!(panel.phase, Phase::Preparing);
+            assert!(panel.is_burning());
+            assert!(!panel.can_configure());
+            assert_eq!(panel.burn_started, Some(detected_at));
+            assert!(panel.last_result.is_none());
+            assert!(panel.progress.overall_percent().is_none());
+            assert!(panel.phase_hint().contains("FEL"));
+            let count = panel.logs.len();
+            panel.handle_event(usb_event(Instant::now(), true));
+            assert_eq!(panel.logs.len(), count);
+            panel.handle_event(usb_event(Instant::now(), false));
+            panel.handle_event(usb_event(Instant::now(), true));
+            assert_eq!(panel.burn_started, Some(detected_at));
+            panel.handle_event(line_event("device:[3] fes plugin"));
+            assert_eq!(panel.phase, Phase::Burning);
+            assert_eq!(panel.burn_started, Some(detected_at));
+            panel.handle_event(line_event("device [3] progress = 12%"));
+            assert_eq!(panel.progress.overall_percent(), Some(12));
+            panel.handle_event(line_event("device:[3] burn finish, result=Success"));
+            panel.handle_event(line_event("device burn result=2"));
+            assert_eq!(panel.last_result, Some(true));
+            assert_eq!(panel.elapsed(), "00:08");
+            let devices = panel.fel_devices.clone();
+            panel.handle_event(RunEvent::DevicesPresent {
+                at: Instant::now(),
+                devices,
+            });
+            assert_eq!(panel.phase, Phase::Waiting);
+            assert_eq!(panel.last_result, Some(true));
+            panel.handle_event(usb_event(Instant::now(), false));
+            panel.handle_event(usb_event(Instant::now(), true));
+            assert_eq!(panel.phase, Phase::Preparing);
+            assert!(panel.last_result.is_none());
+            assert!(panel.progress.is_empty());
+        });
+    }
+
+    #[gpui_kit::test]
+    fn unplugging_before_writes_restores_waiting_but_usb_handover_does_not_interrupt_writes(
+        cx: &mut TestAppContext,
+    ) {
+        let settings = cx.new(|_| crate::settings::SettingsStore::in_memory());
+        let panel = cx.new(|cx| FlashingPanel::new(cx.focus_handle(), settings, cx));
+        panel.update(cx, |panel, cx| {
+            panel.phase = Phase::Waiting;
+            panel.handle_event(usb_event(Instant::now(), true));
+            panel.handle_event(usb_event(Instant::now() - Duration::from_secs(3), false));
+            panel.tick(cx);
+            assert_eq!(panel.phase, Phase::Waiting);
+            assert!(panel.can_configure());
+            assert!(panel.last_result.is_none());
+            assert!(panel.burn_started.is_none());
+            panel.handle_event(usb_event(Instant::now(), true));
+            panel.handle_event(line_event("device:[3] fes plugin"));
+            panel.handle_event(usb_event(Instant::now() - Duration::from_secs(3), false));
+            panel.tick(cx);
+            assert_eq!(panel.phase, Phase::Burning);
+            panel.stop(cx);
+            panel.handle_event(usb_event(Instant::now(), true));
+            assert_eq!(panel.phase, Phase::Stopped);
+        });
+    }
+
+    #[gpui_kit::test]
+    fn closing_cancels_every_owned_run_and_discards_pending_restart_events(
+        cx: &mut TestAppContext,
+    ) {
+        let settings = cx.new(|_| crate::settings::SettingsStore::in_memory());
+        let panel = cx.new(|cx| FlashingPanel::new(cx.focus_handle(), settings, cx));
+        panel.update(cx, |panel, cx| {
+            let (run, run_stopped) = super::Run::test_run();
+            let (inspection, inspection_stopped) = super::Run::test_run();
+            let (retiring, retiring_stopped) = super::Run::test_run();
+            let (adb, adb_stopped) = super::Run::test_run();
+            panel.run = Some(run);
+            panel.inspection = Some(inspection);
+            panel.retiring = Some(retiring);
+            panel.adb_run = Some(adb);
+            let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+            sender.send(line_event("device:[1] fes plugin")).unwrap();
+            panel.receiver = Some(receiver);
+            let (inspection_sender, receiver) = std::sync::mpsc::channel();
+            panel.inspection_receiver = Some(receiver);
+            let (adb_sender, receiver) = std::sync::mpsc::channel();
+            panel.adb_trigger = Some(receiver);
+            panel.phase = Phase::Waiting;
+            panel.picking = true;
+            panel.listening = true;
+            panel.restart_at = Some(Instant::now());
+
+            panel.shutdown();
+            for stopped in [
+                run_stopped,
+                inspection_stopped,
+                retiring_stopped,
+                adb_stopped,
+            ] {
+                assert!(stopped.load(std::sync::atomic::Ordering::Relaxed));
+            }
+            assert!(sender.send(line_event("device burn result=1")).is_err());
+            assert!(inspection_sender.send(Err("late result".into())).is_err());
+            assert!(adb_sender.send(Err("late ADB result".into())).is_err());
+            assert!(!panel.picking);
+            assert!(!panel.listening);
+            assert!(panel.restart_at.is_none());
+            assert!(panel.run.is_none());
+            assert!(panel.inspection.is_none());
+            assert!(panel.retiring.is_none());
+            assert!(panel.adb_run.is_none());
+            panel.command(
+                super::FlashingCommand::SetMode(super::EraseMode::EraseAll),
+                cx,
+            );
+            panel.tick(cx);
+            assert_eq!(panel.phase, Phase::Stopped);
+            assert!(panel.restart_at.is_none());
+        });
+    }
+
+    #[gpui_kit::test]
+    fn releasing_the_panel_cancels_its_background_run(cx: &mut TestAppContext) {
+        let settings = cx.new(|_| crate::settings::SettingsStore::in_memory());
+        let panel = cx.new(|cx| FlashingPanel::new(cx.focus_handle(), settings, cx));
+        let (run, stopped) = super::Run::test_run();
+        panel.update(cx, |panel, _| panel.run = Some(run));
+        cx.update(|_| drop(panel));
+        cx.run_until_parked();
+        assert!(stopped.load(std::sync::atomic::Ordering::Relaxed));
+    }
+
+    #[gpui_kit::test]
+    fn completed_and_failed_burns_both_return_to_waiting(cx: &mut TestAppContext) {
+        let settings = cx.new(|_| crate::settings::SettingsStore::in_memory());
+        let panel = cx.new(|cx| FlashingPanel::new(cx.focus_handle(), settings, cx));
+        panel.update(cx, |panel, _| {
+            panel.phase = Phase::Waiting;
+            panel.handle_event(line_event("line[42], device:[1] fes plugin"));
+            assert_eq!(panel.phase, Phase::Burning);
+            panel.handle_event(line_event("line[43], device [1] progress = 45%"));
+            assert_eq!(panel.progress.overall_percent(), Some(45));
+            panel.handle_event(line_event("device:[1] burn finish, result=Success"));
+            panel.handle_event(line_event("line[44], device burn result=1"));
+            panel.handle_event(exited_event(Some(0)));
             assert_eq!(panel.phase, Phase::Waiting);
             assert_eq!(panel.last_result, Some(true));
             assert!(panel.restart_at.take().is_some());
             assert_eq!(panel.progress.overall_percent(), Some(100));
 
-            panel.handle_event(RunEvent::Line("line[42], device:[1] fes plugin".into()));
-            panel.handle_event(RunEvent::Line("line[44], device burn result=0".into()));
-            panel.handle_event(RunEvent::Exited {
-                code: Some(0),
-                stopped: false,
-            });
-            assert_eq!(panel.phase, Phase::Failed);
+            panel.handle_event(line_event("line[42], device:[1] fes plugin"));
+            panel.handle_event(line_event("line[44], device burn result=0"));
+            panel.handle_event(exited_event(Some(0)));
+            assert_eq!(panel.phase, Phase::Waiting);
             assert_eq!(panel.last_result, Some(false));
-            assert!(panel.restart_at.is_none());
+            assert!(panel.restart_at.take().is_some());
 
             panel.phase = Phase::Stopped;
-            panel.handle_event(RunEvent::Line("line[44], device burn result=1".into()));
-            panel.handle_event(RunEvent::Exited {
-                code: Some(0),
-                stopped: false,
-            });
+            panel.handle_event(line_event("line[44], device burn result=1"));
+            panel.handle_event(exited_event(Some(0)));
             assert_eq!(panel.phase, Phase::Stopped);
             assert!(panel.restart_at.is_none());
+        });
+    }
+
+    #[gpui_kit::test]
+    fn confirmed_device_success_survives_unused_slots_and_console_timeout(cx: &mut TestAppContext) {
+        let settings = cx.new(|_| crate::settings::SettingsStore::in_memory());
+        let panel = cx.new(|cx| FlashingPanel::new(cx.focus_handle(), settings, cx));
+        panel.update(cx, |panel, _| {
+            panel.phase = Phase::Waiting;
+            for line in [
+                "line[2141], device:[3] fes plugin",
+                "line[2153], device [3] progress = 83%",
+                "line[2172], device:[3] burn finish, result=Success",
+                "line[2192], device:[1]: None, device not plug in, result=No device",
+                "line[2199], device burn result=2",
+                "line[2235], Time out, result = 2",
+            ] {
+                panel.handle_event(line_event(line));
+            }
+            assert_eq!(panel.phase, Phase::Waiting);
+            assert_eq!(panel.last_result, Some(true));
+            assert_eq!(panel.progress.overall_percent(), Some(100));
+            panel.handle_event(exited_event(Some(2)));
+            assert_eq!(panel.last_result, Some(true));
+            assert!(panel.restart_at.take().is_some());
+            panel.handle_event(line_event("Detected 1 device, flashing..."));
+            assert_eq!(panel.phase, Phase::Burning);
+            assert!(panel.progress.is_empty());
+            assert!(panel.last_result.is_none());
+            assert!(panel.burn_started.is_some());
+        });
+    }
+
+    #[gpui_kit::test]
+    fn a_crashed_burn_keeps_its_failure_until_the_next_device_is_detected(cx: &mut TestAppContext) {
+        let settings = cx.new(|_| crate::settings::SettingsStore::in_memory());
+        let panel = cx.new(|cx| FlashingPanel::new(cx.focus_handle(), settings, cx));
+        panel.update(cx, |panel, _| {
+            panel.phase = Phase::Waiting;
+            panel.handle_event(line_event("device:[1] fes plugin"));
+            panel.handle_event(line_event("device [1] progress = 68%"));
+            panel.handle_event(exited_event(Some(-1073741819)));
+            assert_eq!(panel.phase, Phase::Waiting);
+            assert_eq!(panel.last_result, Some(false));
+            assert_eq!(panel.progress.overall_percent(), Some(68));
+            assert!(panel.restart_at.take().is_some());
+            assert!(!panel.listening);
+
+            panel.handle_event(line_event("device:[1] fes plugin"));
+            assert_eq!(panel.phase, Phase::Burning);
+            assert_eq!(panel.progress.overall_percent(), Some(0));
+            assert!(panel.last_result.is_none());
+            panel.handle_event(line_event("device [1] progress = 1%"));
+            assert_eq!(panel.progress.overall_percent(), Some(1));
         });
     }
 
@@ -1638,41 +2756,47 @@ mod tests {
             panel.phase = Phase::Waiting;
             panel.logs.clear();
             for _ in 0..200 {
-                panel.handle_event(RunEvent::Line(
-                    "line[1591], usbproproc service is ready, listening device...".into(),
+                panel.handle_event(line_event(
+                    "line[1591], usbproproc service is ready, listening device...",
                 ));
             }
             assert_eq!(panel.logs.len(), 1);
             assert!(panel.burn_started.is_none());
-            panel.handle_event(RunEvent::Line(
-                "line[50], error: no device checkIn in 30 senconds, will end this process!".into(),
+            panel.handle_event(line_event(
+                "line[50], error: no device checkIn in 30 senconds, will end this process!",
             ));
             assert_eq!(panel.logs.len(), 1);
-            panel.handle_event(RunEvent::Exited {
-                code: Some(1),
-                stopped: false,
-            });
+            panel.handle_event(exited_event(Some(1)));
             assert_eq!(panel.phase, Phase::Waiting);
             assert!(panel.restart_at.is_some());
             assert!(panel.last_result.is_none());
 
             panel.restart_at = None;
-            panel.handle_event(RunEvent::Line("device:[1] fes plugin".into()));
+            panel.started = Instant::now() - Duration::from_secs(20);
+            let detected_at = Instant::now() - Duration::from_secs(8);
+            panel.handle_event(RunEvent::Line {
+                at: detected_at,
+                text: "device:[1] fes plugin".into(),
+            });
             assert_eq!(panel.phase, Phase::Burning);
             assert!(panel.burn_started.is_some());
-            panel.burn_started =
-                Some(std::time::Instant::now() - std::time::Duration::from_secs(8));
-            panel.handle_event(RunEvent::Line("device [1] progress = 100%".into()));
-            panel.handle_event(RunEvent::Line("device burn result=1".into()));
+            assert_eq!(
+                panel.log_clock(panel.logs.back().unwrap().at),
+                Duration::ZERO
+            );
+            panel.handle_event(line_event("device [1] progress = 100%"));
+            panel.handle_event(line_event("device:[1] burn finish, result=Success"));
+            panel.handle_event(line_event("device burn result=1"));
             assert_eq!(panel.phase, Phase::Waiting);
             assert!(panel.burn_started.is_none());
             assert_eq!(panel.elapsed(), "00:08");
+            assert!(panel.log_clock(panel.logs.back().unwrap().at) >= Duration::from_secs(8));
             assert_eq!(panel.last_result, Some(true));
             assert!(panel.restart_at.is_none());
-            panel.handle_event(RunEvent::Line("device:[1] fes plugin".into()));
+            panel.handle_event(line_event("device:[1] fes plugin"));
             assert_eq!(panel.phase, Phase::Burning);
             assert!(panel.burn_started.is_some());
-            assert!(panel.progress.is_empty());
+            assert_eq!(panel.progress.overall_percent(), Some(0));
             assert!(panel.last_result.is_none());
         });
     }
@@ -1799,6 +2923,7 @@ mod tests {
             assert!(
                 sender
                     .send(RunEvent::Exited {
+                        at: Instant::now(),
                         code: Some(1),
                         stopped: true
                     })
@@ -1809,9 +2934,7 @@ mod tests {
 
             let (sender, receiver) = std::sync::mpsc::channel();
             panel.receiver = Some(receiver);
-            sender
-                .send(RunEvent::Line("device:[1] fes plugin".into()))
-                .unwrap();
+            sender.send(line_event("device:[1] fes plugin")).unwrap();
             panel.command(
                 super::FlashingCommand::SetMode(super::EraseMode::KeepData),
                 cx,
@@ -1841,11 +2964,7 @@ mod tests {
             assert_eq!(panel.phase, Phase::ReadingFirmware);
             assert!(!panel.can_configure());
             assert!(panel.selected_partitions.is_empty());
-            assert!(
-                sender
-                    .send(RunEvent::Line("device:[1] fes plugin".into()))
-                    .is_err()
-            );
+            assert!(sender.send(line_event("device:[1] fes plugin")).is_err());
             panel.firmware_ready(
                 super::FirmwareInfo {
                     partitions: vec![],

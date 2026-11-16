@@ -1264,10 +1264,6 @@ impl TerminalEngine {
         *self.runtime.term.lock().mode()
     }
 
-    pub(super) fn is_serial(&self) -> bool {
-        self.serial_name.is_some()
-    }
-
     pub fn set_focused(&self, focused: bool) {
         self.focused.set(focused);
         if focused {

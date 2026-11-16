@@ -12,8 +12,8 @@ flashing.tool.choose:
   zh-CN: 选择工具目录…
   en: Choose tool folder…
 flashing.tool.invalid:
-  zh-CN: "工具目录不可用，请选择包含 PhoenixConsole.exe 和 adb.exe 的文件夹：%{path}"
-  en: "Choose a folder containing PhoenixConsole.exe and adb.exe: %{path}"
+  zh-CN: "工具目录不可用，请选择包含 PhoenixConsole.exe 及配套 DLL 的文件夹：%{path}"
+  en: "Choose a folder containing PhoenixConsole.exe and its DLLs: %{path}"
 flashing.firmware:
   zh-CN: 固件文件
   en: Firmware
@@ -98,12 +98,78 @@ flashing.stage:
 flashing.phase.no_firmware:
   zh-CN: 未选择固件
   en: No firmware
+flashing.phase.firmware_missing:
+  zh-CN: 文件不存在
+  en: Firmware unavailable
+flashing.phase.firmware_updating:
+  zh-CN: 等待固件就绪
+  en: Waiting for firmware
+flashing.source.missing:
+  zh-CN: 固件文件不存在，正在等待重新生成；保留原路径，文件恢复后会自动读取
+  en: Firmware file is missing. Keeping the selected path and waiting to reload it automatically.
+flashing.source.unavailable:
+  zh-CN: "暂时无法访问固件，正在等待恢复：%{error}"
+  en: "Firmware is temporarily inaccessible; waiting for recovery: %{error}"
+flashing.source.updating:
+  zh-CN: 固件文件正在生成或发生变化，稳定后会自动重新读取
+  en: Firmware is being generated or changed. It will reload automatically once stable.
+flashing.source.pending:
+  zh-CN: 检测到固件变化，当前设备结束后自动重新读取；直接使用原文件，不复制固件
+  en: Firmware changed. It will reload after the current devices finish; no firmware copy is created.
+flashing.source.restored:
+  zh-CN: 固件已恢复且保持稳定，正在自动重新读取原路径
+  en: Firmware is available and stable again. Reloading the selected path automatically.
+flashing.source.check_interrupted:
+  zh-CN: 文件状态检查意外结束
+  en: File status check ended unexpectedly
+flashing.source.partitions_changed:
+  zh-CN: 新固件的分区列表已变化，请重新勾选要烧录的分区
+  en: The new firmware has different partitions. Select the partitions to flash again.
 flashing.phase.waiting:
   zh-CN: 等待设备
   en: Waiting for device
 flashing.phase.burning:
   zh-CN: 正在烧录
   en: Flashing
+flashing.phase.preparing:
+  zh-CN: 已检测设备
+  en: Device detected
+flashing.phase.unclaimed:
+  zh-CN: 等待工具接管
+  en: Waiting for flashing tool
+flashing.hint.unclaimed:
+  zh-CN: 系统已识别 FEL，但工具尚未确认写入。请退出 PhoenixSuit 等其他全志工具，检查 USB 驱动、线缆后重新插拔设备
+  en: Windows sees FEL, but the tool has not confirmed writing. Close other Allwinner flashers, check the USB driver and cable, then reconnect.
+flashing.progress.unclaimed:
+  zh-CN: 尚未确认写入
+  en: Writing not confirmed
+flashing.detected_elapsed:
+  zh-CN: "检测后等待 %{time}"
+  en: "Waiting since detection %{time}"
+flashing.log.device_unclaimed:
+  zh-CN: 系统已检测到 FEL，但 15 秒内未收到烧录工具接管或进度，尚不能确认正在写入。请关闭 PhoenixSuit / LiveSuit / 其他 PhoenixConsole，检查 USB 驱动、线缆或供电；监听仍在继续，不会自动中断或重启烧录工具。
+  en: Windows detected FEL, but no tool handshake or progress arrived within 15 seconds. Writing is not confirmed. Close other Allwinner flashers and check the USB driver, cable and power. Listening continues without interrupting or restarting the tool.
+flashing.tool.conflict:
+  zh-CN: "检测到其他全志烧录工具正在运行：%{programs}。请先退出这些工具，再重新选择固件；ShellLF 不会强行结束外部工具或 ADB。"
+  en: "Other Allwinner flashers are running: %{programs}. Close them and select the firmware again. ShellLF will not terminate external tools or ADB."
+flashing.tool.process_check_failed:
+  zh-CN: "无法检查烧录工具冲突，已取消启动以避免争用 USB：%{error}"
+  en: "Could not check for competing flashers; startup was cancelled to avoid USB contention: %{error}"
+flashing.hint.preparing:
+  zh-CN: 已检测到 FEL 烧录设备，正在连接并准备写入固件；请勿断开设备
+  en: FEL device detected. Connecting and preparing firmware; do not disconnect.
+flashing.progress.preparing:
+  zh-CN: 准备写入…
+  en: Preparing…
+flashing.log.fel_found:
+  zh-CN: 已检测到 FEL 烧录设备，正在准备烧录，等待工具上报写入进度。
+  en: FEL device detected. Preparing to flash; waiting for the tool to report write progress.
+flashing.log.device_removed:
+  zh-CN: 设备在开始写入前断开，已回到等待设备状态。
+  en: Device disconnected before writing started. Waiting for a device again.
+flashing.log.device_monitor_unavailable:
+  zh-CN: "Windows 快速设备监听不可用，将继续使用烧录工具检测：%{error}"
+  en: "Windows device notifications are unavailable; using flashing-tool detection: %{error}"
 flashing.phase.failed:
   zh-CN: 烧录失败
   en: Failed
@@ -116,6 +182,12 @@ flashing.hint.no_firmware:
 flashing.hint.waiting:
   zh-CN: 持续等待设备，可更换固件和烧录方式；按 FEL 键或通过 ADB 重启后自动烧录
   en: Waiting without a deadline. Firmware and modes remain editable. Press FEL or reboot over ADB to flash.
+flashing.hint.waiting_after_success:
+  zh-CN: 已继续等待下一台设备；检测到设备后会清除本次成功结果并开始新烧录
+  en: Waiting for the next device. A new device clears the last success and starts a new flash.
+flashing.hint.waiting_after_failure:
+  zh-CN: 已继续等待下一台设备；检测到设备后会清除本次失败结果并重新烧录
+  en: Waiting for the next device. A new device clears the last failure and starts a new flash.
 flashing.hint.burning:
   zh-CN: 正在写入固件，请勿断开设备
   en: Writing firmware; do not disconnect the device
@@ -126,8 +198,32 @@ flashing.hint.stopped:
   zh-CN: 已停止；选择固件或烧录方式后重新等待
   en: Stopped. Choose firmware or a flashing mode to wait again.
 flashing.result.success:
-  zh-CN: 上一次烧录成功
-  en: Last flash succeeded
+  zh-CN: 烧录成功
+  en: Flash succeeded
+flashing.progress:
+  zh-CN: 烧录进度
+  en: Flash progress
+flashing.device.progress:
+  zh-CN: "设备 %{number} 烧录进度"
+  en: "Device %{number} progress"
+flashing.device.success:
+  zh-CN: "设备 %{number} 烧录成功"
+  en: "Device %{number} flashed successfully"
+flashing.device.failed:
+  zh-CN: "设备 %{number} 烧录失败"
+  en: "Device %{number} flash failed"
+flashing.device.interrupted:
+  zh-CN: "设备 %{number} 烧录中断，未确认完成"
+  en: "Device %{number} interrupted; completion not confirmed"
+flashing.device.state.interrupted:
+  zh-CN: 已中断
+  en: Interrupted
+flashing.device.state.success:
+  zh-CN: 烧录成功
+  en: Succeeded
+flashing.device.state.failed:
+  zh-CN: 烧录失败
+  en: Failed
 flashing.result.failed:
   zh-CN: 本次烧录失败
   en: This run failed
@@ -143,33 +239,15 @@ flashing.mode.all:
 flashing.mode.all_unavailable:
   zh-CN: 此固件未提供全盘擦除所需的 usbtool 产品版本信息（1.0.0.1 或以上）；仍可选择保留数据或分区擦除
   en: Full erase requires firmware with usbtool product version 1.0.0.1 or later. Keep data and logical erase remain available.
-flashing.adb.label:
-  zh-CN: ADB 设备
-  en: ADB device
-flashing.adb.checking:
-  zh-CN: 正在检查…
-  en: Checking…
-flashing.adb.idle:
-  zh-CN: 等待烧录工具就绪后检测
-  en: Checked once the flashing tool is ready
 flashing.adb.multiple:
   zh-CN: 检测到多台 USB ADB 设备；请只保留目标设备
   en: Multiple USB ADB devices detected; leave only the target connected
-flashing.adb.empty:
-  zh-CN: 未发现已开机设备
-  en: No running device found
-flashing.adb.ready:
-  zh-CN: 已连接：%{serial}
-  en: "Connected: %{serial}"
-flashing.adb.error:
-  zh-CN: ADB 检查失败：%{error}
-  en: "ADB check failed: %{error}"
 flashing.tool.ready:
   zh-CN: 工具：%{path}
   en: "Tool: %{path}"
 flashing.tool.missing:
-  zh-CN: 未找到 PhoenixConsole_Windows（需要 PhoenixConsole.exe 和 adb.exe）
-  en: PhoenixConsole_Windows was not found (PhoenixConsole.exe and adb.exe are required)
+  zh-CN: 未找到 PhoenixConsole_Windows（需要 PhoenixConsole.exe 及配套 DLL）
+  en: PhoenixConsole_Windows was not found (PhoenixConsole.exe and its DLLs are required)
 flashing.log.title:
   zh-CN: 烧录日志
   en: Flash log
@@ -189,8 +267,8 @@ flashing.log.ready:
   zh-CN: 烧录页已就绪；选择固件后会自动等待设备。
   en: The flashing page is ready. Choosing firmware starts waiting for a device.
 flashing.log.tool_missing:
-  zh-CN: 未找到烧录工具，请选择包含 PhoenixConsole.exe 和 adb.exe 的工具目录，或把完整工具放到程序旁边的 PhoenixConsole_Windows 目录。
-  en: Choose a tool folder containing PhoenixConsole.exe and adb.exe, or place the complete tools in PhoenixConsole_Windows beside the program.
+  zh-CN: 未找到烧录工具，请选择包含 PhoenixConsole.exe 及配套 DLL 的工具目录，或把完整工具放到程序旁边的 PhoenixConsole_Windows 目录。
+  en: Choose a tool folder containing PhoenixConsole.exe and its DLLs, or place the complete tools in PhoenixConsole_Windows beside the program.
 flashing.log.pick_failed:
   zh-CN: 选择路径失败：%{error}
   en: "Could not choose a path: %{error}"
@@ -227,9 +305,12 @@ flashing.log.start_failed:
 flashing.log.adb_reboot:
   zh-CN: 正在通过 ADB 重启设备 %{serial} 到 efex…
   en: "Rebooting %{serial} to efex over ADB…"
+flashing.log.adb_checking:
+  zh-CN: 正在检查 USB ADB 设备并请求重启到 efex…
+  en: Checking for a USB ADB device and requesting a reboot to efex…
+flashing.log.adb_no_device:
+  zh-CN: 未发现已授权的 USB ADB 设备；请按开发板 FEL 键。
+  en: No authorized USB ADB device was found. Press the board's FEL key.
 flashing.log.adb_failed:
   zh-CN: ADB 命令失败：%{error}
   en: "ADB command failed: %{error}"
-flashing.log.adb_changed:
-  zh-CN: USB ADB 设备已变化，未发送重启命令。
-  en: The USB ADB device changed. No reboot command was sent.

@@ -20,6 +20,7 @@ struct FakeMaintenance {
     fail_scan: AtomicBool,
     hold: AtomicBool,
     supported: bool,
+    omit_results: bool,
 }
 
 impl Default for FakeMaintenance {
@@ -64,6 +65,7 @@ impl Default for FakeMaintenance {
             fail_scan: AtomicBool::new(false),
             hold: AtomicBool::new(false),
             supported: true,
+            omit_results: false,
         }
     }
 }
@@ -94,6 +96,9 @@ impl SerialMaintenanceBackend for FakeMaintenance {
         }
         if self.cancel.load(Ordering::SeqCst) {
             return Err(MaintenanceFailure::Cancelled);
+        }
+        if self.omit_results {
+            return Ok(Vec::new());
         }
         Ok(devices
             .iter()
@@ -231,6 +236,38 @@ async fn serial_maintenance_requires_scan_selection_and_confirmation_and_reports
                 .as_ref(),
             "COM18"
         )
+    });
+}
+
+#[gpui_kit::test]
+async fn serial_maintenance_missing_results_are_not_reported_as_removed(cx: &mut TestAppContext) {
+    let backend = Arc::new(FakeMaintenance {
+        omit_results: true,
+        ..Default::default()
+    });
+    let (handle, _) = open(cx, backend);
+    scan(cx, handle).await;
+    in_frame(cx, handle, |window, cx| {
+        window.click(format!("serial-maintenance-select:{FIRST}"), cx);
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.click("serial-maintenance-review", cx)
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.click("serial-maintenance-remove", cx)
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window
+            .try_find(format!("serial-maintenance-result:{FIRST}"))
+            .is_some()
+    })
+    .await;
+    in_frame(cx, handle, |window, _| {
+        let result = window.find(format!("serial-maintenance-result:{FIRST}"));
+        let label = result.label().unwrap();
+        assert!(label.contains("未收到可核验的移除结果"));
+        assert!(!label.contains("已移除"));
+        assert!(!enabled(&window.find("serial-maintenance-review")));
     });
 }
 

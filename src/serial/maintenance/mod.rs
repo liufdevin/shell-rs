@@ -69,6 +69,7 @@ pub enum RemovalState {
     Gone,
     Changed,
     RebootRequired,
+    Unverified,
     Failed,
 }
 

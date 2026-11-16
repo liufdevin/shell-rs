@@ -261,15 +261,6 @@ settings.terminal.preview_keywords:
 settings.interaction.title:
   zh-CN: 终端交互
   en: Interaction
-settings.interaction.fit_fullscreen:
-  zh-CN: 全屏程序自适应
-  en: Fit full-screen programs
-settings.interaction.fit_fullscreen_description:
-  zh-CN: htop 等全屏程序临时缩小字号，尽量显示至少 48 行，最小 10 px。退出后恢复原字号；普通命令行和串口不受影响。关闭后可按原字号自由缩放。
-  en: Temporarily reduce text size in full-screen programs such as htop to fit at least 48 rows where possible, down to 10 px. Restore the configured size on exit; ordinary shells and serial terminals are unchanged. Turn off to zoom freely at the configured size.
-settings.interaction.fit_fullscreen_keywords:
-  zh-CN: htop,top,全屏,自适应,缩放,行数,进程
-  en: htop,top,full screen,fit,zoom,rows,processes
 settings.interaction.hide_ai_citations:
   zh-CN: 隐藏 AI 引用标记
   en: Hide AI citation markers

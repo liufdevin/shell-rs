@@ -612,31 +612,16 @@ fn parse_listing(output: &[u8]) -> Result<DirectoryListing> {
     Ok(DirectoryListing::new(path, entries))
 }
 
-pub(super) fn find_adb() -> Option<PathBuf> {
+pub(crate) fn find_adb() -> Option<PathBuf> {
     let executable = if cfg!(windows) { "adb.exe" } else { "adb" };
     let mut directories = Vec::new();
-    if let Some(path) = std::env::current_exe()
-        .ok()
-        .and_then(|path| path.parent().map(Path::to_path_buf))
-    {
-        directories.push(path.join("platform-tools"));
-        directories.push(path.join("scrcpy"));
-        directories.push(path);
+    if let Some(path) = std::env::var_os("PATH") {
+        directories.extend(std::env::split_paths(&path));
     }
     for variable in ["ANDROID_SDK_ROOT", "ANDROID_HOME"] {
         if let Some(path) = std::env::var_os(variable) {
             directories.push(PathBuf::from(path).join("platform-tools"));
         }
-    }
-    if let Some(path) = std::env::var_os("LOCALAPPDATA") {
-        directories.push(PathBuf::from(path).join("Android/Sdk/platform-tools"));
-    }
-    if let Some(home) = dirs::home_dir() {
-        directories.push(home.join("Android/Sdk/platform-tools"));
-        directories.push(home.join("Library/Android/sdk/platform-tools"));
-    }
-    if let Some(path) = std::env::var_os("PATH") {
-        directories.extend(std::env::split_paths(&path));
     }
     directories
         .into_iter()
@@ -647,11 +632,18 @@ pub(super) fn find_adb() -> Option<PathBuf> {
 
 struct SystemRunner(PathBuf);
 
-pub(super) fn run_local_adb(program: PathBuf, args: &[&str]) -> Result<Vec<u8>> {
+pub(super) fn run_local_adb(
+    program: PathBuf,
+    args: &[&str],
+    cancel: &mut dyn FnMut() -> bool,
+) -> Result<Vec<u8>> {
+    if cancel() {
+        bail!(t!("adb.interrupted"));
+    }
     SystemRunner(program).run(
         &args.iter().map(OsString::from).collect::<Vec<_>>(),
         Duration::from_secs(10),
-        &mut || false,
+        cancel,
     )
 }
 impl Runner for SystemRunner {
@@ -1188,5 +1180,25 @@ mod tests {
                 .is_err()
         );
         assert!(started.elapsed() < Duration::from_secs(3));
+    }
+
+    #[test]
+    fn cancelling_a_local_command_terminates_it_without_waiting_for_the_timeout() {
+        #[cfg(windows)]
+        let (program, args) = (
+            PathBuf::from(std::env::var_os("COMSPEC").unwrap_or_else(|| "cmd.exe".into())),
+            vec!["/D", "/C", "for /L %G in (0,0,1) do @rem"],
+        );
+        #[cfg(unix)]
+        let (program, args) = (PathBuf::from("sh"), vec!["-c", "while :; do :; done"]);
+        let started = Instant::now();
+        assert!(
+            run_local_adb(program, &args, &mut || {
+                started.elapsed() >= Duration::from_millis(100)
+            })
+            .is_err()
+        );
+        assert!(started.elapsed() < Duration::from_secs(3));
+        assert!(run_local_adb(PathBuf::from("nonexistent-program"), &[], &mut || true).is_err());
     }
 }

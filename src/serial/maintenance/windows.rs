@@ -117,14 +117,16 @@ pub(super) fn remove(devices: &[SerialDevice]) -> Result<Vec<SerialRemoval>, Mai
             "__PORT__",
             &listener.local_addr().map_err(failure)?.port().to_string(),
         )
-        .replace("__TOKEN__", &token);
-    let script = format!("{COMMON}\n{body}");
-    let process = elevate(&script)?;
+        .replace("__TOKEN__", &token)
+        .replace("__COMMON__", COMMON);
+    let process = elevate(&body)?;
     let started = Instant::now();
     let mut reports = HashMap::new();
+    let mut process_exited_at = None;
     while started.elapsed() < Duration::from_secs(120) && reports.len() < devices.len() {
         match listener.accept() {
             Ok((mut stream, _)) => {
+                stream.set_nonblocking(false).map_err(failure)?;
                 stream
                     .set_read_timeout(Some(Duration::from_millis(100)))
                     .map_err(failure)?;
@@ -171,19 +173,37 @@ pub(super) fn remove(devices: &[SerialDevice]) -> Result<Vec<SerialRemoval>, Mai
             }
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                 if process.has_exited()? {
-                    break;
+                    let exited_at = *process_exited_at.get_or_insert_with(Instant::now);
+                    if exited_at.elapsed() >= Duration::from_secs(1) {
+                        break;
+                    }
+                } else {
+                    process_exited_at = None;
                 }
                 std::thread::sleep(Duration::from_millis(50));
             }
             Err(error) => return Err(failure(error)),
         }
     }
-    Ok(devices.iter().map(|device| {
-        reports.remove(&device.instance_id).unwrap_or_else(|| SerialRemoval::new(
-            device.instance_id.clone(), RemovalState::Failed,
-            "No verified result was received. Rescan before retrying; an in-progress removal may have completed.".into(),
-        ))
-    }).collect())
+    Ok(removal_results(devices, reports))
+}
+
+fn removal_results(
+    devices: &[SerialDevice],
+    mut reports: HashMap<String, SerialRemoval>,
+) -> Vec<SerialRemoval> {
+    devices
+        .iter()
+        .map(|device| {
+            reports.remove(&device.instance_id).unwrap_or_else(|| {
+                SerialRemoval::new(
+                    device.instance_id.clone(),
+                    RemovalState::Unverified,
+                    String::new(),
+                )
+            })
+        })
+        .collect()
 }
 
 struct ElevatedProcess(windows_sys::Win32::Foundation::HANDLE);
@@ -279,4 +299,126 @@ fn elevate(script: &str) -> Result<ElevatedProcess, MaintenanceFailure> {
         return Err(failure("No elevated process handle"));
     }
     Ok(ElevatedProcess(information.hProcess))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{RemovalState, SerialDevice, SerialRemoval, removal_results};
+    use std::collections::HashMap;
+
+    #[test]
+    fn a_missing_report_is_never_treated_as_success() {
+        let device = SerialDevice::new(
+            "USB\\VID_1A86&PID_7523\\ONE".into(),
+            "COM3".into(),
+            "USB-SERIAL CH340".into(),
+            Some(false),
+        );
+        let results = removal_results(std::slice::from_ref(&device), HashMap::new());
+        assert_eq!(results[0].state(), &RemovalState::Unverified);
+        let mut reports = HashMap::new();
+        reports.insert(
+            device.instance_id.clone(),
+            SerialRemoval::new(
+                device.instance_id.clone(),
+                RemovalState::Failed,
+                "fixture failure".into(),
+            ),
+        );
+        let results = removal_results(std::slice::from_ref(&device), reports);
+        assert_eq!(results[0].state(), &RemovalState::Failed);
+        assert_eq!(results[0].detail(), "fixture failure");
+    }
+
+    #[test]
+    fn windows_powershell_reports_each_selected_device_when_initialization_fails() {
+        use base64::Engine as _;
+        use std::os::windows::process::CommandExt as _;
+        use std::{
+            io::Read as _,
+            net::TcpListener,
+            process::{Command, Stdio},
+            time::{Duration, Instant},
+        };
+
+        for count in [1, 2] {
+            let devices: Vec<_> = (1..=count)
+                .map(|index| {
+                    SerialDevice::new(
+                        format!(r"USB\VID_1A86&PID_7523\FIXTURE{index}"),
+                        format!("COM{index}"),
+                        "fixture".into(),
+                        Some(false),
+                    )
+                })
+                .collect();
+            let selection = base64::engine::general_purpose::STANDARD
+                .encode(serde_json::to_vec(&devices).unwrap());
+            let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let script = super::REMOVE
+                .replace("__SELECTION__", &selection)
+                .replace(
+                    "__PORT__",
+                    &listener.local_addr().unwrap().port().to_string(),
+                )
+                .replace("__TOKEN__", "fixture-token")
+                .replace("__COMMON__", "throw 'fixture initialization failed'");
+            let mut child = Command::new(super::powershell().unwrap())
+                .args([
+                    "-NoLogo",
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-EncodedCommand",
+                    &super::encoded(&script),
+                ])
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .creation_flags(0x0800_0000)
+                .spawn()
+                .unwrap();
+            let deadline = Instant::now() + Duration::from_secs(10);
+            let mut stream = loop {
+                match listener.accept() {
+                    Ok((stream, _)) => break stream,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        if Instant::now() >= deadline || child.try_wait().unwrap().is_some() {
+                            let _ = child.kill();
+                            let output = child.wait_with_output().unwrap();
+                            panic!(
+                                "helper did not connect: {}",
+                                String::from_utf8_lossy(&output.stderr)
+                            );
+                        }
+                        std::thread::sleep(Duration::from_millis(20));
+                    }
+                    Err(error) => panic!("listener failed: {error}"),
+                }
+            };
+            stream.set_nonblocking(false).unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut output = String::new();
+            stream.read_to_string(&mut output).unwrap();
+            let status = child.wait_with_output().unwrap();
+            assert!(
+                status.status.success(),
+                "{}",
+                String::from_utf8_lossy(&status.stderr)
+            );
+            let mut lines = output.lines();
+            assert_eq!(lines.next(), Some("fixture-token"));
+            let reports: Vec<SerialRemoval> = lines
+                .map(|line| serde_json::from_str(line).unwrap())
+                .collect();
+            assert_eq!(reports.len(), devices.len());
+            for (report, device) in reports.iter().zip(devices.iter()) {
+                assert_eq!(report.instance_id(), device.instance_id());
+                assert_eq!(report.state(), &RemovalState::Failed);
+                assert_eq!(report.detail(), "fixture initialization failed");
+            }
+        }
+    }
 }

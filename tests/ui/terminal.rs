@@ -84,7 +84,7 @@ fn monitor_screen(size: TerminalSize) -> Vec<u8> {
 }
 
 #[gpui_kit::test]
-async fn fullscreen_fit_keeps_128_cpu_meters_and_processes_visible_and_restores_shell_font(
+async fn htop_keeps_the_configured_font_and_line_spacing_without_auto_fitting(
     cx: &mut TestAppContext,
 ) {
     let factory = Arc::new(MonitorFactory::default());
@@ -108,16 +108,13 @@ async fn fullscreen_fit_keeps_128_cpu_meters_and_processes_visible_and_restores_
     });
     cx.wait_for(handle.into(), Duration::from_secs(3), |window, cx| {
         window.render_frame(cx);
-        let screen = local_screen(&workspace, cx);
         factory
             .sizes
             .lock()
             .unwrap()
             .last()
-            .is_some_and(|size| size.rows() >= 48)
-            && screen.contains("PROCESS_8")
-            && screen.contains("128[")
-            && screen.contains("F10Quit")
+            .is_some_and(|size| size.cell_height() == 28 && size.rows() < 48)
+            && local_screen(&workspace, cx).contains("F10Quit")
     })
     .await;
     let before = *factory.sizes.lock().unwrap().last().unwrap();
@@ -135,41 +132,9 @@ async fn fullscreen_fit_keeps_128_cpu_meters_and_processes_visible_and_restores_
     cx.simulate_window_resize(handle.into(), size(px(1500.), px(940.)));
     cx.wait_for(handle.into(), Duration::from_secs(3), |window, cx| {
         window.render_frame(cx);
-        factory
-            .sizes
-            .lock()
-            .unwrap()
-            .last()
-            .is_some_and(|size| size.rows() >= 48 && size.cell_height() < before.cell_height())
-            && local_screen(&workspace, cx).contains("PROCESS_8")
-    })
-    .await;
-    settings.update(cx, |settings, cx| {
-        settings.update(
-            |settings| settings.terminal_interaction.fit_fullscreen = false,
-            cx,
-        );
-    });
-    cx.wait_for(handle.into(), Duration::from_secs(3), |window, cx| {
-        window.render_frame(cx);
-        factory
-            .sizes
-            .lock()
-            .unwrap()
-            .last()
-            .is_some_and(|size| size.cell_height() == 28 && size.rows() < 40)
-            && !local_screen(&workspace, cx).contains("PROCESS_1")
-    })
-    .await;
-    settings.update(cx, |settings, cx| {
-        settings.update(
-            |settings| settings.terminal_interaction.fit_fullscreen = true,
-            cx,
-        );
-    });
-    cx.wait_for(handle.into(), Duration::from_secs(3), |window, cx| {
-        window.render_frame(cx);
-        local_screen(&workspace, cx).contains("PROCESS_8")
+        factory.sizes.lock().unwrap().last().is_some_and(|size| {
+            size.cell_height() == before.cell_height() && size.rows() < before.rows()
+        }) && !local_screen(&workspace, cx).contains("PROCESS_1")
     })
     .await;
     in_frame(cx, handle, |window, cx| {
@@ -187,6 +152,58 @@ async fn fullscreen_fit_keeps_128_cpu_meters_and_processes_visible_and_restores_
                 .is_some_and(|size| size.cell_height() == 28)
     })
     .await;
+}
+
+#[gpui_kit::test]
+async fn vim_alternate_screen_keeps_the_configured_font_size_even_in_small_windows(
+    cx: &mut TestAppContext,
+) {
+    let (handle, workspace, factory) = terminal_printing(
+        cx,
+        "\x1b[?1049h\x1b[2J\x1b[HVIM_BUFFER\r\ntext in an editor",
+        "VIM_BUFFER",
+    )
+    .await;
+    let settings = workspace.read_with(cx, |workspace, _| workspace.settings().clone());
+    for font_size in [18., 28.] {
+        settings.update(cx, |settings, cx| {
+            settings.update(
+                |settings| {
+                    settings.terminal_font.size = font_size;
+                    settings.terminal_font.line_height = 1.54;
+                },
+                cx,
+            );
+        });
+        let configured_height = (font_size * 1.54_f32).round() as u16;
+        cx.wait_for(handle.into(), Duration::from_secs(3), |window, cx| {
+            window.render_frame(cx);
+            factory
+                .resizes
+                .lock()
+                .unwrap()
+                .last()
+                .is_some_and(|size| size.cell_height() == configured_height)
+        })
+        .await;
+        let configured_width = factory.resizes.lock().unwrap().last().unwrap().cell_width();
+        cx.simulate_window_resize(handle.into(), size(px(1280.), px(480.)));
+        cx.wait_for(handle.into(), Duration::from_secs(3), |window, cx| {
+            window.render_frame(cx);
+            factory.resizes.lock().unwrap().last().is_some_and(|size| {
+                size.cell_width() == configured_width
+                    && size.cell_height() == configured_height
+                    && size.rows() < 48
+            }) && local_screen(&workspace, cx).contains("VIM_BUFFER")
+        })
+        .await;
+        workspace.read_with(cx, |workspace, cx| {
+            assert_eq!(
+                workspace.settings().read(cx).settings().terminal_font.size,
+                font_size
+            );
+        });
+    }
 }
 
 #[gpui_kit::test]

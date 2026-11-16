@@ -11,6 +11,24 @@ pub(crate) struct CommandGroup {
 }
 
 impl CommandGroup {
+    #[cfg(windows)]
+    pub(crate) fn for_handle(handle: std::os::windows::io::RawHandle) -> io::Result<Self> {
+        use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle};
+        use windows_sys::Win32::System::JobObjects::{AssignProcessToJobObject, CreateJobObjectW};
+        let raw = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
+        if raw.is_null() {
+            return Err(io::Error::last_os_error());
+        }
+        let group = Self {
+            job: unsafe { OwnedHandle::from_raw_handle(raw) },
+        };
+        if unsafe { AssignProcessToJobObject(group.job.as_raw_handle(), handle) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        group.terminate_on_close()?;
+        Ok(group)
+    }
+
     pub(crate) fn spawn(command: &mut Command) -> io::Result<(Child, Self)> {
         #[cfg(windows)]
         {

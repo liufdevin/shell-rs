@@ -1896,16 +1896,7 @@ impl Render for TerminalView {
             .engine
             .read(cx)
             .display_snapshot(TerminalInteraction::current(cx).hide_ai_citations);
-        let fit_fullscreen = TerminalInteraction::current(cx).fit_fullscreen
-            && self.engine.read(cx).mode().contains(TermMode::ALT_SCREEN)
-            && !self.engine.read(cx).is_serial();
-        let fitted_height = self
-            .viewport
-            .map(|viewport| viewport.geometry.bounds.size.height);
-        let mut font = TerminalFont::current(cx);
-        if fit_fullscreen && let Some(height) = fitted_height {
-            font = font.fit_fullscreen(height, window);
-        }
+        let font = TerminalFont::current(cx);
         let scrollback = ScrollbackHandle::new(
             self.engine.read(cx).scrollback(),
             &snapshot,
@@ -1923,8 +1914,6 @@ impl Render for TerminalView {
             requested_size: self.requested_size,
             pending_size: self.pending_size.clone(),
             line_height: font.row_height(window),
-            fit_fullscreen,
-            fitted_height,
         };
 
         let stamps = element.snapshot.timestamps.clone();
@@ -2465,8 +2454,6 @@ struct TerminalElement {
     requested_size: TerminalSize,
     pending_size: Rc<Cell<Option<TerminalSize>>>,
     line_height: Pixels,
-    fit_fullscreen: bool,
-    fitted_height: Option<Pixels>,
 }
 
 struct TerminalPaintState {
@@ -2542,9 +2529,7 @@ impl Element for TerminalElement {
             cell_width.as_f32().round().clamp(1., u16::MAX as f32) as u16,
             line_height.as_f32().round().clamp(1., u16::MAX as f32) as u16,
         );
-        if self.fit_fullscreen && self.fitted_height != Some(bounds.size.height) {
-            self.pending_size.set(None);
-        } else if requested_size != self.requested_size || self.pending_size.get().is_some() {
+        if requested_size != self.requested_size || self.pending_size.get().is_some() {
             let schedule = self.pending_size.replace(Some(requested_size)).is_none();
             if schedule {
                 let terminal = self.view.clone();
@@ -2791,12 +2776,8 @@ impl Element for TerminalElement {
         let view = self.view.clone();
         let viewport = state.viewport;
         let ime_cursor_bounds = state.ime_cursor_bounds;
-        let needs_fit = self.fit_fullscreen && self.fitted_height != Some(bounds.size.height);
-        view.update(cx, |view, cx| {
+        view.update(cx, |view, _| {
             view.set_viewport(viewport, ime_cursor_bounds);
-            if needs_fit {
-                cx.notify();
-            }
         });
 
         let mask = ContentMask { bounds };

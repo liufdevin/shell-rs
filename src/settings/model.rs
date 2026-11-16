@@ -1330,7 +1330,6 @@ mod tests {
         assert!(!settings.status_system_info);
         assert!(!settings.terminal_interaction.copy_on_select);
         assert!(!settings.terminal_interaction.hide_ai_citations);
-        assert!(settings.terminal_interaction.fit_fullscreen);
         assert_eq!(settings.terminal_interaction.right_click, RightClick::Menu);
         let settings: AppSettings =
             serde_json::from_str(r#"{"terminal_interaction":{"right_click":"paste"}}"#).unwrap();
@@ -1352,7 +1351,12 @@ mod tests {
         assert!(!settings.terminal_interaction.cursor_blinking);
         let settings: AppSettings =
             serde_json::from_str(r#"{"terminal_interaction":{"fit_fullscreen":false}}"#).unwrap();
-        assert!(!settings.terminal_interaction.fit_fullscreen);
+        assert!(
+            !serde_json::to_value(settings).unwrap()["terminal_interaction"]
+                .as_object()
+                .unwrap()
+                .contains_key("fit_fullscreen")
+        );
     }
 
     #[test]

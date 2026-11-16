@@ -89,3 +89,6 @@ serial.maintenance.changed:
 serial.maintenance.reboot:
   zh-CN: 系统要求重启，请自行安排重启后重新扫描确认；程序不会自动重启电脑
   en: Windows requires a restart. Restart at your convenience and rescan to verify; the app will not restart your computer.
+serial.maintenance.unverified:
+  zh-CN: 未收到可核验的移除结果；请重新扫描确认设备记录，不要重复提交清理
+  en: No verifiable removal result was received. Rescan to check the device record rather than submitting removal again.

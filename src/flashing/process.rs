@@ -25,9 +25,38 @@ const BURN_TIMEOUT_SECONDS: &str = "300";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RunEvent {
-    Line(String),
-    Failed(String),
-    Exited { code: Option<i32>, stopped: bool },
+    DevicesPresent {
+        at: Instant,
+        devices: std::collections::BTreeSet<String>,
+    },
+    DeviceChanged {
+        at: Instant,
+        instance: String,
+        present: bool,
+    },
+    DetectionUnavailable {
+        at: Instant,
+        error: String,
+    },
+    Line {
+        at: Instant,
+        text: String,
+    },
+    Failed {
+        at: Instant,
+        error: String,
+    },
+    Exited {
+        at: Instant,
+        code: Option<i32>,
+        stopped: bool,
+    },
+}
+
+pub(super) enum AdbReboot {
+    NoDevice,
+    MultipleDevices,
+    Rebooted { serial: String, output: String },
 }
 
 struct ConsoleLease {
@@ -73,7 +102,7 @@ fn burn_arguments(
         "--reboot",
         "--loop",
         "-o",
-        "1",
+        "8",
         "-t",
         BURN_TIMEOUT_SECONDS,
     ]
@@ -139,8 +168,13 @@ fn read_partitions(
     firmware: &Path,
     stop: &AtomicBool,
 ) -> Result<Vec<FirmwarePartition>, String> {
+    if stop.load(Ordering::Relaxed) {
+        return Err("Firmware partition inspection was cancelled".into());
+    }
     let _lease = ConsoleLease::acquire()?;
-    let mut command = Command::new(tool_dir.join("PhoenixConsole.exe"));
+    super::tool_conflict::check()?;
+    let program = super::compatibility::prepare_console(tool_dir)?;
+    let mut command = Command::new(program.as_os_str());
     command
         .current_dir(tool_dir)
         .args(["--no-adb", "--list-parts", "-p"])
@@ -234,6 +268,18 @@ impl Run {
     pub(super) fn is_finished(&self) -> bool {
         self.finished.load(Ordering::Acquire)
     }
+
+    #[cfg(test)]
+    pub(super) fn test_run() -> (Self, Arc<AtomicBool>) {
+        let stop = Arc::new(AtomicBool::new(false));
+        (
+            Self {
+                stop: stop.clone(),
+                finished: Arc::new(AtomicBool::new(false)),
+            },
+            stop,
+        )
+    }
 }
 
 /// Find the PhoenixConsole directory without a setting: a portable build
@@ -268,11 +314,7 @@ pub fn tool_dir(preferred: Option<&Path>) -> Option<PathBuf> {
 }
 
 pub(super) fn is_tool_dir(dir: &Path) -> bool {
-    dir.is_absolute() && dir.join("PhoenixConsole.exe").is_file() && dir.join("adb.exe").is_file()
-}
-
-fn adb_path(tool_dir: &Path) -> PathBuf {
-    tool_dir.join("adb.exe")
+    dir.is_absolute() && dir.join("PhoenixConsole.exe").is_file()
 }
 
 /// Start PhoenixConsole in the “only FES/device changes” mode. The
@@ -297,6 +339,7 @@ pub fn start_wait(
         let _completion = RunCompletion(finished);
         if stop.load(Ordering::Relaxed) {
             let _ = sender.send(RunEvent::Exited {
+                at: Instant::now(),
                 code: None,
                 stopped: true,
             });
@@ -305,111 +348,57 @@ pub fn start_wait(
         let _lease = match ConsoleLease::acquire() {
             Ok(lease) => lease,
             Err(error) => {
-                let _ = sender.send(RunEvent::Failed(error));
+                let _ = sender.send(RunEvent::Failed {
+                    at: Instant::now(),
+                    error,
+                });
                 return;
             }
         };
         let arguments = match burn_arguments(&firmware, mode, partitions.as_deref()) {
             Ok(arguments) => arguments,
             Err(error) => {
-                let _ = sender.send(RunEvent::Failed(error));
+                let _ = sender.send(RunEvent::Failed {
+                    at: Instant::now(),
+                    error,
+                });
                 return;
             }
         };
-        let mut command = Command::new(tool_dir.join("PhoenixConsole.exe"));
-        command
-            .current_dir(&tool_dir)
-            .args(arguments)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt as _;
-            command.creation_flags(CREATE_NO_WINDOW);
-        }
-        let (mut child, group) = match CommandGroup::spawn(&mut command) {
-            Ok(process) => process,
-            Err(error) => {
-                let _ = sender.send(RunEvent::Failed(error.to_string()));
-                return;
-            }
-        };
-        if let Err(error) = group.terminate_on_close() {
-            group.terminate();
-            let _ = child.wait();
-            let _ = sender.send(RunEvent::Failed(error.to_string()));
-            return;
-        }
-        let stdout = child.stdout.take().map(|stdout| {
-            let sender = sender.clone();
-            std::thread::spawn(move || read_lines(stdout, sender))
-        });
-        let stderr = child.stderr.take().map(|stderr| {
-            let sender = sender.clone();
-            std::thread::spawn(move || read_lines(stderr, sender))
-        });
-        let outcome = loop {
-            if stop.load(Ordering::Relaxed) {
-                group.terminate();
-                let code = child.wait().ok().and_then(|status| status.code());
-                break RunEvent::Exited {
-                    code,
-                    stopped: true,
-                };
-            }
-            match child.try_wait() {
-                Ok(Some(status)) => {
-                    break RunEvent::Exited {
-                        code: status.code(),
-                        stopped: false,
-                    };
-                }
-                Ok(None) => std::thread::sleep(Duration::from_millis(50)),
+        let result = super::compatibility::prepare_console(&tool_dir).and_then(|program| {
+            super::tool_conflict::check()?;
+            #[cfg(windows)]
+            let _monitor = match super::device_monitor::DeviceMonitor::start(sender.clone()) {
+                Ok(monitor) => Some(monitor),
                 Err(error) => {
-                    group.terminate();
-                    let _ = child.wait();
-                    break RunEvent::Failed(error.to_string());
+                    let _ = sender.send(RunEvent::DetectionUnavailable {
+                        at: Instant::now(),
+                        error,
+                    });
+                    None
                 }
-            }
+            };
+            super::console::run_console(
+                super::console::command(&program, &tool_dir, &arguments),
+                &stop,
+                sender.clone(),
+            )
+        });
+        let outcome = match result {
+            Ok((code, stopped)) => RunEvent::Exited {
+                at: Instant::now(),
+                code,
+                stopped,
+            },
+            Err(error) => RunEvent::Failed {
+                at: Instant::now(),
+                error,
+            },
         };
-        group.terminate();
-        for reader in stdout.into_iter().chain(stderr) {
-            let _ = reader.join();
-        }
         drop(_lease);
         let _ = sender.send(outcome);
     });
     (run, receiver)
-}
-
-fn read_lines(mut stream: impl std::io::Read, sender: mpsc::SyncSender<RunEvent>) {
-    let mut buffer = [0u8; 4096];
-    let mut pending = Vec::new();
-    loop {
-        match stream.read(&mut buffer) {
-            Ok(0) => break,
-            Ok(count) => {
-                for byte in &buffer[..count] {
-                    if matches!(*byte, b'\n' | b'\r') {
-                        if !pending.is_empty() {
-                            let line = decode(&pending);
-                            pending.clear();
-                            if sender.send(RunEvent::Line(line)).is_err() {
-                                return;
-                            }
-                        }
-                    } else if pending.len() < 8192 {
-                        pending.push(*byte);
-                    }
-                }
-            }
-            Err(_) => break,
-        }
-    }
-    if !pending.is_empty() {
-        let _ = sender.send(RunEvent::Line(decode(&pending)));
-    }
 }
 
 fn decode(bytes: &[u8]) -> String {
@@ -423,10 +412,11 @@ fn decode(bytes: &[u8]) -> String {
 }
 
 /// The serial numbers ADB currently sees as usable devices.
-pub fn adb_devices(tool_dir: &Path) -> Result<Vec<String>, String> {
-    let program = adb_path(tool_dir);
-    let output = crate::adb::run_usb_adb(program.clone(), &["devices", "-l"])
-        .map_err(|error| error.to_string())?;
+fn adb_devices(program: &Path, stop: &AtomicBool) -> Result<Vec<String>, String> {
+    let output = crate::adb::run_usb_adb(program.to_path_buf(), &["devices", "-l"], &mut || {
+        stop.load(Ordering::Relaxed)
+    })
+    .map_err(|error| error.to_string())?;
     let listing = decode(&output);
     let usb_devices = parse_usb_devices(&listing);
     if usb_devices.len() > 1 {
@@ -438,7 +428,9 @@ pub fn adb_devices(tool_dir: &Path) -> Result<Vec<String>, String> {
     {
         return Ok(Vec::new());
     }
-    match crate::adb::run_usb_adb(program, &["-d", "get-serialno"]) {
+    match crate::adb::run_usb_adb(program.to_path_buf(), &["-d", "get-serialno"], &mut || {
+        stop.load(Ordering::Relaxed)
+    }) {
         Ok(serial) => {
             let serial = decode(&serial).trim().to_owned();
             Ok(listing
@@ -472,17 +464,42 @@ fn parse_usb_devices(output: &str) -> Vec<String> {
     devices
 }
 
-/// Ask the connected Android system to reboot into efex, which is what a
-/// board's FEL key does in hardware.
-pub fn reboot_to_efex(tool_dir: &Path, serial: &str) -> Result<String, String> {
-    if adb_devices(tool_dir)?.as_slice() != [serial] {
-        return Err(String::new());
-    }
+/// Check ADB only when the user asks for it. Polling ADB while PhoenixConsole
+/// owns the FES device makes device detection slower and can interfere with
+/// the flashing tool.
+pub(super) fn start_adb_reboot() -> (Run, Receiver<Result<AdbReboot, String>>) {
+    let stop = Arc::new(AtomicBool::new(false));
+    let finished = Arc::new(AtomicBool::new(false));
+    let run = Run {
+        stop: stop.clone(),
+        finished: finished.clone(),
+    };
+    let (sender, receiver) = mpsc::channel();
+    std::thread::spawn(move || {
+        let _completion = RunCompletion(finished);
+        let _ = sender.send(reboot_to_efex(&stop));
+    });
+    (run, receiver)
+}
+
+fn reboot_to_efex(stop: &AtomicBool) -> Result<AdbReboot, String> {
+    let program =
+        crate::adb::find_adb().ok_or_else(|| crate::i18n::t!("adb.missing").to_string())?;
+    let devices = adb_devices(&program, stop)?;
+    let serial = match devices.as_slice() {
+        [] => return Ok(AdbReboot::NoDevice),
+        [serial] => serial.clone(),
+        _ => return Ok(AdbReboot::MultipleDevices),
+    };
     crate::adb::run_usb_adb(
-        adb_path(tool_dir),
-        &["-s", serial, "shell", "reboot", "efex"],
+        program,
+        &["-s", &serial, "shell", "reboot", "efex"],
+        &mut || stop.load(Ordering::Relaxed),
     )
-    .map(|output| decode(&output).trim().to_string())
+    .map(|output| AdbReboot::Rebooted {
+        serial,
+        output: decode(&output).trim().to_string(),
+    })
     .map_err(|error| error.to_string())
 }
 
@@ -502,6 +519,7 @@ mod tests {
                 .collect::<Vec<_>>();
             assert!(args.contains(&"--loop"));
             assert!(args.contains(&"--no-adb"));
+            assert!(args.windows(2).any(|pair| pair == ["-o", "8"]));
             assert!(args.windows(2).any(|pair| pair == ["-e", mode.flag()]));
             assert_eq!(args.last(), Some(&"firmware with spaces.img"));
             assert!(args.windows(2).any(|pair| pair == ["--parts", "all"]));
@@ -518,14 +536,12 @@ mod tests {
     }
 
     #[test]
-    fn an_explicit_tool_directory_requires_both_programs_and_never_falls_back() {
+    fn an_explicit_tool_directory_only_requires_phoenix_and_never_falls_back() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path();
         assert!(!is_tool_dir(path));
         assert!(tool_dir(Some(path)).is_none());
         std::fs::write(path.join("PhoenixConsole.exe"), []).unwrap();
-        assert!(!is_tool_dir(path));
-        std::fs::write(path.join("adb.exe"), []).unwrap();
         assert!(is_tool_dir(path));
         assert_eq!(tool_dir(Some(path)), Some(path.to_path_buf()));
         std::fs::remove_file(path.join("PhoenixConsole.exe")).unwrap();

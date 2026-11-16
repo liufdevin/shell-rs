@@ -597,7 +597,6 @@ fn interaction_group(store: &Entity<SettingsStore>) -> SettingGroup {
     let (reader, writer) = (store.clone(), store.clone());
     let (cursor_reader, cursor_writer) = (store.clone(), store.clone());
     let (citation_reader, citation_writer) = (store.clone(), store.clone());
-    let (fit_reader, fit_writer) = (store.clone(), store.clone());
     SettingGroup::new()
         .title(t!("settings.interaction.title"))
         .items([
@@ -692,29 +691,6 @@ fn interaction_group(store: &Entity<SettingsStore>) -> SettingGroup {
             .keywords(keywords(t!(
                 "settings.interaction.hide_ai_citations_keywords"
             ))),
-            SettingItem::new(
-                t!("settings.interaction.fit_fullscreen"),
-                SettingField::switch(
-                    move |cx| {
-                        fit_reader
-                            .read(cx)
-                            .settings()
-                            .terminal_interaction
-                            .fit_fullscreen
-                    },
-                    move |on, cx| {
-                        fit_writer.update(cx, |store, cx| {
-                            store.update(
-                                |settings| settings.terminal_interaction.fit_fullscreen = on,
-                                cx,
-                            )
-                        });
-                    },
-                )
-                .default_value(true),
-            )
-            .description(t!("settings.interaction.fit_fullscreen_description"))
-            .keywords(keywords(t!("settings.interaction.fit_fullscreen_keywords"))),
         ])
 }
 

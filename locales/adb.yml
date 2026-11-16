@@ -1,7 +1,7 @@
 _version: 2
 adb.missing:
-  zh-CN: 未找到 adb，请安装 Android SDK Platform-Tools 并加入 PATH，或放在程序旁的 platform-tools 目录。
-  en: adb was not found. Install Android SDK Platform-Tools in PATH or the app's platform-tools folder.
+  zh-CN: 未找到 adb，请安装 Android SDK Platform-Tools 并加入 PATH，或配置 ANDROID_SDK_ROOT / ANDROID_HOME 环境变量。
+  en: adb was not found. Install Android SDK Platform-Tools in PATH, or set ANDROID_SDK_ROOT / ANDROID_HOME.
 adb.unavailable:
   zh-CN: 没有已授权且在线的 ADB 设备，请连接设备并确认 USB 调试授权。
   en: No authorized online ADB devices. Connect a device and authorize debugging.

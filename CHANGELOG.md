@@ -6,6 +6,16 @@ One section per version, titled `## [version]`, optionally followed by a date. E
 
 ## [0.1.22]
 
+- Keep the selected firmware path through temporary deletion or network outages, reload it automatically once available and stable without copying the IMG, remap partitions by name, and respect explicit stop and tab closure.
+- Support up to eight concurrent Allwinner devices with independent progress, timers and results. Reusing a slot resets only that device; process exit interrupts unfinished devices only. Disable the batch-count exit in the verified temporary tool copy to keep other slots running.
+- Identify flash results by the actual device number and show only one progress bar for a single device.
+- Distinguish Windows FEL detection from confirmed writing, show recovery guidance when the tool has not claimed the device, and check for competing Allwinner flashers before starting without terminating them or ADB.
+- Detect Allwinner FEL arrival through Windows device notifications before PhoenixConsole reports progress, show device-detected activity immediately, and retain the clock through initialization without treating duplicate notifications or finished devices as new burns.
+- Remove automatic text fitting entirely; htop, Vim, vi and all other programs use the configured terminal font size and line spacing.
+- Cancel the flashing listener, firmware inspection, ADB requests and automatic restarts when the tab closes, including when its output channel is full.
+- Stop polling ADB while PhoenixConsole owns the USB device. Read its output through a hidden ConPTY so detection and progress appear immediately, use PATH or SDK environment ADB, and avoid the bundled tool's stale ADB. A burn now succeeds on an explicit device `result=Success` even when unused slots report `No device` and aggregate result `2`.
+- Run a SHA-256-gated temporary copy of PhoenixConsole 2.1.0 that disables its unconditional `adb.exe` cleanup; the original tools and flash logic stay unchanged.
+- Fix nested selection arrays in Windows PowerShell 5.1 that made serial cleanup exit before removal; report initialization failures per device and keep missing results unverified instead of inferring success.
 - Remember the last firmware path across tab closures and app restarts, and use a blue rocket mark in the title bar and flashing tab.
 - Keep firmware, partitions and erase modes editable while waiting, apply changes automatically, and remove the wait-again button. Check the embedded usbtool product version for full erase without disabling logical erase for older firmware that has no version resource.
 - Collapse Linux Shell monitor settings in serial host forms by default.
@@ -13,7 +23,7 @@ One section per version, titled `## [version]`, optionally followed by a date. E
 - Read partitions from IMG firmware and flash selected partitions, rejecting empty selections and omitting full-disk erase flags.
 - Simplify Settings → Application by removing the update, privacy and website groups, and shorten the Windows serial maintenance description.
 - Keep firmware flashing off by default, with a persistent switch in Application settings and matching circuit board icons in the title bar and tab.
-- Allow choosing and saving a flashing tool folder, checking for PhoenixConsole.exe and adb.exe before applying it.
+- Allow choosing and saving a flashing tool folder; only `PhoenixConsole.exe` and its DLLs are required.
 - Improve the overall progress bar, remember the erase mode, filter IMG firmware files and hide ADB status until the flashing tool is ready.
 - Enlarge and unify status bar typography, and show only the hovered disk's details in its tooltip.
 

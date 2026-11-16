@@ -11,14 +11,19 @@ mod transport;
 pub use android::{
     AndroidApp, AndroidCapabilities, AndroidTools, MirrorProcess, SystemAndroidTools,
 };
+pub(crate) use client::find_adb;
 pub use client::{
     AdbConnection, AdbDetection, AdbDetector, NoAdbDetector, SystemAdbDetector, canonical_boot_id,
 };
 pub use device_manager::{DeviceCommand, DeviceManager};
 pub(crate) use lan_proxy::AdbProxy;
 
-pub(crate) fn run_usb_adb(fallback: std::path::PathBuf, args: &[&str]) -> anyhow::Result<Vec<u8>> {
-    client::run_local_adb(client::find_adb().unwrap_or(fallback), args)
+pub(crate) fn run_usb_adb(
+    program: std::path::PathBuf,
+    args: &[&str],
+    cancel: &mut dyn FnMut() -> bool,
+) -> anyhow::Result<Vec<u8>> {
+    client::run_local_adb(program, args, cancel)
 }
 impl crate::sftp::FileTransportSource for AdbConnection {
     fn endpoint(&self) -> String {

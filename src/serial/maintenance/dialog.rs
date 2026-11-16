@@ -267,8 +267,8 @@ impl SerialMaintenance {
                                 .unwrap_or_else(|| {
                                     SerialRemoval::new(
                                         device.instance_id().into(),
-                                        RemovalState::Failed,
-                                        "missing_result".into(),
+                                        RemovalState::Unverified,
+                                        String::new(),
                                     )
                                 });
                             this.results.insert(device.instance_id().into(), result);
@@ -430,11 +430,16 @@ impl Render for SerialMaintenance {
                                 .test_support()
                                 .aria_label(result_label(result))
                                 .text_sm()
-                                .text_color(if matches!(result.state(), RemovalState::Failed) {
-                                    cx.theme().danger
-                                } else {
-                                    cx.theme().foreground
-                                })
+                                .text_color(
+                                    if matches!(
+                                        result.state(),
+                                        RemovalState::Failed | RemovalState::Unverified
+                                    ) {
+                                        cx.theme().danger
+                                    } else {
+                                        cx.theme().foreground
+                                    },
+                                )
                                 .child(result_label(result)),
                         )
                     })
@@ -584,6 +589,7 @@ fn result_label(result: &SerialRemoval) -> SharedString {
         RemovalState::Gone => t!("serial.maintenance.gone"),
         RemovalState::Changed => t!("serial.maintenance.changed"),
         RemovalState::RebootRequired => t!("serial.maintenance.reboot"),
+        RemovalState::Unverified => t!("serial.maintenance.unverified"),
         RemovalState::Failed => t!("serial.maintenance.failed", detail = result.detail()),
     }
 }

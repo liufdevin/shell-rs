@@ -1,17 +1,6 @@
-$identity = [Security.Principal.WindowsIdentity]::GetCurrent()
-$principal = New-Object Security.Principal.WindowsPrincipal($identity)
-if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { exit 1 }
-$plan = @([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('__SELECTION__')) | ConvertFrom-Json)
-if ($plan.Count -eq 0 -or $plan.Count -gt 32) { exit 1 }
-$seen = @{}
-foreach ($item in $plan) {
-    $id = [string]$item.instance_id
-    if ($id -notmatch '^USB\\[A-Za-z0-9\\&_.#{}+\-]+$' -or $id.Length -gt 512 -or $seen.ContainsKey($id) -or $item.present -ne $false -or $item.port -cnotmatch '^COM[1-9][0-9]{0,4}$') { exit 1 }
-    $seen[$id] = $true
-}
-$system = [Environment]::GetFolderPath([Environment+SpecialFolder]::System)
-$pnputil = Join-Path $system 'pnputil.exe'
-if (-not (Test-Path -LiteralPath $pnputil -PathType Leaf)) { exit 1 }
+$ErrorActionPreference = 'Stop'
+$plan = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('__SELECTION__')) | ConvertFrom-Json
+$plan = @($plan)
 $client = New-Object Net.Sockets.TcpClient
 try {
     $connect = $client.ConnectAsync('127.0.0.1', __PORT__)
@@ -22,6 +11,21 @@ try {
     $writer = New-Object IO.StreamWriter($stream, (New-Object Text.UTF8Encoding($false)))
     $writer.AutoFlush = $true
     $writer.WriteLine('__TOKEN__')
+    try {
+    if ($plan.Count -eq 0 -or $plan.Count -gt 32) { throw 'Invalid device selection.' }
+    $seen = @{}
+    foreach ($item in $plan) {
+        $id = [string]$item.instance_id
+        if ($id -notmatch '^USB\\[A-Za-z0-9\\&_.#{}+\-]+$' -or $id.Length -gt 512 -or $seen.ContainsKey($id) -or $item.present -ne $false -or $item.port -cnotmatch '^COM[1-9][0-9]{0,4}$') { throw 'Invalid device selection.' }
+        $seen[$id] = $true
+    }
+    __COMMON__
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $principal = New-Object Security.Principal.WindowsPrincipal($identity)
+    if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { throw 'Administrator access was not granted; no devices were removed.' }
+    $system = [Environment]::GetFolderPath([Environment+SpecialFolder]::System)
+    $pnputil = Join-Path $system 'pnputil.exe'
+    if (-not (Test-Path -LiteralPath $pnputil -PathType Leaf)) { throw 'pnputil.exe was not found; no devices were removed.' }
     $deadline = [DateTime]::UtcNow.AddSeconds(90)
     foreach ($item in $plan) {
         $state = 'failed'
@@ -85,6 +89,14 @@ try {
         }
         $row = [pscustomobject]@{ instance_id = [string]$item.instance_id; state = $state; detail = $detail }
         $writer.WriteLine(($row | ConvertTo-Json -Depth 3 -Compress))
+    }
+    } catch {
+        $detail = [regex]::Replace([string]$_.Exception.Message, '[\x00-\x1f\x7f]', ' ')
+        if ($detail.Length -gt 512) { $detail = $detail.Substring(0, 512) }
+        foreach ($item in $plan) {
+            $row = [pscustomobject]@{ instance_id = [string]$item.instance_id; state = 'failed'; detail = $detail }
+            $writer.WriteLine(($row | ConvertTo-Json -Depth 3 -Compress))
+        }
     }
     $writer.Dispose()
 } finally { $client.Dispose() }

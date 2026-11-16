@@ -422,7 +422,6 @@ mod tests {
             settings.terminal_interaction.cursor_style = crate::terminal::TerminalCursorStyle::Beam;
             settings.terminal_interaction.cursor_blinking = false;
             settings.terminal_interaction.hide_ai_citations = true;
-            settings.terminal_interaction.fit_fullscreen = false;
             settings.notifications.tab_output = false;
             settings.local_terminal.cmder_directory = Some(PathBuf::from("D:/Cmder installation"));
             settings.terminal_interaction.right_click = crate::terminal::RightClick::Enter;
@@ -452,7 +451,6 @@ mod tests {
         );
         assert!(!reloaded.settings().terminal_interaction.cursor_blinking);
         assert!(reloaded.settings().terminal_interaction.hide_ai_citations);
-        assert!(!reloaded.settings().terminal_interaction.fit_fullscreen);
         assert!(!reloaded.settings().notifications.tab_output);
         assert_eq!(
             reloaded.settings().local_terminal.cmder_directory,
