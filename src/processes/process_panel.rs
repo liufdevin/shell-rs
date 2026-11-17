@@ -224,6 +224,7 @@ impl ProcessPanel {
             }
             Some(Err(error)) => {
                 host.problem = Some(Problem::Failed(error));
+                host.tracker = Tracker::default();
                 return INTERVAL;
             }
             Some(Ok(output)) => output,

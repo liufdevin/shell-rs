@@ -233,6 +233,31 @@ impl AdbConnection {
         Ok(String::from_utf8(self.shell(command, &mut cancelled)?)?)
     }
 
+    /// Recover only the already selected device for service reads. A reboot
+    /// invalidates both the boot identity and ADB transport id. Resolve the
+    /// same serial on the same ADB server, then pin its current boot again.
+    /// Existing file/transfer connections keep their original identity checks.
+    pub(crate) fn reconnect_monitor(&self, cancel: &AtomicBool) -> Result<Self> {
+        let mut device = self.clone();
+        device.transport_id = None;
+        device.boot_id = None;
+        device.pty_required = Arc::new(AtomicBool::new(false));
+        let mut cancelled = || cancel.load(Ordering::Acquire);
+        if cancelled() {
+            bail!(t!("adb.interrupted"));
+        }
+        device.verify(&mut cancelled)?;
+        // Wait for a readable identity as well as an online transport; a
+        // just-starting adbd is not yet proof that the shell is ready.
+        device.boot_id = Some(
+            device
+                .identity(&mut cancelled)?
+                .ok_or_else(|| anyhow!(t!("adb.unavailable")))?,
+        );
+        device.monitor_command(":", cancel)?;
+        Ok(device)
+    }
+
     pub fn collect_bugreport(&self, destination: &Path, cancel: &AtomicBool) -> Result<()> {
         let mut cancelled = || cancel.load(Ordering::Acquire);
         self.verify(&mut cancelled)?;
@@ -997,6 +1022,48 @@ mod tests {
             .unwrap()
             .insert("board".into(), OTHER_BOOT.into());
         assert!(connection.verify(&mut || false).is_err());
+    }
+
+    #[test]
+    fn monitor_recovery_rebinds_the_same_serial_after_boot_and_transport_change() {
+        let fake = Arc::new(FakeAdb::default());
+        let mut connection = fake.connection();
+        connection.transport_id = Some(7);
+        fake.identities
+            .lock()
+            .unwrap()
+            .insert("board".into(), OTHER_BOOT.into());
+        fake.requests.lock().unwrap().clear();
+        let recovered = connection
+            .reconnect_monitor(&AtomicBool::new(false))
+            .unwrap();
+        assert_eq!(recovered.serial(), "board");
+        assert_eq!(recovered.boot_id(), Some(OTHER_BOOT));
+        assert_eq!(recovered.transport_id, None);
+        assert!(
+            fake.requests
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|args| args[0] == "-s" && args[1] == "board")
+        );
+        recovered
+            .monitor_command(":", &AtomicBool::new(false))
+            .unwrap();
+        // A transfer that began before the reboot must still fail closed.
+        assert_eq!(connection.boot_id(), Some(BOARD_BOOT));
+        assert!(connection.verify(&mut || false).is_err());
+    }
+
+    #[test]
+    fn cancelled_monitor_recovery_never_contacts_adb() {
+        let fake = Arc::new(FakeAdb::default());
+        assert!(
+            fake.connection()
+                .reconnect_monitor(&AtomicBool::new(true))
+                .is_err()
+        );
+        assert!(fake.requests.lock().unwrap().is_empty());
     }
 
     #[test]

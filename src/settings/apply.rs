@@ -6,11 +6,17 @@ use crate::host::ShowHostDetails;
 use crate::i18n::UiLocale;
 use crate::terminal::{BackgroundImage, TerminalBackground};
 use crate::terminal::{
-    TerminalColors, TerminalFont, TerminalHighlights, TerminalInteraction, is_font_installed,
+    HighlightColor, TerminalColors, TerminalFont, TerminalHighlights, TerminalInteraction,
+    is_font_installed,
 };
 
 use super::app_theme::{ui_theme, ui_theme_name};
 use super::{AppSettings, DEFAULT_INTERFACE_FONT_FAMILY};
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct AppliedTerminalTabColor(Option<HighlightColor>);
+
+impl Global for AppliedTerminalTabColor {}
 
 /// Bring the window in line with the settings: the theme chosen for the
 /// appearance, in the app and its terminals, the interface's font size, the
@@ -26,17 +32,25 @@ pub fn apply(settings: AppSettings, window: &mut Window, cx: &mut App) {
     let mode = settings.appearance.theme_mode(window.appearance());
     let chosen = settings.terminal_theme.theme(mode);
     let app = settings.terminal_theme.app_theme(mode);
-    if cx.theme().mode != mode
+    let tab_color = AppliedTerminalTabColor(settings.terminal_tab_active_color);
+    let tab_color_changed = cx.try_global::<AppliedTerminalTabColor>() != Some(&tab_color);
+    if tab_color_changed
+        || cx.theme().mode != mode
         || *cx.theme().theme_name() != ui_theme_name(app, cx)
         || (settings.terminal_theme.app_follows && TerminalColors::current(cx) != chosen)
     {
-        let config = ui_theme(app, cx);
+        let mut config = ui_theme(app, cx).as_ref().clone();
+        if let Some(color) = settings.terminal_tab_active_color {
+            config.colors.tab_active = Some(color.to_hex().into());
+            config.colors.tab_active_foreground = Some(tab_foreground(color).into());
+        }
         let theme = Theme::global_mut(cx);
         match mode {
-            ThemeMode::Light => theme.light_theme = config,
-            ThemeMode::Dark => theme.dark_theme = config,
+            ThemeMode::Light => theme.light_theme = config.into(),
+            ThemeMode::Dark => theme.dark_theme = config.into(),
         }
         Theme::change(mode, Some(window), cx);
+        cx.set_global(tab_color);
         // The theme change resets the list hover to the theme's own.
         crate::app::deepen_list_hover(cx);
     }
@@ -158,5 +172,44 @@ pub fn apply(settings: AppSettings, window: &mut Window, cx: &mut App) {
     // The SFTP lists observe it and list their rows again.
     if cx.try_global::<ShowHiddenFiles>() != Some(&settings.show_hidden) {
         cx.set_global(settings.show_hidden);
+    }
+}
+
+fn tab_foreground(color: HighlightColor) -> &'static str {
+    let hex = color.to_hex();
+    let channel = |start| {
+        let value =
+            u8::from_str_radix(&hex[start..start + 2], 16).unwrap_or_default() as f64 / 255.;
+        if value <= 0.04045 {
+            value / 12.92
+        } else {
+            ((value + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    let luminance = 0.2126 * channel(1) + 0.7152 * channel(3) + 0.0722 * channel(5);
+    let black_contrast = (luminance + 0.05) / 0.05;
+    let white_contrast = 1.05 / (luminance + 0.05);
+    if black_contrast >= white_contrast {
+        "#000000"
+    } else {
+        "#ffffff"
+    }
+}
+
+#[cfg(test)]
+mod terminal_tab_color_tests {
+    use super::tab_foreground;
+    use crate::terminal::HighlightColor;
+
+    #[test]
+    fn terminal_tab_text_keeps_contrast_against_custom_backgrounds() {
+        assert_eq!(
+            tab_foreground(HighlightColor::from_rgb(0x17365d)),
+            "#ffffff"
+        );
+        assert_eq!(
+            tab_foreground(HighlightColor::from_rgb(0xf1d58a)),
+            "#000000"
+        );
     }
 }

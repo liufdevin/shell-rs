@@ -11,6 +11,7 @@ mod shortcuts_editor;
 mod sidebar_tools;
 mod store;
 mod sync_page;
+mod terminal_tab_appearance;
 mod terminal_themes;
 
 pub use apply::apply;

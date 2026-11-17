@@ -116,6 +116,7 @@ impl Workspace {
     }
 
     pub(super) fn sync_broadcast(&mut self, cx: &mut Context<Self>) {
+        self.sync_terminal_split_menus(cx);
         let available = self.broadcast_candidates(cx);
         self.broadcast.reconcile(&available);
         let target = self.focus_handle.clone();

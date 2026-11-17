@@ -1,4 +1,34 @@
 _version: 2
+shared.terminal_split.open:
+  zh-CN: 分屏…
+  en: Split terminal…
+shared.terminal_split.cancel:
+  zh-CN: 取消分屏
+  en: Merge split panes
+shared.terminal_split.title:
+  zh-CN: "将“%{name}”与其他终端分屏"
+  en: "Split “%{name}” with another terminal"
+shared.terminal_split.target:
+  zh-CN: 另一个终端
+  en: Other terminal
+shared.terminal_split.layout:
+  zh-CN: 排列方式
+  en: Arrangement
+shared.terminal_split.side_by_side:
+  zh-CN: 左右并排
+  en: Side by side
+shared.terminal_split.stacked:
+  zh-CN: 上下排列
+  en: Stacked
+shared.terminal_split.apply:
+  zh-CN: 分屏
+  en: Split
+shared.terminal_split.merge_hint:
+  zh-CN: 取消分屏会将中间区域的所有标签合并到当前标签栏。
+  en: Merging split panes gathers all center tabs into the current tab bar.
+shared.terminal_split.unavailable:
+  zh-CN: 所选终端已关闭或已移至独立窗口，请重新选择。
+  en: A selected terminal was closed or moved to a separate window. Choose again.
 shared.tab_menu.detach:
   zh-CN: 移至独立窗口
   en: Move to separate window

@@ -102,10 +102,11 @@ struct HostState {
 impl HostState {
     /// What the next reading on `connection` asks for besides the load.
     fn parts_due(&self, connection: u64, now: Instant) -> Parts {
-        let system = self
-            .system
-            .as_ref()
-            .is_none_or(|(read_on, _)| *read_on != connection);
+        let system = self.problem.is_some()
+            || self
+                .system
+                .as_ref()
+                .is_none_or(|(read_on, _)| *read_on != connection);
         let disks = system
             || self
                 .disks
@@ -598,6 +599,7 @@ impl MonitorPanel {
         };
         if host.problem.is_some() {
             host.hardware.clear();
+            host.tracker = Tracker::default();
         }
         self.schedule_status_expiry(cx);
         cx.notify();
@@ -1327,8 +1329,23 @@ fn render_disks(disks: &[DiskUsage], cx: &App) -> impl IntoElement {
 
 #[cfg(test)]
 mod polling_tests {
-    use super::sample_pause;
-    use std::time::Duration;
+    use super::{HostState, Problem, SystemInfo, sample_pause};
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn recovery_refreshes_system_and_disks_even_when_serial_generation_did_not_change() {
+        let now = Instant::now();
+        let mut host = HostState {
+            system: Some((1, SystemInfo::default())),
+            disks: Some((now, Vec::new())),
+            ..Default::default()
+        };
+        let normal = host.parts_due(1, now);
+        assert!(!normal.system && !normal.disks);
+        host.problem = Some(Problem::Failed("ADB rebooted".into()));
+        let recovering = host.parts_due(1, now);
+        assert!(recovering.system && recovering.disks);
+    }
 
     #[test]
     fn sampling_time_is_part_of_the_two_second_refresh_period() {

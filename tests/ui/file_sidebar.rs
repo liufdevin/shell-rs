@@ -14,6 +14,290 @@ use shellrs::explorer::ExplorerPanel;
 const FILES: u64 = 1;
 const REMOTE_FILE: &str = "/home/tester/文件 甲.txt";
 
+fn drop_on_ssh_terminal(
+    cx: &mut TestAppContext,
+    fixture: &Fixture,
+    paths: Vec<std::path::PathBuf>,
+) {
+    in_frame(cx, fixture.handle, |window, cx| {
+        let position = window
+            .find(("terminal", INITIAL_WEB_TERMINAL))
+            .bounds()
+            .center();
+        window.dispatch_event(
+            gpui_kit::FileDropEvent::Entered {
+                position,
+                paths: gpui_kit::ExternalPaths(paths.into()),
+            }
+            .to_platform_input(),
+            cx,
+        );
+        window.dispatch_event(
+            gpui_kit::FileDropEvent::Submit { position }.to_platform_input(),
+            cx,
+        );
+    });
+}
+
+async fn wait_for_terminal(cx: &mut TestAppContext, fixture: &Fixture) {
+    cx.wait_for(fixture.handle.into(), Duration::from_secs(2), |_, cx| {
+        remote_lifecycle(
+            &fixture.workspace,
+            RemoteTerminalId(INITIAL_WEB_TERMINAL),
+            cx,
+        ) == TerminalLifecycle::Running
+    })
+    .await;
+    in_frame(cx, fixture.handle, |window, cx| {
+        window.click(("terminal-tab", INITIAL_WEB_TERMINAL), cx)
+    });
+}
+
+async fn report_directory(cx: &mut TestAppContext, fixture: &Fixture, host: &str, path: &str) {
+    report(cx, fixture, &osc7(host, path));
+    cx.wait_for(fixture.handle.into(), Duration::from_secs(2), |_, cx| {
+        fixture
+            .workspace
+            .read(cx)
+            .remote_terminal(RemoteTerminalId(INITIAL_WEB_TERMINAL))
+            .unwrap()
+            .read(cx)
+            .terminal()
+            .read(cx)
+            .directory(cx)
+            .is_some_and(|directory| directory.path == path)
+    })
+    .await;
+}
+
+#[gpui_kit::test]
+async fn ssh_terminal_drop_waits_for_sftp_then_confirms_files_and_folders(cx: &mut TestAppContext) {
+    let provider = FakeSftpProvider::default();
+    let (release, held) = mpsc::channel();
+    *provider.hold_connection.lock().unwrap() = Some(held);
+    let fixture = open(cx, provider);
+    wait_for_terminal(cx, &fixture).await;
+    let folder = tempfile::tempdir().unwrap();
+    let file = folder.path().join("dropped.txt");
+    std::fs::write(&file, b"upload").unwrap();
+    let sources = vec![file, folder.path().to_path_buf()];
+    drop_on_ssh_terminal(cx, &fixture, sources.clone());
+    in_frame(cx, fixture.handle, |window, _| {
+        assert!(window.find(("remote-pane", FILES)).visible());
+        assert!(window.try_find("upload-confirm").is_none());
+    });
+    assert!(fixture.sftp.requests.lock().unwrap().is_empty());
+    release.send(()).unwrap();
+    wait_for(cx, fixture.handle, "upload-confirm").await;
+    in_frame(cx, fixture.handle, |window, cx| {
+        assert_eq!(window.find("upload-target").value(), Some("/home/tester"));
+        window.click("upload-target", cx);
+        window.press("secondary-a", cx);
+        window.input("/srv/upload", cx);
+        window.click("upload-confirm", cx);
+    });
+    cx.wait_for(fixture.handle.into(), Duration::from_secs(2), |_, _| {
+        !fixture.sftp.requests.lock().unwrap().is_empty()
+    })
+    .await;
+    let requests = fixture.sftp.requests.lock().unwrap();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].sources(), sources.as_slice());
+    assert_eq!(requests[0].destination().as_str(), "/srv/upload");
+    assert_eq!(fixture.terminals.written_text(), "");
+    assert_eq!(*fixture.sftp.on_terminal.lock().unwrap(), 1);
+    assert!(!cx.did_prompt_for_paths());
+}
+
+#[gpui_kit::test]
+async fn ssh_terminal_drop_uses_the_reported_directory_at_drop_time(cx: &mut TestAppContext) {
+    let provider = FakeSftpProvider::default();
+    let (release, held) = mpsc::channel();
+    *provider.hold_connection.lock().unwrap() = Some(held);
+    let fixture = open_with(cx, provider, FakeTerminalFactory::answering(&["web-01\n"]));
+    wait_for_terminal(cx, &fixture).await;
+    report_directory(cx, &fixture, "WEB-01", "/srv/a b").await;
+    let sources = vec![std::path::PathBuf::from("/local/tester/file.txt")];
+    drop_on_ssh_terminal(cx, &fixture, sources.clone());
+    report_directory(cx, &fixture, "WEB-01", "/srv/other").await;
+    release.send(()).unwrap();
+    cx.wait_for(fixture.handle.into(), Duration::from_secs(2), |_, _| {
+        !fixture.sftp.requests.lock().unwrap().is_empty()
+    })
+    .await;
+    let requests = fixture.sftp.requests.lock().unwrap();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].sources(), sources.as_slice());
+    assert_eq!(requests[0].destination().as_str(), "/srv/a b");
+    assert!(!fixture.terminals.written_text().contains("rz\r"));
+    in_frame(cx, fixture.handle, |window, _| {
+        assert!(window.find(("remote-pane", FILES)).visible());
+        assert!(window.try_find("upload-confirm").is_none());
+    });
+}
+
+#[gpui_kit::test]
+async fn ssh_terminal_drop_uses_osc7_even_with_directory_follow_disabled(cx: &mut TestAppContext) {
+    let fixture = open_with(
+        cx,
+        FakeSftpProvider::default(),
+        FakeTerminalFactory::answering(&["web-01\n"]),
+    );
+    cx.update(|cx| {
+        let settings = fixture.workspace.read(cx).settings().clone();
+        settings.update(cx, |store, cx| {
+            store.update(
+                |settings| settings.file_sidebar.detect_directory_follow = false,
+                cx,
+            )
+        });
+    });
+    wait_for_terminal(cx, &fixture).await;
+    report_directory(cx, &fixture, "web-01", "/srv").await;
+    drop_on_ssh_terminal(
+        cx,
+        &fixture,
+        vec![std::path::PathBuf::from("/local/tester/file.txt")],
+    );
+    cx.wait_for(fixture.handle.into(), Duration::from_secs(2), |_, _| {
+        !fixture.sftp.requests.lock().unwrap().is_empty()
+    })
+    .await;
+    assert_eq!(
+        fixture.sftp.requests.lock().unwrap()[0]
+            .destination()
+            .as_str(),
+        "/srv"
+    );
+    assert!(!fixture.terminals.written_text().contains("rz\r"));
+}
+
+#[gpui_kit::test]
+async fn ssh_terminal_drop_confirms_when_osc7_names_another_host(cx: &mut TestAppContext) {
+    let fixture = open_with(
+        cx,
+        FakeSftpProvider::default(),
+        FakeTerminalFactory::answering(&["web-01\n"]),
+    );
+    wait_for_terminal(cx, &fixture).await;
+    report_directory(cx, &fixture, "nested-host", "/private").await;
+    drop_on_ssh_terminal(
+        cx,
+        &fixture,
+        vec![std::path::PathBuf::from("/local/tester/file.txt")],
+    );
+    wait_for(cx, fixture.handle, "upload-confirm").await;
+    in_frame(cx, fixture.handle, |window, cx| {
+        assert_eq!(window.find("upload-target").value(), Some("/home/tester"));
+        window.press("escape", cx);
+    });
+    settle(cx);
+    assert!(fixture.sftp.requests.lock().unwrap().is_empty());
+    assert!(!fixture.terminals.written_text().contains("rz\r"));
+}
+
+#[gpui_kit::test]
+async fn ssh_terminal_drop_is_discarded_when_the_terminal_disconnects(cx: &mut TestAppContext) {
+    let provider = FakeSftpProvider::default();
+    let (release, held) = mpsc::channel();
+    *provider.hold_connection.lock().unwrap() = Some(held);
+    let fixture = open(cx, provider);
+    wait_for_terminal(cx, &fixture).await;
+    drop_on_ssh_terminal(
+        cx,
+        &fixture,
+        vec![std::path::PathBuf::from("/local/tester/file.txt")],
+    );
+    in_frame(cx, fixture.handle, |window, cx| {
+        window.click(("terminal", INITIAL_WEB_TERMINAL), cx);
+        window.dispatch_action(
+            Box::new(DisconnectTerminal(RemoteTerminalId(INITIAL_WEB_TERMINAL))),
+            cx,
+        );
+    });
+    release.send(()).unwrap();
+    settle(cx);
+    assert!(fixture.sftp.requests.lock().unwrap().is_empty());
+    in_frame(cx, fixture.handle, |window, _| {
+        assert!(window.try_find("upload-confirm").is_none());
+    });
+    assert!(!fixture.terminals.written_text().contains("rz\r"));
+}
+
+#[gpui_kit::test]
+async fn ssh_terminal_drop_reconnects_an_existing_disconnected_file_sidebar(
+    cx: &mut TestAppContext,
+) {
+    let fixture = open(cx, FakeSftpProvider::default());
+    show_files(cx, &fixture, INITIAL_WEB_TERMINAL, FILES).await;
+    fixture.sftp.events.lock().unwrap()[0]
+        .send_blocking(SftpEvent::Disconnected("SFTP unavailable".into()))
+        .unwrap();
+    wait_for_state(cx, &fixture, ConnectionState::Disconnected).await;
+    drop_on_ssh_terminal(
+        cx,
+        &fixture,
+        vec![std::path::PathBuf::from("/local/tester/file.txt")],
+    );
+    wait_for(cx, fixture.handle, "upload-confirm").await;
+    assert_eq!(*fixture.sftp.reconnects.lock().unwrap(), 1);
+    in_frame(cx, fixture.handle, |window, cx| window.press("escape", cx));
+    settle(cx);
+    assert!(fixture.sftp.requests.lock().unwrap().is_empty());
+    assert!(!fixture.terminals.written_text().contains("rz\r"));
+}
+
+#[gpui_kit::test]
+async fn ssh_terminal_drops_wait_for_each_upload_confirmation(cx: &mut TestAppContext) {
+    let provider = FakeSftpProvider::default();
+    let (release, held) = mpsc::channel();
+    *provider.hold_connection.lock().unwrap() = Some(held);
+    let fixture = open(cx, provider);
+    wait_for_terminal(cx, &fixture).await;
+    for name in ["first.txt", "second.txt"] {
+        drop_on_ssh_terminal(
+            cx,
+            &fixture,
+            vec![std::path::PathBuf::from(format!("/local/tester/{name}"))],
+        );
+    }
+    release.send(()).unwrap();
+    wait_for(cx, fixture.handle, "upload-confirm").await;
+    in_frame(cx, fixture.handle, |window, cx| window.press("escape", cx));
+    wait_for(cx, fixture.handle, "upload-confirm").await;
+    in_frame(cx, fixture.handle, |window, cx| {
+        window.click("upload-confirm", cx)
+    });
+    cx.wait_for(fixture.handle.into(), Duration::from_secs(2), |_, _| {
+        !fixture.sftp.requests.lock().unwrap().is_empty()
+    })
+    .await;
+    assert_eq!(fixture.sftp.requests.lock().unwrap().len(), 1);
+    assert!(!fixture.terminals.written_text().contains("rz\r"));
+}
+
+#[gpui_kit::test]
+async fn ssh_terminal_drop_confirms_before_offering_directory_setup(cx: &mut TestAppContext) {
+    let fixture = open_with(
+        cx,
+        FakeSftpProvider::default(),
+        FakeTerminalFactory::answering(&[NOT_SET_UP]),
+    );
+    wait_for_terminal(cx, &fixture).await;
+    drop_on_ssh_terminal(
+        cx,
+        &fixture,
+        vec![std::path::PathBuf::from("/local/tester/file.txt")],
+    );
+    wait_for(cx, fixture.handle, "upload-confirm").await;
+    in_frame(cx, fixture.handle, |window, cx| {
+        assert!(window.try_find("ok").is_none());
+        window.press("escape", cx);
+    });
+    settle(cx);
+    assert!(fixture.sftp.requests.lock().unwrap().is_empty());
+}
+
 struct Fixture {
     handle: WindowHandle<Root>,
     workspace: Entity<Workspace>,

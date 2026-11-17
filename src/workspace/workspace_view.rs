@@ -196,6 +196,7 @@ pub struct Workspace {
     /// Each remote terminal's 文件, once shown: on the terminal's own
     /// connection, and gone with the terminal.
     pub(super) file_sidebars: HashMap<RemoteTerminalId, ExplorerId>,
+    pub(super) pending_terminal_uploads: HashMap<RemoteTerminalId, usize>,
     /// 目录跟随: what each terminal's current connection was found to be.
     pub(super) directory_follow: HashMap<RemoteTerminalId, super::follow::FollowState>,
     pub(super) local_terminals: HashMap<LocalTerminalId, Entity<LocalTerminalPanel>>,
@@ -910,6 +911,7 @@ impl Workspace {
             explorers: HashMap::new(),
             file_sidebars: HashMap::new(),
             directory_follow: HashMap::new(),
+            pending_terminal_uploads: HashMap::new(),
             local_terminals,
             lan_local_factories: HashMap::new(),
             lan_serial_transports: HashMap::new(),
@@ -2764,7 +2766,7 @@ impl Workspace {
             self.remove_tab_panel(panel, window, cx);
         }
     }
-    fn on_explorer_action(
+    pub(super) fn on_explorer_action(
         &mut self,
         action: &ExplorerAction,
         window: &mut Window,
@@ -4535,6 +4537,9 @@ impl Workspace {
             .on_action(cx.listener(Self::on_new_cmder_terminal))
             .on_action(cx.listener(Self::on_new_command_terminal))
             .on_action(cx.listener(Self::on_toggle_terminal_broadcast))
+            .on_action(cx.listener(Self::on_open_terminal_split))
+            .on_action(cx.listener(Self::on_split_terminal))
+            .on_action(cx.listener(Self::on_cancel_terminal_split))
             .on_action(cx.listener(Self::on_set_broadcast_target))
             .on_action(cx.listener(Self::on_toggle_compose_pane))
             .on_action(cx.listener(Self::on_send_compose))

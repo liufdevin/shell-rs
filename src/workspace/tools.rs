@@ -410,6 +410,34 @@ impl Workspace {
         self.sync_tool_sidebar(window, cx);
     }
 
+    pub(super) fn show_terminal_files(
+        &mut self,
+        terminal: RemoteTerminalId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(panel) = self.terminals.get(&terminal).cloned() else {
+            return false;
+        };
+        if panel.read(cx).shell_only() {
+            return false;
+        }
+        let host = panel.read(cx).host_id();
+        let group = panel.read(cx).tab_group();
+        self.activate_tab(group, panel.entity_id(), window, cx);
+        self.settings().update(cx, |settings, cx| {
+            if !settings.settings().sidebar_tools.shows(ToolKind::Files) {
+                settings.update(
+                    |settings| settings.sidebar_tools.set(ToolKind::Files, true),
+                    cx,
+                );
+            }
+        });
+        self.remember_host_tool(host, Some(ToolKind::Files), cx);
+        self.set_active_tab(Some(CenterTab::Terminal(terminal)), window, cx);
+        self.file_sidebar(terminal).is_some()
+    }
+
     /// The right sidebar's tool as the terminal in front had it last,
     /// `None` while hidden: its host's, or every local terminal's.
     fn target_tool(&self, target: &SidebarTarget, cx: &App) -> Option<ToolKind> {

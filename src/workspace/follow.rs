@@ -51,7 +51,11 @@ impl Workspace {
     }
 
     /// What the check on this connection found, once it has.
-    fn follow_check(&self, terminal: RemoteTerminalId, cx: &App) -> Option<&FollowCheck> {
+    pub(super) fn follow_check(
+        &self,
+        terminal: RemoteTerminalId,
+        cx: &App,
+    ) -> Option<&FollowCheck> {
         match &self.follow_state(terminal, cx)?.check {
             Check::Done(check) => Some(check),
             _ => None,
@@ -170,6 +174,7 @@ impl Workspace {
             || !self.follows(terminal, cx)
             || self.tool_showing(cx) != Some(ToolKind::Files)
             || self.tool_terminal(cx).map(|shown| shown.id) != Some(terminal)
+            || self.pending_terminal_uploads.contains_key(&terminal)
             || window.has_active_dialog(cx)
             || self
                 .follow_state(terminal, cx)

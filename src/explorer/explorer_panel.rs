@@ -956,6 +956,8 @@ impl ExplorerPanel {
                     if self.state == ConnectionState::Connected {
                         self.disconnect(window, cx);
                     }
+                    self.state = ConnectionState::Connecting;
+                    cx.emit(ExplorerPanelEvent::StateChanged(self.id, self.host_id));
                     // With no stopped batch, 继续 is a bare reconnect.
                     self.engine_busy = true;
                     self.send(SftpCommand::Resume);

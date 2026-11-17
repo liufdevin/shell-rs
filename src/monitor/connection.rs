@@ -32,6 +32,19 @@ pub trait MonitorConnector: Send + Sync {
         candidates: &[(String, HostLogin)],
         cancel: &AtomicBool,
     ) -> Result<Option<Box<dyn MonitorLink>>, String>;
+
+    /// Reopen the selected ADB serial after a reboot, without running general
+    /// discovery or trying another SSH/ADB device. Never replay a command.
+    fn reconnect_adb(
+        &self,
+        device: &AdbConnection,
+        cancel: &AtomicBool,
+    ) -> Result<Box<dyn MonitorLink>, String> {
+        device
+            .reconnect_monitor(cancel)
+            .map(|device| Box::new(device) as Box<dyn MonitorLink>)
+            .map_err(|error| error.to_string())
+    }
 }
 
 pub struct SystemMonitorConnector {

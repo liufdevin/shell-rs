@@ -187,6 +187,18 @@ settings.appearance.status_system_info_description:
 settings.appearance.status_system_info_keywords:
   zh-CN: 状态栏,系统信息,CPU,内存,网速,磁盘,运行时间,底部
   en: status bar,system information,CPU,memory,network,disk,uptime,bottom
+settings.appearance.terminal_tab_color:
+  zh-CN: 选中终端标签背景色
+  en: Active terminal tab background
+settings.appearance.terminal_tab_color_description:
+  zh-CN: 为当前选中的终端标签设置自定义背景色；文字颜色会自动调整以保持可读。恢复主题颜色后使用当前主题的默认颜色。
+  en: Set a custom background for the selected terminal tab. Text color adjusts for readability. Reset to follow the current theme.
+settings.appearance.terminal_tab_color_keywords:
+  zh-CN: 标签,终端,会话,背景,色彩,颜色,自定义,tab,terminal,session,background,color,custom
+  en: tab,terminal,session,background,color,custom
+settings.appearance.terminal_tab_color_reset:
+  zh-CN: 恢复主题颜色
+  en: Reset to theme color
 settings.appearance.font_family:
   zh-CN: 界面字体
   en: Interface font

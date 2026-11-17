@@ -23,7 +23,8 @@ use crate::connection::{ConnectionPrompt, ConnectionPromptReply};
 use crate::host::{ConnectionState, Host, HostConnection, HostId, HostOs, HostStore, ProtocolKind};
 use crate::i18n::t;
 use crate::shared::{
-    ClosableTabTitle, HostMark, LatencyLabel, RenamableTab, close_tab_items, confirm_danger,
+    ClosableTabTitle, HostMark, LatencyLabel, RenamableTab, TerminalSplitMenu, close_tab_items,
+    confirm_danger,
 };
 
 use super::session_io::{DailyLog, TerminalOptions};
@@ -74,6 +75,7 @@ pub struct TerminalPanel {
     external: bool,
     tab_group: Option<WeakEntity<TabGroup>>,
     broadcast: Option<super::BroadcastSelection>,
+    split_menu: TerminalSplitMenu,
     /// A title the user gave this tab, to tell apart several connections to
     /// the same host. Lives as long as the tab, like the rest of the layout.
     custom_title: Option<SharedString>,
@@ -322,6 +324,7 @@ impl TerminalPanel {
             external,
             tab_group: None,
             broadcast: None,
+            split_menu: TerminalSplitMenu::default(),
             custom_title: title,
             initial_directory: directory,
             hex_input,
@@ -377,11 +380,19 @@ impl TerminalPanel {
             editable: !store.is_temporary(self.host_id),
             group: self.tab_group.clone(),
             panel: cx.entity_id(),
+            split_menu: self.split_menu,
         }
     }
 
     pub fn terminal(&self) -> &Entity<TerminalView> {
         &self.terminal
+    }
+
+    pub(crate) fn set_split_menu(&mut self, menu: TerminalSplitMenu, cx: &mut Context<Self>) {
+        if self.split_menu != menu {
+            self.split_menu = menu;
+            cx.notify();
+        }
     }
 
     pub(crate) fn set_broadcast_selection(
@@ -919,6 +930,7 @@ struct TabMenu {
     editable: bool,
     group: Option<WeakEntity<TabGroup>>,
     panel: EntityId,
+    split_menu: TerminalSplitMenu,
 }
 
 impl RenamableTab for TerminalPanel {
@@ -997,7 +1009,10 @@ impl TabMenu {
                 Box::new(EditHost(host_id)),
             );
         }
-        let menu = menu.separator();
+        let menu = self
+            .split_menu
+            .build(menu.separator(), CenterTab::Terminal(id))
+            .separator();
         close_tab_items(
             menu,
             CenterTab::Terminal(id),

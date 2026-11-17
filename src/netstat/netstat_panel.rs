@@ -211,8 +211,8 @@ impl NetstatPanel {
     }
 
     /// Start reading the target's host over, or stop when there is nothing
-    /// to show. A terminal not connected is asked again every little while,
-    /// so its list comes once it connects.
+    /// to show. Failed reads are retried, including a shared ADB channel
+    /// recovering after a reboot. A successful list stops the loop.
     fn read(&mut self, cx: &mut Context<Self>) {
         self.reading = None;
         self.loading = false;
@@ -231,11 +231,11 @@ impl NetstatPanel {
                     Some(reply) => exec_answer(reply, cx).await,
                     None => None,
                 };
-                let connected = answer.is_some();
+                let completed = matches!(answer, Some(Ok(_)));
                 if this
                     .update(cx, |this, cx| this.record(target.terminal, answer, cx))
                     .is_err()
-                    || connected
+                    || completed
                 {
                     return;
                 }

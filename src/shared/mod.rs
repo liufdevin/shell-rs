@@ -15,6 +15,7 @@ mod row_tooltip;
 mod saved_password_picker;
 mod segmented_control;
 mod tab_menu;
+mod terminal_split_menu;
 mod tint;
 
 pub use closable_tab::ClosableTabTitle;
@@ -34,4 +35,5 @@ pub use row_tooltip::{RowTooltip, RowTooltipTrigger, RowTooltips};
 pub(crate) use saved_password_picker::SavedPasswordPicker;
 pub use segmented_control::{Segment, SegmentedControl};
 pub use tab_menu::close_tab_items;
+pub(crate) use terminal_split_menu::TerminalSplitMenu;
 pub use tint::{soft_tag, tinted};

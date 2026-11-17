@@ -270,7 +270,7 @@ impl Runner for FakeAdb {
             entries.insert(paths[1].clone(), entry);
         } else if script.starts_with("( rm -f -- ") {
             self.entries.lock().unwrap().remove(&paths[0]);
-        } else if script.starts_with("( chmod ") {
+        } else if script.starts_with("( chmod ") || script.starts_with("( :\n)") {
         } else if script.starts_with("( mkdir -- ") {
             self.entries.lock().unwrap().insert(
                 paths[0].clone(),

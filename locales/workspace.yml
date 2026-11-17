@@ -408,6 +408,9 @@ workspace.zmodem.choose_folder:
 workspace.zmodem.files_only:
   zh-CN: ZMODEM 只能上传文件，文件夹请用 SFTP 上传
   en: ZMODEM uploads only files. Upload folders with SFTP.
+workspace.terminal_upload.sftp_unavailable:
+  zh-CN: 此 SSH 连接无法使用 SFTP，请在终端运行 rz 上传
+  en: SFTP is unavailable on this SSH connection. Run rz in the terminal to upload files.
 
 # 项目: the line under a terminal's kept output, drawn again as it opens.
 workspace.projects.kept_output:

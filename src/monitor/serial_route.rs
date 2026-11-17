@@ -3,7 +3,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
     mpsc,
 };
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use super::{MonitorConnector, MonitorLink};
 use crate::{
@@ -14,10 +14,16 @@ use crate::{
 };
 
 const MAX_ATTEMPTS: u8 = 2;
+const ADB_RETRY: Duration = Duration::from_secs(2);
 #[cfg(test)]
 #[path = "serial_route_tests.rs"]
 mod tests;
 type RawSender = mpsc::Sender<TerminalTransportCommand>;
+
+struct AdbRecovery {
+    device: AdbConnection,
+    retry_at: Instant,
+}
 
 #[derive(Clone, Default)]
 pub(crate) struct RouteStatus {
@@ -51,8 +57,17 @@ pub(crate) struct SerialServices {
 impl SerialServices {
     pub(crate) fn new(
         connector: Arc<dyn MonitorConnector>,
+        settings: MonitorSettings,
+        candidates: Vec<(String, HostLogin)>,
+    ) -> Arc<Self> {
+        Self::with_retry_interval(connector, settings, candidates, ADB_RETRY)
+    }
+
+    fn with_retry_interval(
+        connector: Arc<dyn MonitorConnector>,
         mut settings: MonitorSettings,
         mut candidates: Vec<(String, HostLogin)>,
+        retry_interval: Duration,
     ) -> Arc<Self> {
         let (jobs, receiver) = mpsc::sync_channel(32);
         let service = Arc::new(Self {
@@ -67,6 +82,7 @@ impl SerialServices {
             let mut identity = None;
             let mut attempts = 0;
             let mut problem = None;
+            let mut recovery: Option<AdbRecovery> = None;
             loop {
                 if cancel.load(Ordering::Acquire) {
                     break;
@@ -87,6 +103,7 @@ impl SerialServices {
                         let label = format!("SSH · {}@{}:{}", login.user, login.host, login.port);
                         candidates = vec![(id, login.clone())];
                         link = None;
+                        recovery = None;
                         attempts = 0;
                         problem = None;
                         *status.lock().unwrap_or_else(|error| error.into_inner()) = RouteStatus {
@@ -102,6 +119,7 @@ impl SerialServices {
                             ssh: None,
                         };
                         link = Some(Box::new(device));
+                        recovery = None;
                         attempts = MAX_ATTEMPTS;
                         problem = None;
                     }
@@ -113,7 +131,32 @@ impl SerialServices {
                         polling,
                         reply,
                     } => {
+                        if recovery
+                            .as_ref()
+                            .is_some_and(|pending| Instant::now() >= pending.retry_at)
+                        {
+                            let mut pending = recovery.take().unwrap();
+                            match connector.reconnect_adb(&pending.device, &cancel) {
+                                Ok(selected) => {
+                                    *status.lock().unwrap_or_else(|error| error.into_inner()) =
+                                        RouteStatus {
+                                            label: selected.label(),
+                                            adb: selected.adb_connection(),
+                                            ssh: selected.ssh_login(),
+                                        };
+                                    link = Some(selected);
+                                    problem = None;
+                                }
+                                Err(_) => {
+                                    // Schedule from the end of the attempt, so a slow
+                                    // offline device cannot cause a burst of retries.
+                                    pending.retry_at = Instant::now() + retry_interval;
+                                    recovery = Some(pending);
+                                }
+                            }
+                        }
                         if link.is_none()
+                            && recovery.is_none()
                             && attempts < MAX_ATTEMPTS
                             && settings.channel != MonitorChannel::Serial
                         {
@@ -160,17 +203,31 @@ impl SerialServices {
                         } else if let Some(selected) = &mut link {
                             let result = selected.sample(&command, &cancel);
                             if result.is_err() && selected.sample(":", &cancel).is_err() {
+                                recovery = selected.adb_connection().map(|device| AdbRecovery {
+                                    device,
+                                    retry_at: Instant::now() + retry_interval,
+                                });
                                 link = None;
                                 attempts = MAX_ATTEMPTS;
-                                problem = Some(t!("monitor.route.connection_lost").to_string());
+                                let message = if recovery.is_some() {
+                                    t!("monitor.route.adb_reconnecting")
+                                } else {
+                                    t!("monitor.route.connection_lost")
+                                }
+                                .to_string();
+                                problem = Some(message.clone());
                                 *status.lock().unwrap_or_else(|error| error.into_inner()) =
                                     RouteStatus {
-                                        label: t!("monitor.route.connection_lost").to_string(),
+                                        label: message,
                                         adb: None,
                                         ssh: None,
                                     };
                             }
                             result
+                        } else if recovery.is_some() {
+                            // Keep the established ADB choice while it boots.
+                            // Do not inject reads into its serial boot console.
+                            Err(t!("monitor.route.adb_reconnecting").to_string())
                         } else if !independent_only
                             && (settings.channel == MonitorChannel::Serial
                                 || (settings.channel == MonitorChannel::Auto && identity.is_some()))

@@ -15,7 +15,7 @@ use regex::Regex;
 
 use crate::app::{CatalogIcon, CenterTab, CloseLocalTerminal, RestartLocalTerminal};
 use crate::i18n::t;
-use crate::shared::{ClosableTabTitle, close_tab_items};
+use crate::shared::{ClosableTabTitle, TerminalSplitMenu, close_tab_items};
 
 use super::terminal_view::TerminalPresentation;
 use super::{
@@ -59,6 +59,7 @@ pub struct LocalTerminalPanel {
     presentation: TerminalPresentation,
     tab_group: Option<WeakEntity<TabGroup>>,
     broadcast: Option<super::BroadcastSelection>,
+    split_menu: TerminalSplitMenu,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -125,6 +126,7 @@ impl LocalTerminalPanel {
             presentation,
             tab_group: None,
             broadcast: None,
+            split_menu: TerminalSplitMenu::default(),
             _subscriptions: subscriptions,
         }
     }
@@ -166,6 +168,13 @@ impl LocalTerminalPanel {
     ) {
         if self.broadcast != selection {
             self.broadcast = selection;
+            cx.notify();
+        }
+    }
+
+    pub(crate) fn set_split_menu(&mut self, menu: TerminalSplitMenu, cx: &mut Context<Self>) {
+        if self.split_menu != menu {
+            self.split_menu = menu;
             cx.notify();
         }
     }
@@ -273,6 +282,7 @@ impl BasePanel for LocalTerminalPanel {
 impl Panel for LocalTerminalPanel {
     fn title(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let (id, group, panel) = (self.id, self.tab_group.clone(), cx.entity_id());
+        let split_menu = self.split_menu;
         let mark = super::BroadcastSelection::lead(
             self.broadcast.clone(),
             CenterTab::LocalTerminal(id),
@@ -289,7 +299,7 @@ impl Panel for LocalTerminalPanel {
             ("close-local-terminal", self.id.0),
             Box::new(CloseLocalTerminal(self.id)),
         )
-        .context_menu(move |menu, _, cx| tab_menu(menu, id, group.clone(), panel, cx))
+        .context_menu(move |menu, _, cx| tab_menu(menu, id, group.clone(), panel, split_menu, cx))
     }
 
     fn toolbar_buttons(&mut self, _: &mut Window, _: &mut Context<Self>) -> Option<Vec<Button>> {
@@ -310,7 +320,14 @@ impl Panel for LocalTerminalPanel {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) -> PopupMenu {
-        tab_menu(menu, self.id, self.tab_group.clone(), cx.entity_id(), cx)
+        tab_menu(
+            menu,
+            self.id,
+            self.tab_group.clone(),
+            cx.entity_id(),
+            self.split_menu,
+            cx,
+        )
     }
 
     fn inner_padding(&self, _: &App) -> bool {
@@ -411,6 +428,7 @@ fn tab_menu(
     id: LocalTerminalId,
     group: Option<WeakEntity<TabGroup>>,
     panel: EntityId,
+    split_menu: TerminalSplitMenu,
     cx: &App,
 ) -> PopupMenu {
     let menu = menu
@@ -419,6 +437,9 @@ fn tab_menu(
             Icon::new(CatalogIcon::RefreshCw),
             Box::new(RestartLocalTerminal(id)),
         )
+        .separator();
+    let menu = split_menu
+        .build(menu, CenterTab::LocalTerminal(id))
         .separator();
     close_tab_items(menu, CenterTab::LocalTerminal(id), group, panel, cx)
 }

@@ -12,9 +12,9 @@ use crate::explorer::{FileIconStyle, FileSizeFormat, ShowHiddenFiles};
 use crate::i18n::t;
 use crate::sftp::{DEFAULT_PARALLEL_TRANSFERS, PARALLEL_TRANSFERS_RANGE};
 use crate::terminal::{
-    DEFAULT_FONT_SIZE, DEFAULT_LINE_HEIGHT, FONT_SIZE_RANGE, HighlightRule, LINE_HEIGHT_RANGE,
-    MiddleClick, RightClick, TerminalCursorStyle, TerminalInteraction, TerminalTheme,
-    default_rules,
+    DEFAULT_FONT_SIZE, DEFAULT_LINE_HEIGHT, FONT_SIZE_RANGE, HighlightColor, HighlightRule,
+    LINE_HEIGHT_RANGE, MiddleClick, RightClick, TerminalCursorStyle, TerminalInteraction,
+    TerminalTheme, default_rules,
 };
 use crate::update::Channel;
 
@@ -31,6 +31,9 @@ pub struct AppSettings {
     pub interface: InterfaceSettings,
     /// 外观 → 终端主题.
     pub terminal_theme: TerminalThemeSettings,
+    /// 外观 → 当前选中终端标签的背景色. None follows the app theme.
+    #[serde(alias = "terminal_tab_color")]
+    pub terminal_tab_active_color: Option<HighlightColor>,
     pub terminal_background: TerminalBackgroundSettings,
     pub host_details: bool,
     pub status_system_info: bool,
@@ -959,6 +962,19 @@ mod tests {
         assert_eq!(settings.file_size_format, FileSizeFormat::Short);
         // The SFTP lists show color icons, as in WinSCP, unless asked not to.
         assert_eq!(AppSettings::default().file_icon_style, FileIconStyle::Color);
+        assert!(AppSettings::default().terminal_tab_active_color.is_none());
+        let settings: AppSettings =
+            serde_json::from_str(r##"{"terminal_tab_active_color":"#1d4ed8"}"##).unwrap();
+        assert_eq!(
+            settings.terminal_tab_active_color.unwrap().to_hex(),
+            "#1d4ed8"
+        );
+        let legacy: AppSettings =
+            serde_json::from_str(r##"{"terminal_tab_color":"#17365d"}"##).unwrap();
+        assert_eq!(
+            legacy.terminal_tab_active_color.unwrap().to_hex(),
+            "#17365d"
+        );
         // Hidden files are left out unless the file says otherwise, for
         // each side on its own.
         assert_eq!(

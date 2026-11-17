@@ -1,4 +1,4 @@
-//! 命令广播: the checkboxes on terminal tabs, the split layout they bring
+//! Manual terminal splits and 命令广播: the checkboxes on terminal tabs, the split layout they bring
 //! with 撰写窗格 sending to them all, and keys shared on request, with an
 //! independent transport log for every participant. No server, PTY or
 //! keychain is touched.
@@ -7,7 +7,10 @@ use std::collections::HashMap;
 
 use crate::support::*;
 use gpui_kit::component::dock::ToggleZoom;
-use shellrs::app::{CloseSettings, PasteTerminal, SendComposeSnippet};
+use shellrs::app::{
+    CancelTerminalSplit, CloseSettings, CloseTerminal, OpenTerminalSplit, PasteTerminal,
+    SendComposeSnippet, SplitTerminal,
+};
 use shellrs::host::{SnippetDraft, SnippetId};
 
 struct PerHostTerminals(HashMap<String, Arc<FakeTerminalFactory>>);
@@ -135,6 +138,175 @@ async fn open_local(cx: &mut TestAppContext, fixture: &Fixture) {
             })
     })
     .await;
+}
+
+#[gpui_kit::test]
+async fn manual_split_dialog_arranges_terminals_without_broadcasting(cx: &mut TestAppContext) {
+    let fixture = open(cx).await;
+    let source = CenterTab::Terminal(RemoteTerminalId(INITIAL_WEB_TERMINAL));
+    in_frame(cx, fixture.handle, |window, cx| {
+        window.dispatch_action(Box::new(OpenTerminalSplit(source)), cx);
+    });
+    in_frame(cx, fixture.handle, |window, cx| {
+        assert!(window.find("terminal-split-target").visible());
+        assert_eq!(
+            window.find("terminal-split-layout").value(),
+            Some("左右并排")
+        );
+        window.click("commit", cx);
+    });
+    in_frame(cx, fixture.handle, |window, cx| {
+        let web = window.find(("terminal", INITIAL_WEB_TERMINAL));
+        let staging = window.find(("terminal", INITIAL_STAGING_TERMINAL));
+        assert!(web.visible() && staging.visible());
+        assert!(web.bounds().right() <= staging.bounds().left());
+        assert!(window.try_find("compose-pane").is_none());
+        assert!(
+            window
+                .try_find(("broadcast-remote", INITIAL_WEB_TERMINAL))
+                .is_none()
+        );
+        window.input("only-web", cx);
+    });
+    cx.wait_for(fixture.handle.into(), Duration::from_secs(2), |_, _| {
+        fixture.web.written_text().ends_with("only-web")
+    })
+    .await;
+    assert_eq!(fixture.staging.written_text(), "");
+    in_frame(cx, fixture.handle, |window, cx| {
+        window.dispatch_action(Box::new(CancelTerminalSplit(source)), cx);
+    });
+    cx.update(|cx| {
+        let workspace = fixture.workspace.read(cx);
+        let web = workspace
+            .remote_terminal(RemoteTerminalId(INITIAL_WEB_TERMINAL))
+            .unwrap()
+            .read(cx);
+        let staging = workspace
+            .remote_terminal(RemoteTerminalId(INITIAL_STAGING_TERMINAL))
+            .unwrap()
+            .read(cx);
+        assert_eq!(
+            web.tab_group().unwrap().entity_id(),
+            staging.tab_group().unwrap().entity_id()
+        );
+        assert!(web.lifecycle(cx).accepts_input() && staging.lifecycle(cx).accepts_input());
+    });
+    assert_eq!(fixture.web.starts.load(Ordering::SeqCst), 1);
+    assert_eq!(fixture.staging.starts.load(Ordering::SeqCst), 1);
+    in_frame(cx, fixture.handle, |window, _| {
+        assert!(window.find(("terminal", INITIAL_WEB_TERMINAL)).visible());
+    });
+}
+
+#[gpui_kit::test]
+async fn manual_split_dialog_supports_stacked_layout_with_keyboard(cx: &mut TestAppContext) {
+    let fixture = open(cx).await;
+    in_frame(cx, fixture.handle, |window, cx| {
+        window.dispatch_action(
+            Box::new(OpenTerminalSplit(CenterTab::Terminal(RemoteTerminalId(
+                INITIAL_WEB_TERMINAL,
+            )))),
+            cx,
+        );
+    });
+    in_frame(cx, fixture.handle, |window, cx| {
+        window.within("terminal-split-layout").click("input", cx);
+    });
+    for key in ["down", "enter"] {
+        in_frame(cx, fixture.handle, |window, cx| window.press(key, cx));
+    }
+    in_frame(cx, fixture.handle, |window, cx| {
+        assert_eq!(
+            window.find("terminal-split-layout").value(),
+            Some("上下排列")
+        );
+        window.click("commit", cx);
+    });
+    in_frame(cx, fixture.handle, |window, _| {
+        let web = window.find(("terminal", INITIAL_WEB_TERMINAL));
+        let staging = window.find(("terminal", INITIAL_STAGING_TERMINAL));
+        assert!(web.visible() && staging.visible());
+        assert!(web.bounds().bottom() <= staging.bounds().top());
+    });
+}
+
+#[gpui_kit::test]
+async fn merging_nested_manual_splits_keeps_local_and_remote_connections(cx: &mut TestAppContext) {
+    let fixture = open(cx).await;
+    open_local(cx, &fixture).await;
+    let web = CenterTab::Terminal(RemoteTerminalId(INITIAL_WEB_TERMINAL));
+    let staging = CenterTab::Terminal(RemoteTerminalId(INITIAL_STAGING_TERMINAL));
+    let local = CenterTab::LocalTerminal(LocalTerminalId(1));
+    for action in [
+        SplitTerminal::new(web, staging, false),
+        SplitTerminal::new(staging, local, true),
+    ] {
+        in_frame(cx, fixture.handle, |window, cx| {
+            window.dispatch_action(Box::new(action.clone()), cx)
+        });
+    }
+    in_frame(cx, fixture.handle, |window, cx| {
+        assert!(window.find(("terminal", INITIAL_WEB_TERMINAL)).visible());
+        assert!(
+            window
+                .find(("terminal", INITIAL_STAGING_TERMINAL))
+                .visible()
+        );
+        assert!(window.find(("local-terminal", 1_u64)).visible());
+        window.dispatch_action(Box::new(CancelTerminalSplit(local)), cx);
+    });
+    cx.update(|cx| {
+        let workspace = fixture.workspace.read(cx);
+        let local = workspace
+            .local_terminal(LocalTerminalId(1))
+            .unwrap()
+            .read(cx);
+        let group = local.tab_group().unwrap().entity_id();
+        for id in [INITIAL_WEB_TERMINAL, INITIAL_STAGING_TERMINAL] {
+            let panel = workspace
+                .remote_terminal(RemoteTerminalId(id))
+                .unwrap()
+                .read(cx);
+            assert_eq!(panel.tab_group().unwrap().entity_id(), group);
+            assert!(panel.lifecycle(cx).accepts_input());
+        }
+    });
+    assert_eq!(fixture.web.starts.load(Ordering::SeqCst), 1);
+    assert_eq!(fixture.staging.starts.load(Ordering::SeqCst), 1);
+    assert_eq!(fixture.local.starts.load(Ordering::SeqCst), 1);
+}
+
+#[gpui_kit::test]
+async fn split_dialog_rejects_a_target_closed_before_commit(cx: &mut TestAppContext) {
+    let fixture = open(cx).await;
+    in_frame(cx, fixture.handle, |window, cx| {
+        window.dispatch_action(
+            Box::new(OpenTerminalSplit(CenterTab::Terminal(RemoteTerminalId(
+                INITIAL_WEB_TERMINAL,
+            )))),
+            cx,
+        );
+    });
+    in_frame(cx, fixture.handle, |window, cx| {
+        window.dispatch_action(
+            Box::new(CloseTerminal(RemoteTerminalId(INITIAL_STAGING_TERMINAL))),
+            cx,
+        );
+    });
+    in_frame(cx, fixture.handle, |window, cx| window.click("commit", cx));
+    in_frame(cx, fixture.handle, |window, cx| {
+        assert!(window.has_active_dialog(cx));
+        assert_eq!(
+            window.find("form-error").label(),
+            Some("所选终端已关闭或已移至独立窗口，请重新选择。")
+        );
+        window.press("escape", cx);
+    });
+    in_frame(cx, fixture.handle, |window, _| {
+        assert!(window.try_find("form-error").is_none());
+        assert!(window.find(("terminal", INITIAL_WEB_TERMINAL)).visible());
+    });
 }
 
 #[gpui_kit::test]

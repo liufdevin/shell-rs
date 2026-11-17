@@ -3,6 +3,66 @@
 use crate::support::*;
 
 #[gpui_kit::test]
+async fn active_terminal_tab_color_is_customizable_and_can_follow_the_theme_again(
+    cx: &mut TestAppContext,
+) {
+    use shellrs::terminal::HighlightColor;
+
+    let (handle, workspace) = open_workspace(cx);
+    let initial = cx.update(|cx| {
+        (
+            cx.theme().tokens.tab_active,
+            cx.theme().tab_active_foreground,
+        )
+    });
+    in_frame(cx, handle, |window, cx| window.click("open-settings", cx));
+    in_frame(cx, handle, |window, _| {
+        assert!(window.find("terminal-tab-color-picker").visible());
+    });
+
+    let settings = cx.update(|cx| workspace.read(cx).settings().clone());
+    settings.update(cx, |store, cx| {
+        store.update(
+            |settings| {
+                settings.terminal_tab_active_color = Some(HighlightColor::from_rgb(0x17365d));
+            },
+            cx,
+        )
+    });
+    cx.run_until_parked();
+    in_frame(cx, handle, |window, _| {
+        assert!(window.find("terminal-tab-color-picker").visible());
+    });
+    cx.update(|cx| {
+        let actual = cx.theme().tokens.tab_active.to_rgb();
+        let expected = gpui_kit::rgb(0x17365d);
+        assert!((actual.r - expected.r).abs() < 0.006);
+        assert!((actual.g - expected.g).abs() < 0.006);
+        assert!((actual.b - expected.b).abs() < 0.006);
+        assert_eq!(
+            cx.theme().tab_active_foreground.to_rgb(),
+            gpui_kit::rgb(0xffffff)
+        );
+    });
+
+    in_frame(cx, handle, |window, cx| {
+        window.click("terminal-tab-color-reset", cx)
+    });
+    cx.run_until_parked();
+    cx.update(|cx| {
+        assert!(
+            settings
+                .read(cx)
+                .settings()
+                .terminal_tab_active_color
+                .is_none()
+        );
+        assert_eq!(cx.theme().tokens.tab_active, initial.0);
+        assert_eq!(cx.theme().tab_active_foreground, initial.1);
+    });
+}
+
+#[gpui_kit::test]
 async fn background_image_controls_follow_appearance_and_preserve_originals(
     cx: &mut TestAppContext,
 ) {

@@ -169,12 +169,34 @@ fn drop_on_terminal(cx: &mut TestAppContext, handle: WindowHandle<Root>, paths: 
     .unwrap();
 }
 
-#[gpui_kit::test]
-async fn files_dropped_on_a_remote_terminal_go_up_without_asking(cx: &mut TestAppContext) {
+async fn dropped_files_use_rz(cx: &mut TestAppContext, serial: bool) {
     let folder = tempfile::tempdir().unwrap();
     let file = folder.path().join("dropped.txt");
     std::fs::write(&file, b"dropped").unwrap();
-    let (handle, workspace, factory, signals) = open(cx);
+    let factory = Arc::new(FakeTerminalFactory::rz());
+    let mut store = HostStore::empty();
+    let draft = if serial {
+        HostDraft::serial("console", "COM3", Default::default(), None)
+    } else {
+        HostDraft::telnet("switch", "example.test", 23, None)
+    };
+    let host = store.insert_unnotified(draft);
+    let (handle, workspace) = open_workspace_with_protocols(
+        cx,
+        store,
+        factory.clone(),
+        Arc::new(FixedTelnetTerminalTransportProvider::new(factory.clone())),
+        Arc::new(FixedSerialTerminalTransportProvider::new(factory.clone())),
+    );
+    let (sender, signals) = mpsc::channel();
+    cx.update_window(handle.into(), |_, window, cx| {
+        workspace.update(cx, |workspace, cx| {
+            workspace.set_analytics(Analytics::new(sender, true), window, cx)
+        });
+        window.dispatch_action(Box::new(ConnectHost(host)), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
     running(cx, handle, &workspace).await;
 
     // A folder alone is refused: ZMODEM sends files.
@@ -193,4 +215,14 @@ async fn files_dropped_on_a_remote_terminal_go_up_without_asking(cx: &mut TestAp
     assert_eq!(factory.written_text(), "rz\r");
     assert!(!cx.did_prompt_for_paths());
     assert_eq!(counted(&signals), [Counter::ZmodemUpload]);
+}
+
+#[gpui_kit::test]
+async fn files_dropped_on_a_telnet_terminal_use_rz(cx: &mut TestAppContext) {
+    dropped_files_use_rz(cx, false).await;
+}
+
+#[gpui_kit::test]
+async fn files_dropped_on_a_serial_terminal_use_rz(cx: &mut TestAppContext) {
+    dropped_files_use_rz(cx, true).await;
 }

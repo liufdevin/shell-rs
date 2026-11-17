@@ -440,6 +440,8 @@ struct IndependentMonitor {
     failed: Arc<std::sync::atomic::AtomicBool>,
     discoveries: AtomicUsize,
     ssh: bool,
+    recoverable_adb: bool,
+    recoveries: AtomicUsize,
 }
 
 struct IndependentLink {
@@ -447,9 +449,19 @@ struct IndependentLink {
     samples: Arc<AtomicUsize>,
     failed: Arc<std::sync::atomic::AtomicBool>,
     ssh: bool,
+    recoverable_adb: bool,
 }
 
 impl shellrs::monitor::MonitorLink for IndependentLink {
+    fn adb_connection(&self) -> Option<shellrs::adb::AdbConnection> {
+        self.recoverable_adb.then(|| {
+            shellrs::adb::AdbConnection::new(
+                std::path::PathBuf::from("injected-adb-not-executed"),
+                "board-a".into(),
+            )
+            .unwrap()
+        })
+    }
     fn ssh_login(&self) -> Option<HostLogin> {
         self.ssh.then(|| {
             HostLogin::new(
@@ -476,6 +488,12 @@ impl shellrs::monitor::MonitorLink for IndependentLink {
         self.samples.fetch_add(1, Ordering::SeqCst);
         if self.failed.load(Ordering::Acquire) {
             Err("ADB disconnected".into())
+        } else if self.recoverable_adb && command.contains("echo @@units") {
+            Ok("@@version\nsystemd 249\n@@state\nrunning\n@@units\n".into())
+        } else if self.recoverable_adb && command.contains("echo @@ss") {
+            Ok("@@uid\n0\n@@users\n0 root\n@@ss\n@@counts\n".into())
+        } else if self.recoverable_adb && command.contains("echo @@processes") {
+            Ok("@@uptime\n10\n@@memory\n1024\n@@clock\n100\n@@page\n4096\n@@processes\n".into())
         } else {
             Ok(format!(
                 "{FIRST}\n@@mtop\nunit: MB\ngpu\n12.5\n@@mtop-end\n"
@@ -500,7 +518,30 @@ impl shellrs::monitor::MonitorConnector for IndependentMonitor {
             samples: self.samples.clone(),
             failed: self.failed.clone(),
             ssh: self.ssh,
+            recoverable_adb: self.recoverable_adb,
         })))
+    }
+
+    fn reconnect_adb(
+        &self,
+        device: &shellrs::adb::AdbConnection,
+        cancel: &std::sync::atomic::AtomicBool,
+    ) -> Result<Box<dyn shellrs::monitor::MonitorLink>, String> {
+        if !self.recoverable_adb {
+            return Err("ADB offline".into());
+        }
+        assert_eq!(device.serial(), "board-a");
+        self.recoveries.fetch_add(1, Ordering::SeqCst);
+        if self.failed.load(Ordering::Acquire) || cancel.load(Ordering::Acquire) {
+            return Err("ADB offline".into());
+        }
+        Ok(Box::new(IndependentLink {
+            commands: self.commands.clone(),
+            samples: self.samples.clone(),
+            failed: self.failed.clone(),
+            ssh: false,
+            recoverable_adb: true,
+        }))
     }
 }
 
@@ -729,6 +770,55 @@ async fn serial_tools_share_the_selected_adb_route_and_offer_manual_redetection(
         assert!(workspace.file_sidebar(RemoteTerminalId(1)).is_none())
     });
     assert_eq!(connector.discoveries.load(Ordering::SeqCst), 2);
+}
+
+#[gpui_kit::test]
+async fn adb_tools_resume_after_reboot_without_refresh_or_channel_redetection(
+    cx: &mut TestAppContext,
+) {
+    let identity = "@@boot_id\n00000000-0000-4000-8000-000000000001\n@@user\nroot\n";
+    let line = Arc::new(FakeTerminalFactory::answering(&[identity]));
+    let connector = Arc::new(IndependentMonitor {
+        recoverable_adb: true,
+        ..Default::default()
+    });
+    let (handle, _workspace) = serial_monitor(cx, line.clone(), Some(connector.clone())).await;
+    wait_for_label(cx, handle, "monitor-host", "web-01-vm").await;
+    for (tool, message, content) in [
+        ("tool-monitor", "monitor-message", "monitor-host"),
+        ("tool-services", "services-message", "services-summary"),
+        ("tool-processes", "processes-message", "processes-summary"),
+        ("tool-connections", "netstat-message", "netstat-summary"),
+    ] {
+        let before = connector.recoveries.load(Ordering::SeqCst);
+        connector.failed.store(true, Ordering::Release);
+        in_frame(cx, handle, |window, cx| window.click(tool, cx));
+        cx.wait_for(handle.into(), Duration::from_secs(8), |window, cx| {
+            window.render_frame(cx);
+            window.try_find(message).is_some_and(|element| {
+                element
+                    .label()
+                    .is_some_and(|label| label.contains("读取失败"))
+            })
+        })
+        .await;
+        // No Refresh click, tool switch or serial reconnect after it returns.
+        connector.failed.store(false, Ordering::Release);
+        // The service worker throttles against wall time, independently of
+        // GPUI's accelerated test clock.
+        std::thread::sleep(Duration::from_secs(2));
+        cx.wait_for(handle.into(), Duration::from_secs(8), |window, cx| {
+            window.render_frame(cx);
+            connector.recoveries.load(Ordering::SeqCst) > before
+                && window.try_find(message).is_none()
+                && window
+                    .try_find(content)
+                    .is_some_and(|element| element.visible())
+        })
+        .await;
+    }
+    assert_eq!(connector.discoveries.load(Ordering::SeqCst), 1);
+    assert_eq!(line.exec_count(), 1);
 }
 
 #[gpui_kit::test]

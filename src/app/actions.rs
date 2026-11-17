@@ -433,6 +433,10 @@ id_actions! {
     EditSnippet(SnippetId);
     InsertSnippet(String);
     DetachTab(CenterTab);
+    /// Choose another open terminal and how to split it beside this tab.
+    OpenTerminalSplit(CenterTab);
+    /// Gather the center's split groups into this terminal's tab bar.
+    CancelTerminalSplit(CenterTab);
     ReturnDetachedTab(CenterTab);
     CloseDetachedTab(CenterTab);
     ToggleTerminalFindOption(TerminalFindOption);
@@ -766,6 +770,35 @@ impl CloseScope {
 pub struct CloseTabs {
     pub tab: CenterTab,
     pub scope: CloseScope,
+}
+
+/// Arrange two existing terminals without changing their connections or input.
+#[derive(Action, Clone, PartialEq, Eq)]
+#[action(namespace = shellrs, no_json)]
+pub struct SplitTerminal {
+    source: CenterTab,
+    target: CenterTab,
+    stacked: bool,
+}
+
+impl SplitTerminal {
+    pub fn new(source: CenterTab, target: CenterTab, stacked: bool) -> Self {
+        Self {
+            source,
+            target,
+            stacked,
+        }
+    }
+
+    pub fn source(&self) -> CenterTab {
+        self.source
+    }
+    pub fn target(&self) -> CenterTab {
+        self.target
+    }
+    pub fn is_stacked(&self) -> bool {
+        self.stacked
+    }
 }
 
 /// Commands shared by explorer controls, drops, dialogs and keyboard bindings.

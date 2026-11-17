@@ -43,6 +43,7 @@ use super::highlight_rules::HighlightRulesEditor;
 use super::local_shell_editor::{LocalShellEditor, local_shell_field};
 use super::shortcuts_editor::{ShortcutsEditor, shortcut_groups};
 use super::sidebar_tools::sidebar_tools_group;
+use super::terminal_tab_appearance::TerminalTabAppearanceEditor;
 use super::terminal_themes::{app_follows_item, terminal_theme_item};
 use super::{
     AppSettings, Choice, DEFAULT_INTERFACE_FONT_FAMILY, INTERFACE_FONT_SIZE_RANGE,
@@ -75,6 +76,7 @@ pub struct SettingsPanel {
     /// the page's renders.
     highlight_rules: Entity<HighlightRulesEditor>,
     background_images: Entity<BackgroundImagesEditor>,
+    terminal_tab_appearance: Entity<TerminalTabAppearanceEditor>,
     /// 键盘快捷键, which knows which shortcut is taking new keys.
     shortcuts: Entity<ShortcutsEditor>,
     /// 终端 › 本地终端's field, with the shells installed here.
@@ -105,6 +107,8 @@ impl SettingsPanel {
     ) -> Self {
         let highlight_rules = cx.new(|cx| HighlightRulesEditor::new(store.clone(), window, cx));
         let background_images = cx.new(|cx| BackgroundImagesEditor::new(store.clone(), window, cx));
+        let terminal_tab_appearance =
+            cx.new(|cx| TerminalTabAppearanceEditor::new(store.clone(), window, cx));
         let shortcuts = cx.new(|cx| ShortcutsEditor::new(store.clone(), window, cx));
         let local_shell = cx.new(|cx| LocalShellEditor::new(store.clone(), cmder, window, cx));
         let flashing_driver_check = cx.new(|_| crate::flashing::DriverCheck::default());
@@ -147,6 +151,7 @@ impl SettingsPanel {
             lan_subscription: None,
             highlight_rules,
             background_images,
+            terminal_tab_appearance,
             shortcuts,
             local_shell,
             font_families: &[],
@@ -443,6 +448,35 @@ fn appearance_groups(panel: &SettingsPanel, _: &App) -> Vec<SettingGroup> {
                 .description(t!("settings.appearance.status_system_info_description"))
                 .keywords(keywords(t!(
                     "settings.appearance.status_system_info_keywords"
+                ))),
+                SettingItem::new(
+                    t!("settings.appearance.terminal_tab_color"),
+                    SettingField::render({
+                        let editor = panel.terminal_tab_appearance.clone();
+                        move |_, _, _| editor.clone()
+                    })
+                    .on_reset(
+                        {
+                            let store = panel.store.clone();
+                            move |cx| {
+                                store
+                                    .read(cx)
+                                    .settings()
+                                    .terminal_tab_active_color
+                                    .is_some()
+                            }
+                        },
+                        {
+                            let editor = panel.terminal_tab_appearance.clone();
+                            move |window, cx| {
+                                editor.update(cx, |editor, cx| editor.reset(window, cx))
+                            }
+                        },
+                    ),
+                )
+                .description(t!("settings.appearance.terminal_tab_color_description"))
+                .keywords(keywords(t!(
+                    "settings.appearance.terminal_tab_color_keywords"
                 ))),
             ]),
         SettingGroup::new()

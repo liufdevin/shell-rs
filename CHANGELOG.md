@@ -6,6 +6,8 @@ One section per version, titled `## [version]`, optionally followed by a date. E
 
 ## [0.1.22]
 
+- Drop files and folders on SSH terminals to upload with SFTP and open Files in the right sidebar. Use the directory reported at drop time, or confirm the destination when no trusted directory is known. Serial and Telnet drops continue to use `rz`.
+
 - Rename Allwinner flashing to “AW firmware flashing” throughout the title bar, tab, settings and confirmation text, distinguishing it from future flashing backends.
 
 - Add a read-only Allwinner FEL driver check in Application settings, showing only whether an Allwinner USBDrv package was detected, with a separate failure message and no INF filenames or extra result details. ADB drivers and bundled INF files are not mistaken for installed flashing drivers.

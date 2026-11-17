@@ -46,7 +46,8 @@ Hosts, groups, credentials and forwarding rules live in a local SQLite database.
 - Tabbed remote and local terminals (built on `alacritty_terminal`); full-screen programs like vim and htop work as expected.
 - Each tab shows the SSH round-trip latency live.
 - Find (smart case) and local clear; configurable font, size and line height.
-- ZMODEM: `rz` and `sz` upload and download files right in the terminal, over SSH, Telnet or a serial line; drop files on a terminal to upload them.
+- ZMODEM: `rz` and `sz` upload and download files right in the terminal, over SSH, Telnet or a serial line.
+- Drop files or folders on an SSH terminal to upload with SFTP and open Files in the right sidebar. Serial and Telnet terminals use `rz` for dropped files.
 - Drag tabs into side-by-side or stacked splits to watch a terminal and SFTP together.
 
 **Right sidebar tools**

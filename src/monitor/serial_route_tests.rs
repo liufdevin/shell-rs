@@ -163,3 +163,149 @@ fn an_explicit_adb_from_files_skips_all_discovery_and_ssh_choices_are_honored() 
     );
     assert_eq!(*provider.channels.lock().unwrap(), [MonitorChannel::Ssh]);
 }
+
+#[derive(Default)]
+struct RecoveringProvider {
+    inner: Provider,
+    recoveries: AtomicUsize,
+    selected_serials: Mutex<Vec<String>>,
+}
+
+struct RecoveringLink(Link);
+
+impl MonitorLink for RecoveringLink {
+    fn label(&self) -> String {
+        self.0.label()
+    }
+    fn adb_connection(&self) -> Option<AdbConnection> {
+        Some(AdbConnection::monitor_test_connection(
+            "selected-board",
+            None,
+        ))
+    }
+    fn sample(&mut self, command: &str, cancel: &AtomicBool) -> ExecResult {
+        self.0.sample(command, cancel)
+    }
+}
+
+impl RecoveringProvider {
+    fn link(&self) -> Box<dyn MonitorLink> {
+        Box::new(RecoveringLink(Link {
+            disconnected: self.inner.disconnected.clone(),
+            requests: self.inner.requests.clone(),
+        }))
+    }
+}
+
+impl MonitorConnector for RecoveringProvider {
+    fn connect(
+        &self,
+        _: &str,
+        _: &MonitorSettings,
+        _: &[(String, HostLogin)],
+        _: &AtomicBool,
+    ) -> Result<Option<Box<dyn MonitorLink>>, String> {
+        self.inner.discoveries.fetch_add(1, Ordering::SeqCst);
+        Ok(Some(self.link()))
+    }
+    fn reconnect_adb(
+        &self,
+        device: &AdbConnection,
+        cancel: &AtomicBool,
+    ) -> Result<Box<dyn MonitorLink>, String> {
+        self.recoveries.fetch_add(1, Ordering::SeqCst);
+        self.selected_serials
+            .lock()
+            .unwrap()
+            .push(device.serial().into());
+        if self.inner.disconnected.load(Ordering::Acquire) || cancel.load(Ordering::Acquire) {
+            Err("offline".into())
+        } else {
+            Ok(self.link())
+        }
+    }
+}
+
+#[test]
+fn selected_adb_recovers_after_repeated_offline_reads_without_general_discovery_or_replay() {
+    let provider = Arc::new(RecoveringProvider::default());
+    let service = SerialServices::with_retry_interval(
+        provider.clone(),
+        MonitorSettings::default(),
+        vec![],
+        Duration::ZERO,
+    );
+    assert!(result(service.execute(None, "initial".into())).is_ok());
+    provider.inner.disconnected.store(true, Ordering::Release);
+    assert!(result(service.execute(None, "control-once".into())).is_err());
+    for _ in 0..4 {
+        assert!(result(service.execute(None, "poll".into())).is_err());
+    }
+    assert!(service.status().adb.is_none());
+    provider.inner.disconnected.store(false, Ordering::Release);
+    for command in ["monitor", "services", "processes", "network"] {
+        assert_eq!(
+            result(service.execute(None, command.into())).unwrap(),
+            command
+        );
+    }
+    assert_eq!(provider.inner.discoveries.load(Ordering::SeqCst), 1);
+    assert_eq!(provider.recoveries.load(Ordering::SeqCst), 5);
+    assert!(
+        provider
+            .selected_serials
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|serial| serial == "selected-board")
+    );
+    assert_eq!(service.status().adb.unwrap().serial(), "selected-board");
+    assert_eq!(
+        provider
+            .inner
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|command| *command == "control-once")
+            .count(),
+        1
+    );
+    service.cancel();
+    assert!(result(service.execute(None, "after-close".into())).is_err());
+    assert_eq!(provider.recoveries.load(Ordering::SeqCst), 5);
+}
+
+#[test]
+fn adb_recovery_is_throttled_and_manual_ssh_selection_cancels_it() {
+    let provider = Arc::new(RecoveringProvider::default());
+    let service = SerialServices::with_retry_interval(
+        provider.clone(),
+        MonitorSettings::default(),
+        vec![],
+        Duration::from_secs(3600),
+    );
+    assert!(result(service.execute(None, "initial".into())).is_ok());
+    provider.inner.disconnected.store(true, Ordering::Release);
+    assert!(result(service.execute(None, "lost".into())).is_err());
+    for _ in 0..10 {
+        assert!(result(service.execute(None, "poll".into())).is_err());
+    }
+    assert_eq!(provider.recoveries.load(Ordering::SeqCst), 0);
+    service.adopt_ssh(
+        "manual-host".into(),
+        HostLogin::new(
+            "192.0.2.4",
+            22,
+            "root",
+            crate::host::LoginMethod::NoPassword,
+        ),
+    );
+    provider.inner.disconnected.store(false, Ordering::Release);
+    assert_eq!(
+        result(service.execute(None, "manual".into())).unwrap(),
+        "manual"
+    );
+    assert_eq!(provider.inner.discoveries.load(Ordering::SeqCst), 2);
+    assert_eq!(provider.recoveries.load(Ordering::SeqCst), 0);
+}
