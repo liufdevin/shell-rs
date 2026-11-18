@@ -975,6 +975,132 @@ async fn serial_assistant_opens_the_selected_port_and_custom_baud(cx: &mut TestA
 }
 
 #[gpui_kit::test]
+async fn serial_assistant_restores_preferences_until_reset(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("settings.json");
+    let (settings, problem) = SettingsStore::load(path.clone());
+    assert!(problem.is_none());
+    let (handle, workspace) = open_workspace_with_settings_and_tester(
+        cx,
+        HostStore::empty(),
+        settings,
+        Arc::new(FakeConnectionTester::default()),
+    );
+    open_assistant(cx, handle, &workspace).await;
+    in_frame(cx, handle, |window, cx| {
+        window.within("serial-assistant-port").click("input", cx);
+        window.press("down", cx);
+        window.press("enter", cx);
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.within("serial-assistant-baud").click("input", cx);
+        for _ in 0..6 {
+            window.press("down", cx);
+        }
+        window.press("enter", cx);
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.click("serial-assistant-custom-baud", cx);
+        window.press("secondary-a", cx);
+        window.input("1234567", cx);
+        window
+            .within("serial-assistant-encoding")
+            .click("input", cx);
+        window.press("down", cx);
+        window.press("enter", cx);
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.click("serial-assistant-ending-crlf", cx);
+        window.click("serial-assistant-receive-hex", cx);
+        window.click("serial-assistant-send-hex", cx);
+        window.click("serial-assistant-follow", cx);
+        window.click("serial-assistant-timestamps", cx);
+        window.click("serial-tool-crc", cx);
+        window.click("serial-tool-message", cx);
+        window.input("A0 B1", cx);
+    });
+    let json: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!(json["serial_assistant"]["sender"]["message"], "A0 B1");
+    let (saved, problem) = SettingsStore::load(path.clone());
+    assert!(problem.is_none());
+    let saved = saved.settings().serial_assistant;
+    assert_ne!(saved, Default::default());
+    workspace.read_with(cx, |workspace, cx| {
+        assert_eq!(
+            workspace.settings().read(cx).settings().serial_assistant,
+            saved
+        );
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.click("close-serial-assistant", cx)
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.click("open-serial-assistant", cx)
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(5), |window, _| {
+        window
+            .try_find("serial-assistant-port")
+            .is_some_and(|port| port.value() == Some("COM7"))
+    })
+    .await;
+    in_frame(cx, handle, |window, cx| {
+        assert_eq!(
+            window.find("serial-assistant-custom-baud").value(),
+            Some("1234567")
+        );
+        assert_eq!(
+            window.find("serial-assistant-encoding").value(),
+            Some("GBK")
+        );
+        for id in [
+            "serial-assistant-ending-crlf",
+            "serial-assistant-receive-hex",
+            "serial-assistant-send-hex",
+            "serial-assistant-timestamps",
+            "serial-tool-crc",
+        ] {
+            assert_eq!(window.find(id).checked(), Some(true), "{id}");
+        }
+        assert_eq!(
+            window.find("serial-assistant-follow").checked(),
+            Some(false)
+        );
+        assert_eq!(
+            window.find("serial-assistant-connection-status").label(),
+            Some("未连接")
+        );
+        window.click("serial-assistant-reset", cx);
+    });
+    let (saved, problem) = SettingsStore::load(path);
+    assert!(problem.is_none());
+    assert_eq!(saved.settings().serial_assistant, Default::default());
+    in_frame(cx, handle, |window, cx| {
+        window.click("close-serial-assistant", cx)
+    });
+    open_assistant(cx, handle, &workspace).await;
+    in_frame(cx, handle, |window, _| {
+        assert_eq!(window.find("serial-assistant-baud").value(), Some("115200"));
+        assert_eq!(
+            window.find("serial-assistant-encoding").value(),
+            Some("UTF-8")
+        );
+        assert_eq!(
+            window.find("serial-assistant-ending-none").checked(),
+            Some(true)
+        );
+        assert_eq!(window.find("serial-assistant-follow").checked(), Some(true));
+        for id in [
+            "serial-assistant-receive-hex",
+            "serial-assistant-send-hex",
+            "serial-assistant-timestamps",
+            "serial-tool-crc",
+        ] {
+            assert_eq!(window.find(id).checked(), Some(false), "{id}");
+        }
+    });
+}
+
+#[gpui_kit::test]
 fn serial_assistant_entry_defaults_to_visible_and_follows_app_settings(cx: &mut TestAppContext) {
     init_app(cx);
     let (handle, workspace) = open_workspace(cx);

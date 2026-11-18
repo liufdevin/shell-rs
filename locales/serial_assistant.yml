@@ -36,6 +36,12 @@ serial.assistant.custom_baud:
 serial.assistant.encoding:
   zh-CN: 编码
   en: Encoding
+serial.assistant.reset:
+  zh-CN: 恢复默认
+  en: Restore defaults
+serial.assistant.reset_hint:
+  zh-CN: 恢复串口和收发设置，清空草稿，保留命令组和接收日志。
+  en: Restore port and send/receive settings and clear drafts. Keep command groups and received logs.
 serial.assistant.waiting:
   zh-CN: 打开串口后，接收内容将在此显示。
   en: Received data appears here after you open the port.

@@ -505,6 +505,32 @@ impl TerminalView {
         self.find.as_ref().is_some_and(|find| find.matching_lines)
     }
 
+    pub(crate) fn serial_log_filter(&self, cx: &App) -> Option<crate::serial::SerialLogFilter> {
+        let find = self.find.as_ref().filter(|find| find.matching_lines)?;
+        Some(crate::serial::SerialLogFilter {
+            query: find.input.read(cx).value().to_string(),
+            regex: find.options.regex,
+            case_sensitive: find.options.case_sensitive,
+        })
+    }
+
+    pub(crate) fn restore_serial_log_filter(
+        &mut self,
+        filter: crate::serial::SerialLogFilter,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_find(window, cx);
+        if let Some(find) = &mut self.find {
+            find.matching_lines = true;
+            find.options.regex = filter.regex;
+            find.options.case_sensitive = filter.case_sensitive;
+            find.input
+                .update(cx, |input, cx| input.set_value(filter.query, window, cx));
+            self.run_find(cx);
+        }
+    }
+
     pub(crate) fn log_export(&self, cx: &App) -> impl FnOnce() -> String + Send + 'static {
         let timestamps = self.timestamp_enabled(cx);
         let filtered = self
@@ -1497,6 +1523,9 @@ impl TerminalView {
             cx.background_executor().timer(FIND_DEBOUNCE).await;
             _ = this.update(cx, |this, cx| this.run_find(cx));
         }));
+        if find.matching_lines {
+            cx.notify();
+        }
     }
 
     fn run_find(&mut self, cx: &mut Context<Self>) {

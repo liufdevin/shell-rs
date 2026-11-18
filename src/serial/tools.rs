@@ -15,13 +15,16 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use super::SerialLineEnding;
+use super::preferences::SerialSenderPreferences;
+use crate::settings::SettingsStore;
 use crate::{app::CatalogIcon, i18n::t, terminal::TerminalView};
 
 #[path = "assistant.rs"]
 mod assistant;
 pub use assistant::SerialAssistantCommand;
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum SerialToolPage {
     #[default]
     Transfer,
@@ -82,7 +85,8 @@ pub struct SerialToolsPanel {
     )>,
     assistant_send_hex: bool,
     assistant_encoding: crate::host::TerminalEncoding,
-    _assistant_input: Option<Subscription>,
+    assistant_settings: Option<Entity<SettingsStore>>,
+    _assistant_inputs: Vec<Subscription>,
     body_scroll: ScrollHandle,
     preview_scroll: ScrollHandle,
     group_task: Option<Task<()>>,
@@ -125,7 +129,8 @@ impl SerialToolsPanel {
             assistant_storage: None,
             assistant_send_hex: false,
             assistant_encoding: crate::host::TerminalEncoding::default(),
-            _assistant_input: None,
+            assistant_settings: None,
+            _assistant_inputs: Vec::new(),
             body_scroll: ScrollHandle::new(),
             preview_scroll: ScrollHandle::new(),
             group_task: None,
@@ -158,6 +163,7 @@ impl SerialToolsPanel {
     pub(super) fn new_assistant(
         dispatch: FocusHandle,
         store: Entity<crate::host::HostStore>,
+        settings: Entity<SettingsStore>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -168,16 +174,79 @@ impl SerialToolsPanel {
                 .submit_on_enter(true)
                 .placeholder(t!("serial.assistant.message_placeholder"))
         });
-        tools._assistant_input = Some(cx.subscribe(
+        let sender = settings.read(cx).serial_assistant().sender.clone();
+        tools.apply_sender_preferences(&sender, window, cx);
+        tools.assistant_settings = Some(settings);
+        tools._assistant_inputs.push(cx.subscribe(
             &tools.message,
-            |_, _, event: &InputEvent, cx| {
+            |this, _, event: &InputEvent, cx| {
                 if matches!(event, InputEvent::Change) {
+                    this.save_sender_preferences(cx);
                     cx.notify();
                 }
             },
         ));
+        for input in [&tools.pattern, &tools.reply, &tools.interval, &tools.baud] {
+            tools
+                ._assistant_inputs
+                .push(cx.subscribe(input, |this, _, event: &InputEvent, cx| {
+                    if matches!(event, InputEvent::Change) {
+                        this.save_sender_preferences(cx);
+                    }
+                }));
+        }
         tools.set_assistant_port(store, None, window, cx);
         tools
+    }
+
+    pub(super) fn apply_sender_preferences(
+        &mut self,
+        sender: &SerialSenderPreferences,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.stop_sending(cx);
+        self.message.update(cx, |input, cx| {
+            input.set_value(sender.message.clone(), window, cx);
+        });
+        for (input, value) in [
+            (&self.pattern, &sender.pattern),
+            (&self.reply, &sender.reply),
+            (&self.baud, &sender.baud),
+            (&self.interval, &sender.interval),
+        ] {
+            input.update(cx, |input, cx| input.set_value(value.clone(), window, cx));
+        }
+        self.set_assistant_send_hex(sender.send_hex, cx);
+        self.hex = sender.reply_hex;
+        self.ending = sender.ending;
+        self.crc = sender.crc;
+        self.page = sender.page;
+        self.status = SharedString::default();
+        cx.notify();
+    }
+
+    fn save_sender_preferences(&self, cx: &mut Context<Self>) {
+        let Some(settings) = &self.assistant_settings else {
+            return;
+        };
+        let sender = SerialSenderPreferences {
+            message: self.message.read(cx).value().to_string(),
+            pattern: self.pattern.read(cx).value().to_string(),
+            reply: self.reply.read(cx).value().to_string(),
+            baud: self.baud.read(cx).value().to_string(),
+            interval: self.interval.read(cx).value().to_string(),
+            send_hex: self.assistant_send_hex,
+            reply_hex: self.hex,
+            ending: self.ending,
+            crc: self.crc,
+            page: self.page,
+        };
+        if settings.read(cx).serial_assistant().sender != sender {
+            settings.update(cx, |settings, cx| {
+                settings.update_serial_assistant(|saved| saved.sender = sender, cx);
+            });
+        }
     }
 
     pub(super) fn set_assistant_port(
@@ -218,8 +287,6 @@ impl SerialToolsPanel {
         }
         self.assistant_storage = Some((store, target, host));
         self.assistant = Some(assistant::AssistantEditor::new(window, cx));
-        self.message
-            .update(cx, |input, cx| input.set_value("", window, cx));
         self.status = SharedString::default();
         self.body_scroll.set_offset(Point::default());
         cx.notify();
@@ -239,6 +306,11 @@ impl SerialToolsPanel {
             });
         }
         cx.notify();
+    }
+
+    pub(super) fn change_assistant_send_hex(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        self.set_assistant_send_hex(enabled, cx);
+        self.save_sender_preferences(cx);
     }
 
     pub(super) fn set_assistant_encoding(&mut self, encoding: crate::host::TerminalEncoding) {
@@ -400,6 +472,7 @@ impl SerialToolsPanel {
                 }
                 _ => {}
             }
+            self.save_sender_preferences(cx);
             cx.notify();
             return;
         };
@@ -625,6 +698,7 @@ impl SerialToolsPanel {
         if let Err(error) = result {
             self.status = error;
         }
+        self.save_sender_preferences(cx);
         cx.notify();
     }
 

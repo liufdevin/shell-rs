@@ -102,6 +102,22 @@ impl SettingsStore {
         settings
     }
 
+    pub(crate) fn serial_assistant(&self) -> &crate::serial::SerialAssistantPreferences {
+        &self.settings.serial_assistant
+    }
+
+    pub(crate) fn update_serial_assistant(
+        &mut self,
+        change: impl FnOnce(&mut crate::serial::SerialAssistantPreferences),
+        cx: &mut Context<Self>,
+    ) {
+        let before = self.settings.serial_assistant.clone();
+        change(&mut self.settings.serial_assistant);
+        if self.settings.serial_assistant != before {
+            Self::report_write(self.write(), cx);
+        }
+    }
+
     pub fn backgrounds_dir(&self) -> Option<PathBuf> {
         self.path.as_deref().map(backgrounds_dir)
     }
@@ -112,7 +128,11 @@ impl SettingsStore {
             return;
         };
         cx.notify();
-        if let Err(error) = written {
+        Self::report_write(written, cx);
+    }
+
+    fn report_write(result: io::Result<()>, cx: &mut Context<Self>) {
+        if let Err(error) = result {
             tracing::error!(%error, "Cannot persist application settings");
             cx.emit(SettingsStoreEvent::PersistFailed(t!(
                 "settings.store.save_failed",
@@ -137,10 +157,14 @@ impl SettingsStore {
         if self.settings == before {
             return None;
         }
-        Some(match &self.path {
+        Some(self.write())
+    }
+
+    fn write(&self) -> io::Result<()> {
+        match &self.path {
             Some(path) => write(path, &self.settings),
             None => Ok(()),
-        })
+        }
     }
 }
 

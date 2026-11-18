@@ -41,6 +41,7 @@ pub struct AppSettings {
     /// 终端 → 终端交互.
     pub terminal_interaction: TerminalInteraction,
     pub serial_preferences: crate::terminal::SerialPreferences,
+    pub serial_assistant: crate::serial::SerialAssistantPreferences,
     /// 终端 → 侧栏功能: which tools the right sidebar offers.
     pub sidebar_tools: SidebarTools,
     pub device_logs: DeviceLogAppearance,

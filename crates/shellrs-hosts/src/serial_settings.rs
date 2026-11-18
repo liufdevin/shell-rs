@@ -49,7 +49,8 @@ impl SerialSettings {
 }
 
 /// Bits per character.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum DataBits {
     Five,
     Six,
@@ -84,7 +85,8 @@ impl DataBits {
 }
 
 /// The parity bit after each character.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum Parity {
     None,
     Odd,
@@ -121,7 +123,8 @@ impl Parity {
 }
 
 /// Stop bits after each character.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum StopBits {
     One,
     Two,

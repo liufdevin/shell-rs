@@ -503,7 +503,7 @@ impl SerialToolsPanel {
         });
         self.ending = runtime_ending(&command.ending);
         self.crc = command.crc;
-        self.set_assistant_send_hex(command.hex, cx);
+        self.change_assistant_send_hex(command.hex, cx);
         self.status = t!("serial.assistant.loaded_draft");
         true
     }

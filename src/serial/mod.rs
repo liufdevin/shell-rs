@@ -9,6 +9,7 @@ pub mod files;
 pub mod maintenance;
 mod message;
 mod ports;
+mod preferences;
 mod presence;
 mod tools;
 mod transport;
@@ -19,6 +20,8 @@ pub use assistant_panel::SerialAssistantTabCommand;
 pub(crate) use assistant_panel::{SerialAssistantPanel, SerialAssistantPanelEvent};
 pub(crate) use command_editor::{SerialCommandEditorEvent, SerialCommandEditorPanel};
 pub use diagnostics::SerialDiagnostics;
+pub use preferences::SerialAssistantPreferences;
+pub(crate) use preferences::SerialLogFilter;
 
 pub use message::SerialLineEnding;
 pub(crate) use message::prepare_message;

@@ -7,7 +7,7 @@ use gpui_kit::component::{
     checkbox::Checkbox,
     dock::{BasePanel, Panel, PanelEvent, TabGroup},
     h_flex,
-    input::{Input, InputState},
+    input::{Input, InputEvent, InputState},
     menu::PopupMenu,
     searchable_list::SearchableListItem,
     select::{Select, SelectEvent, SelectState},
@@ -24,15 +24,17 @@ use crate::host::{
     StopBits, TerminalEncoding,
 };
 use crate::i18n::t;
+use crate::settings::SettingsStore;
 use crate::shared::{ClosableTabTitle, close_tab_items};
 use crate::terminal::{SharedSerialTerminalTransportProvider, TerminalLifecycle, TerminalView};
 
-use super::{SerialPortSource, SerialToolCommand, SerialToolsPanel};
+use super::{SerialAssistantPreferences, SerialPortSource, SerialToolCommand, SerialToolsPanel};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SerialAssistantTabCommand {
     ToggleConnection,
     RefreshPorts,
+    ResetPreferences,
     ClearOutput,
     ReceiveHex(bool),
     SendHex(bool),
@@ -96,6 +98,7 @@ pub(crate) struct SerialAssistantPanel {
     focus: FocusHandle,
     group: Option<WeakEntity<TabGroup>>,
     store: Entity<HostStore>,
+    settings: Entity<SettingsStore>,
     tools: Entity<SerialToolsPanel>,
     ports: Arc<dyn SerialPortSource>,
     transport: SharedSerialTerminalTransportProvider,
@@ -121,19 +124,20 @@ impl SerialAssistantPanel {
     pub(crate) fn new(
         dispatch: FocusHandle,
         store: Entity<HostStore>,
+        settings: Entity<SettingsStore>,
         ports: Arc<dyn SerialPortSource>,
         transport: SharedSerialTerminalTransportProvider,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let defaults = SerialSettings::default();
+        let saved = settings.read(cx).serial_assistant().clone();
         let port = cx.new(|cx| SelectState::new(Vec::new(), None, window, cx).searchable(true));
         let baud = choices(
             COMMON_BAUD_RATES
                 .into_iter()
                 .map(Some)
                 .chain([Some(2_000_000), None]),
-            Some(defaults.baud),
+            saved.baud,
             |rate| {
                 rate.map_or_else(
                     || t!("serial.assistant.custom_baud"),
@@ -145,56 +149,69 @@ impl SerialAssistantPanel {
         );
         let custom_baud = cx.new(|cx| {
             InputState::new(window, cx)
-                .default_value(defaults.baud.to_string())
+                .default_value(saved.custom_baud)
                 .validate(|value, _| {
                     value.len() <= 10 && value.bytes().all(|byte| byte.is_ascii_digit())
                 })
         });
         let parity = choices(
             Parity::ALL,
-            defaults.parity,
+            saved.parity,
             |parity| parity.label(),
             window,
             cx,
         );
         let data_bits = choices(
             DataBits::ALL,
-            defaults.data_bits,
+            saved.data_bits,
             |bits| bits.value().to_string().into(),
             window,
             cx,
         );
         let stop_bits = choices(
             StopBits::ALL,
-            defaults.stop_bits,
+            saved.stop_bits,
             |bits| bits.value().to_string().into(),
             window,
             cx,
         );
         let encoding = choices(
             TerminalEncoding::ALL,
-            TerminalEncoding::default(),
+            saved.encoding,
             |encoding| encoding.label().into(),
             window,
             cx,
         );
-        let tools = cx
-            .new(|cx| SerialToolsPanel::new_assistant(dispatch.clone(), store.clone(), window, cx));
+        let tools = cx.new(|cx| {
+            SerialToolsPanel::new_assistant(
+                dispatch.clone(),
+                store.clone(),
+                settings.clone(),
+                window,
+                cx,
+            )
+        });
         let subscriptions = vec![
             cx.subscribe_in(
                 &port,
                 window,
                 |this, _, _: &SelectEvent<Vec<SharedString>>, window, cx| {
+                    let port = this.port.read(cx).selected_value().map(ToString::to_string);
+                    this.save_preferences(|saved| saved.port = port, cx);
                     this.port_changed(window, cx);
                 },
             ),
-            cx.subscribe(
-                &baud,
-                |this, _, _: &SelectEvent<Vec<Parameter<Option<u32>>>>, cx| {
-                    this.error = None;
-                    cx.notify();
-                },
-            ),
+            Self::save_selection(&baud, |saved, value| saved.baud = value, cx),
+            Self::save_selection(&parity, |saved, value| saved.parity = value, cx),
+            Self::save_selection(&data_bits, |saved, value| saved.data_bits = value, cx),
+            Self::save_selection(&stop_bits, |saved, value| saved.stop_bits = value, cx),
+            Self::save_selection(&encoding, |saved, value| saved.encoding = value, cx),
+            cx.subscribe(&custom_baud, |this, input, event: &InputEvent, cx| {
+                if matches!(event, InputEvent::Change) {
+                    let value = input.read(cx).value().to_string();
+                    this.save_preferences(|saved| saved.custom_baud = value, cx);
+                }
+            }),
             cx.observe(&tools, |_, _, cx| cx.notify()),
             cx.observe(&store, |this, _, cx| {
                 this.tools.update(cx, |_, cx| cx.notify())
@@ -205,6 +222,7 @@ impl SerialAssistantPanel {
             focus: cx.focus_handle(),
             group: None,
             store,
+            settings,
             tools,
             ports,
             transport,
@@ -218,8 +236,8 @@ impl SerialAssistantPanel {
             encoding,
             port_scan: None,
             error: None,
-            receive_hex: false,
-            follow_output: true,
+            receive_hex: saved.receive_hex,
+            follow_output: saved.follow_output,
             log_save: None,
             log_status: None,
             _subscriptions: subscriptions,
@@ -227,6 +245,80 @@ impl SerialAssistantPanel {
         };
         this.refresh_ports(window, cx);
         this
+    }
+
+    fn save_selection<Value: Copy + PartialEq + 'static>(
+        state: &Entity<Choices<Value>>,
+        change: fn(&mut SerialAssistantPreferences, Value),
+        cx: &mut Context<Self>,
+    ) -> Subscription {
+        cx.subscribe(
+            state,
+            move |this, _, event: &SelectEvent<Vec<Parameter<Value>>>, cx| {
+                if let SelectEvent::Confirm(Some(value)) = event {
+                    this.save_preferences(|saved| change(saved, *value), cx);
+                    this.error = None;
+                    cx.notify();
+                }
+            },
+        )
+    }
+
+    fn save_preferences(
+        &self,
+        change: impl FnOnce(&mut SerialAssistantPreferences),
+        cx: &mut Context<Self>,
+    ) {
+        self.settings.update(cx, |settings, cx| {
+            settings.update_serial_assistant(change, cx);
+        });
+    }
+
+    fn reset_preferences(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.connected_or_opening(cx) || self.port_scan.is_some() {
+            return;
+        }
+        let defaults = SerialAssistantPreferences::default();
+        self.baud.update(cx, |select, cx| {
+            select.set_selected_value(&defaults.baud, window, cx)
+        });
+        self.custom_baud.update(cx, |input, cx| {
+            input.set_value(defaults.custom_baud.clone(), window, cx)
+        });
+        self.parity.update(cx, |select, cx| {
+            select.set_selected_value(&defaults.parity, window, cx)
+        });
+        self.data_bits.update(cx, |select, cx| {
+            select.set_selected_value(&defaults.data_bits, window, cx)
+        });
+        self.stop_bits.update(cx, |select, cx| {
+            select.set_selected_value(&defaults.stop_bits, window, cx)
+        });
+        self.encoding.update(cx, |select, cx| {
+            select.set_selected_value(&defaults.encoding, window, cx)
+        });
+        self.receive_hex = defaults.receive_hex;
+        self.follow_output = defaults.follow_output;
+        self.error = None;
+        self.port
+            .update(cx, |select, cx| select.set_selected_index(None, window, cx));
+        self.tools.update(cx, |tools, cx| {
+            tools.apply_sender_preferences(&defaults.sender, window, cx)
+        });
+        if let Some(terminal) = &self.terminal {
+            terminal.update(cx, |terminal, cx| {
+                let mut modes = terminal.serial_modes(cx);
+                modes.receive_hex = defaults.receive_hex;
+                terminal.set_serial_modes(modes, cx);
+                terminal.set_output_follow(defaults.follow_output, cx);
+                terminal.dismiss_find(window, cx);
+            });
+        }
+        self.store.update(cx, |store, cx| {
+            store.set_timestamps_enabled(TIMESTAMP_TARGET.into(), None, false, cx);
+        });
+        self.save_preferences(|saved| *saved = defaults, cx);
+        self.refresh_ports(window, cx);
     }
 
     pub(crate) fn tab_group(&self) -> Option<WeakEntity<TabGroup>> {
@@ -284,12 +376,17 @@ impl SerialAssistantPanel {
                 this.port_scan = None;
                 match result {
                     Ok(ports) => {
-                        let previous = this.port.read(cx).selected_value().cloned();
                         let ports: Vec<SharedString> = ports.into_iter().map(Into::into).collect();
-                        let index = previous
-                            .as_ref()
-                            .and_then(|previous| ports.iter().position(|port| port == previous))
-                            .or_else(|| (!ports.is_empty()).then_some(0));
+                        let index = match this.settings.read(cx).serial_assistant().port.as_deref()
+                        {
+                            Some(previous) => {
+                                let key = super::presence::device_key(previous);
+                                ports
+                                    .iter()
+                                    .position(|port| super::presence::device_key(port) == key)
+                            }
+                            None => (!ports.is_empty()).then_some(0),
+                        };
                         this.port.update(cx, |select, cx| {
                             select.set_items(ports, window, cx);
                             select.set_selected_index(index.map(IndexPath::new), window, cx);
@@ -391,6 +488,7 @@ impl SerialAssistantPanel {
         self.log_status = None;
         let factory = self.transport.factory_for(&line);
         let encoding = self.selected_encoding(cx);
+        let filter = self.settings.read(cx).serial_assistant().log_filter.clone();
         let send_hex = self.tools.read(cx).assistant_send_hex();
         let modes = crate::terminal::SerialDataModes {
             receive_hex: self.receive_hex,
@@ -414,13 +512,24 @@ impl SerialAssistantPanel {
                 terminal.set_output_follow(self.follow_output, cx);
                 terminal
             });
-            self.terminal_observer = Some(cx.observe(&terminal, |_, _, cx| cx.notify()));
+            self.terminal_observer = Some(cx.observe(&terminal, |this, terminal, cx| {
+                let filter = terminal.read(cx).serial_log_filter(cx);
+                if this.settings.read(cx).serial_assistant().log_filter != filter {
+                    this.save_preferences(|saved| saved.log_filter = filter, cx);
+                }
+                cx.notify();
+            }));
             self.terminal = Some(terminal.clone());
             terminal
         };
         self.tools.update(cx, |tools, cx| {
             tools.set_target(Some(terminal.downgrade()), window, cx);
         });
+        if let Some(filter) = filter {
+            terminal.update(cx, |terminal, cx| {
+                terminal.restore_serial_log_filter(filter, window, cx)
+            });
+        }
         window.focus(&terminal.read(cx).focus_handle(), cx);
     }
 
@@ -433,6 +542,7 @@ impl SerialAssistantPanel {
         match command {
             SerialAssistantTabCommand::ToggleConnection => self.toggle_connection(window, cx),
             SerialAssistantTabCommand::RefreshPorts => self.refresh_ports(window, cx),
+            SerialAssistantTabCommand::ResetPreferences => self.reset_preferences(window, cx),
             SerialAssistantTabCommand::ClearOutput => {
                 if let Some(terminal) = &self.terminal {
                     terminal.update(cx, |terminal, cx| terminal.clear(cx));
@@ -440,6 +550,7 @@ impl SerialAssistantPanel {
             }
             SerialAssistantTabCommand::ReceiveHex(enabled) => {
                 self.receive_hex = *enabled;
+                self.save_preferences(|saved| saved.receive_hex = *enabled, cx);
                 if let Some(terminal) = &self.terminal {
                     terminal.update(cx, |terminal, cx| {
                         let mut modes = terminal.serial_modes(cx);
@@ -448,14 +559,15 @@ impl SerialAssistantPanel {
                     });
                 }
             }
-            SerialAssistantTabCommand::SendHex(enabled) => self
-                .tools
-                .update(cx, |tools, cx| tools.set_assistant_send_hex(*enabled, cx)),
+            SerialAssistantTabCommand::SendHex(enabled) => self.tools.update(cx, |tools, cx| {
+                tools.change_assistant_send_hex(*enabled, cx)
+            }),
             SerialAssistantTabCommand::Timestamps(enabled) => self.store.update(cx, |store, cx| {
                 store.set_timestamps_enabled(TIMESTAMP_TARGET.into(), None, *enabled, cx);
             }),
             SerialAssistantTabCommand::Follow(enabled) => {
                 self.follow_output = *enabled;
+                self.save_preferences(|saved| saved.follow_output = *enabled, cx);
                 if let Some(terminal) = &self.terminal {
                     terminal.update(cx, |terminal, cx| terminal.set_output_follow(*enabled, cx));
                 }
@@ -654,6 +766,17 @@ impl SerialAssistantPanel {
                 locked,
                 cx,
             ))
+            .child(
+                self.button(
+                    "serial-assistant-reset",
+                    t!("serial.assistant.reset"),
+                    SerialAssistantTabCommand::ResetPreferences,
+                )
+                .ghost()
+                .icon(CatalogIcon::RotateCcw)
+                .tooltip(t!("serial.assistant.reset_hint"))
+                .disabled(locked || self.port_scan.is_some()),
+            )
     }
 }
 
@@ -948,6 +1071,7 @@ impl BasePanel for SerialAssistantPanel {
         self.port_scan = None;
         self.log_save = None;
         self.tools.update(cx, |tools, cx| tools.stop_sending(cx));
+        self.terminal_observer = None;
         if let Some(terminal) = self.terminal.take() {
             terminal.update(cx, |terminal, cx| terminal.shutdown(cx));
         }

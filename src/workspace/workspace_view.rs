@@ -2460,6 +2460,7 @@ impl Workspace {
             SerialAssistantPanel::new(
                 self.focus_handle.clone(),
                 self.store.clone(),
+                self.settings.clone(),
                 ports,
                 self.host_terminals.serial.clone(),
                 window,
