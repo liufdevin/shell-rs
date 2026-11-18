@@ -14,6 +14,7 @@ use std::{
 use super::EraseMode;
 use super::firmware::{FirmwareCapabilities, read_capabilities};
 use super::model::{FirmwarePartition, parse_partitions};
+use super::source::{self, FileStamp, Observation};
 use crate::shared::process::CommandGroup;
 
 #[cfg(windows)]
@@ -24,20 +25,24 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const BURN_TIMEOUT_SECONDS: &str = "300";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum RunEvent {
+pub(super) enum RunEvent {
+    #[cfg(any(windows, test))]
     DevicesPresent {
         at: Instant,
         devices: std::collections::BTreeSet<String>,
     },
+    #[cfg(any(windows, test))]
     DeviceChanged {
         at: Instant,
         instance: String,
         present: bool,
     },
+    #[cfg(windows)]
     DetectionUnavailable {
         at: Instant,
         error: String,
     },
+    SourceChanged(Observation),
     Line {
         at: Instant,
         text: String,
@@ -59,13 +64,13 @@ pub(super) enum AdbReboot {
     Rebooted { serial: String, output: String },
 }
 
-struct ConsoleLease {
+pub(super) struct ConsoleLease {
     #[cfg(windows)]
     _handle: std::os::windows::io::OwnedHandle,
 }
 
 impl ConsoleLease {
-    fn acquire() -> Result<Self, String> {
+    pub(super) fn acquire() -> Result<Self, String> {
         #[cfg(windows)]
         {
             use std::os::windows::io::{FromRawHandle as _, OwnedHandle};
@@ -320,9 +325,10 @@ pub(super) fn is_tool_dir(dir: &Path) -> bool {
 /// Start PhoenixConsole in the “only FES/device changes” mode. The
 /// application owns the ADB-triggered reboot, so `--no-adb` keeps the tool
 /// from restarting an already connected Android device by itself.
-pub fn start_wait(
+pub(super) fn start_wait(
     tool_dir: &Path,
     firmware: &Path,
+    revision: FileStamp,
     mode: EraseMode,
     partitions: Option<Vec<u32>>,
 ) -> (Run, Receiver<RunEvent>) {
@@ -365,25 +371,25 @@ pub fn start_wait(
                 return;
             }
         };
-        let result = super::compatibility::prepare_console(&tool_dir).and_then(|program| {
+        let program = super::compatibility::prepare_console(&tool_dir).and_then(|program| {
             super::tool_conflict::check()?;
-            #[cfg(windows)]
-            let _monitor = match super::device_monitor::DeviceMonitor::start(sender.clone()) {
-                Ok(monitor) => Some(monitor),
-                Err(error) => {
-                    let _ = sender.send(RunEvent::DetectionUnavailable {
-                        at: Instant::now(),
-                        error,
-                    });
-                    None
-                }
-            };
-            super::console::run_console(
-                super::console::command(&program, &tool_dir, &arguments),
-                &stop,
-                sender.clone(),
-            )
+            Ok(program)
         });
+        let result = match program {
+            Ok(program) => {
+                if let Err(observation) = source::check_revision(&firmware, &revision) {
+                    drop(_lease);
+                    let _ = sender.send(RunEvent::SourceChanged(observation));
+                    return;
+                }
+                super::console::run_console(
+                    super::console::command(&program, &tool_dir, &arguments),
+                    &stop,
+                    sender.clone(),
+                )
+            }
+            Err(error) => Err(error),
+        };
         let outcome = match result {
             Ok((code, stopped)) => RunEvent::Exited {
                 at: Instant::now(),

@@ -251,6 +251,7 @@ mod tool_by_key {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct WindowSettings {
+    pub show_serial_assistant: bool,
     /// 记住窗口大小: its size, and whether it was maximized.
     pub remember_size: bool,
     /// 记住窗口位置: where it was, on which screen.
@@ -263,6 +264,7 @@ pub struct WindowSettings {
 impl Default for WindowSettings {
     fn default() -> Self {
         Self {
+            show_serial_assistant: true,
             remember_size: true,
             remember_position: true,
             close_to_tray: false,

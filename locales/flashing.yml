@@ -44,6 +44,12 @@ flashing.tool.invalid:
 flashing.firmware:
   zh-CN: 固件文件
   en: Firmware
+flashing.firmware_created:
+  zh-CN: "固件生成时间：%{time}"
+  en: "Firmware creation time: %{time}"
+flashing.firmware_created_hint:
+  zh-CN: 取自镜像文件的创建时间。复制文件可能改变此时间。
+  en: Based on the image file’s creation time, which may change when the file is copied.
 flashing.no_firmware:
   zh-CN: 尚未选择固件
   en: No firmware selected
@@ -131,6 +137,12 @@ flashing.phase.firmware_missing:
 flashing.phase.firmware_updating:
   zh-CN: 等待固件就绪
   en: Waiting for firmware
+flashing.phase.fel_waiting_for_firmware:
+  zh-CN: 已检测到开发板，新固件尚未就绪
+  en: Board detected, firmware not ready
+flashing.hint.fel_waiting_for_firmware:
+  zh-CN: 固件就绪后自动烧录。拔掉开发板可取消本次等待。
+  en: Flashing starts when the firmware is ready. Unplug the board to cancel.
 flashing.source.missing:
   zh-CN: 固件文件不存在，正在等待重新生成；保留原路径，文件恢复后会自动读取
   en: Firmware file is missing. Keeping the selected path and waiting to reload it automatically.
@@ -140,6 +152,15 @@ flashing.source.unavailable:
 flashing.source.updating:
   zh-CN: 固件文件正在生成或发生变化，稳定后会自动重新读取
   en: Firmware is being generated or changed. It will reload automatically once stable.
+flashing.source.packing:
+  zh-CN: 正在等待打包完成，期间不会启动烧录。
+  en: Waiting for packaging to finish. Flashing will not start during packaging.
+flashing.source.pack_after_burn:
+  zh-CN: 已收到打包请求，当前烧录结束后才会确认可以开工。
+  en: Packaging can start after the current flash finishes.
+flashing.source.pack_ack_failed:
+  zh-CN: "尚未确认可以开始打包，将自动重试：%{error}"
+  en: "Could not confirm that packaging can start. Retrying: %{error}"
 flashing.source.pending:
   zh-CN: 检测到固件变化，当前设备结束后自动重新读取；直接使用原文件，不复制固件
   en: Firmware changed. It will reload after the current devices finish; no firmware copy is created.

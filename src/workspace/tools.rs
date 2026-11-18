@@ -189,6 +189,12 @@ impl Workspace {
 
     /// What the sidebar goes with, as it shows it.
     fn sidebar_target(&self, cx: &App) -> Option<SidebarTarget> {
+        if matches!(
+            self.active_tab,
+            Some(CenterTab::SerialAssistant | CenterTab::SerialCommandEditor)
+        ) {
+            return None;
+        }
         match self.tool_target(cx)? {
             ToolTarget::Remote(_) => self.tool_terminal(cx).map(SidebarTarget::Remote),
             ToolTarget::Local(id) => self
@@ -233,7 +239,6 @@ impl Workspace {
                         (!tool.is_local() || *tool == ToolKind::Utilities)
                             && (!self.lan_serial_transports.contains_key(&terminal.host)
                                 || *tool == ToolKind::Utilities)
-                            && (*tool != ToolKind::Serial || terminal.serial)
                             && shown.shows(*tool)
                             && tool.works_on(os)
                             && (*tool != ToolKind::Logs || terminal.device_logs.enabled)
@@ -252,7 +257,6 @@ impl Workspace {
                                     tool,
                                     ToolKind::Utilities
                                         | ToolKind::Snippets
-                                        | ToolKind::Serial
                                         | ToolKind::Files
                                         | ToolKind::Services
                                         | ToolKind::Processes
@@ -1109,7 +1113,7 @@ impl Workspace {
             && matches!(self.active_tab, Some(CenterTab::Terminal(_)));
         self.tools.update(cx, |tools, cx| {
             tools.set_files(files, window, cx);
-            tools.set_target(target, open, status_system_info, window, cx);
+            tools.set_target(target, open, status_system_info, cx);
         });
         if self.dock_area.read(cx).is_dock_open(DockPlacement::Right) != open {
             // A focus inside the sidebar would go off screen with it.

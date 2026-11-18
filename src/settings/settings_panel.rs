@@ -1128,6 +1128,32 @@ fn application_groups(panel: &SettingsPanel, cx: &App) -> Vec<SettingGroup> {
         window_group
     };
     let mut groups = vec![window_group, app_lock_group(&panel.store, cx)];
+    let store = panel.store.clone();
+    groups.push(
+        SettingGroup::new()
+            .title(t!("serial.assistant.title"))
+            .items([SettingItem::new(
+                t!("serial.assistant.show_entry"),
+                SettingField::render(move |options, _, cx| {
+                    let enabled = store.read(cx).settings().window.show_serial_assistant;
+                    let writer = store.clone();
+                    Switch::new("show-serial-assistant")
+                        .with_size(options.size())
+                        .accessibility_label(t!("serial.assistant.show_entry"))
+                        .checked(enabled)
+                        .on_change(move |enabled, _, cx| {
+                            writer.update(cx, |store, cx| {
+                                store.update(
+                                    |settings| settings.window.show_serial_assistant = *enabled,
+                                    cx,
+                                )
+                            });
+                        })
+                }),
+            )
+            .description(t!("serial.assistant.show_entry_description"))
+            .keywords(keywords(t!("serial.assistant.title")))]),
+    );
     if cfg!(windows) {
         groups.push(
             SettingGroup::new()

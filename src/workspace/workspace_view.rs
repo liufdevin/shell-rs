@@ -46,6 +46,10 @@ use crate::app::{
     ClearTerminalLog, DeleteTerminalLog, SetSerialBackspace, ToggleSerialReceiveHex,
     ToggleSerialSendHex,
 };
+use crate::app::{
+    CloseSerialAssistant, CloseSerialCommandEditor, LoadSerialCommand, OpenSerialAssistant,
+    OpenSerialCommandEditor, SerialAssistantAction, ShowSerialAssistant,
+};
 use crate::cli::{CliIntegration, CliServer, IntegrationPaths, SshCliBackend};
 use crate::connection::{
     ConnectionPrompt, ConnectionPromptField, ConnectionPromptKind, ConnectionPromptReply,
@@ -68,6 +72,10 @@ use crate::host::{
     open_quick_connect_dialog, open_temporary_connection_dialog,
 };
 use crate::i18n::t;
+use crate::serial::{
+    SerialAssistantPanel, SerialAssistantPanelEvent, SerialCommandEditorEvent,
+    SerialCommandEditorPanel,
+};
 use crate::settings::{
     Appearance, DEFAULT_INTERFACE_FONT_SIZE, SettingsPanel, SettingsPanelEvent, SettingsStore,
     SettingsStoreEvent, WindowSettings,
@@ -213,6 +221,8 @@ pub struct Workspace {
     settings_tab: Option<Entity<SettingsPanel>>,
     /// The firmware flashing tab, while it is open. There is only ever one.
     flashing_tab: Option<Entity<FlashingPanel>>,
+    serial_assistant_tab: Option<Entity<SerialAssistantPanel>>,
+    serial_command_editor: Option<Entity<SerialCommandEditorPanel>>,
     /// What the settings tab edits; the workspace applies it to the window.
     settings: Entity<SettingsStore>,
     /// Where the `shelllf-cli` command and the agent skills go, and whether
@@ -921,6 +931,8 @@ impl Workspace {
             front_saved_terminal,
             settings_tab: None,
             flashing_tab: None,
+            serial_assistant_tab: None,
+            serial_command_editor: None,
             settings,
             cli_integration: cx.new(|_| CliIntegration::new(None)),
             cli_server: None,
@@ -1362,6 +1374,14 @@ impl Workspace {
                 .map(|panel| panel.read(cx).focus_handle(cx)),
             CenterTab::Flashing => self
                 .flashing_tab
+                .as_ref()
+                .map(|panel| panel.read(cx).focus_handle(cx)),
+            CenterTab::SerialAssistant => self
+                .serial_assistant_tab
+                .as_ref()
+                .map(|panel| panel.read(cx).focus_handle(cx)),
+            CenterTab::SerialCommandEditor => self
+                .serial_command_editor
                 .as_ref()
                 .map(|panel| panel.read(cx).focus_handle(cx)),
             CenterTab::Editor(id) => self
@@ -2414,6 +2434,190 @@ impl Workspace {
         panel.update(cx, |panel, cx| panel.command(command, cx));
     }
 
+    fn on_open_serial_assistant(
+        &mut self,
+        _: &OpenSerialAssistant,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self
+            .settings
+            .read(cx)
+            .settings()
+            .window
+            .show_serial_assistant
+            || window.has_active_dialog(cx)
+        {
+            return;
+        }
+        if let Some(panel) = self.serial_assistant_tab.clone() {
+            self.activate_tab(panel.read(cx).tab_group(), panel.entity_id(), window, cx);
+            panel.update(cx, |panel, cx| panel.show(window, cx));
+            return;
+        }
+        let ports = self.serial_presence.read(cx).source();
+        let panel = cx.new(|cx| {
+            SerialAssistantPanel::new(
+                self.focus_handle.clone(),
+                self.store.clone(),
+                ports,
+                self.host_terminals.serial.clone(),
+                window,
+                cx,
+            )
+        });
+        self._subscriptions.push(
+            cx.subscribe_in(&panel, window, |this, _, event, window, cx| {
+                match event {
+                    SerialAssistantPanelEvent::Activated => {
+                        this.set_active_tab(Some(CenterTab::SerialAssistant), window, cx)
+                    }
+                    SerialAssistantPanelEvent::Closed => {
+                        this.serial_assistant_tab = None;
+                        this.on_close_serial_command_editor(&CloseSerialCommandEditor, window, cx);
+                        if this.active_tab == Some(CenterTab::SerialAssistant) {
+                            this.set_active_tab(None, window, cx);
+                        }
+                    }
+                }
+                cx.notify();
+            }),
+        );
+        let focus = panel.read(cx).focus_handle(cx);
+        self._subscriptions
+            .push(follow_focus(CenterTab::SerialAssistant, &focus, window, cx));
+        self.serial_assistant_tab = Some(panel.clone());
+        self.dock_area.update(cx, |area, cx| {
+            area.add_panel_view(panel_handle(panel), DockPlacement::Center, None, window, cx);
+        });
+    }
+
+    fn on_serial_assistant_action(
+        &mut self,
+        action: &SerialAssistantAction,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(panel) = self.serial_assistant_tab.clone() {
+            if self.active_tab == Some(CenterTab::SerialCommandEditor)
+                && matches!(
+                    action.0,
+                    crate::serial::SerialAssistantTabCommand::Tool(
+                        crate::serial::SerialToolCommand::Page(_)
+                    )
+                )
+                && let Some(editor) = &self.serial_command_editor
+            {
+                window.focus(&editor.read(cx).focus_handle(cx), cx);
+            }
+            panel.update(cx, |panel, cx| panel.command(&action.0, window, cx));
+        }
+    }
+
+    fn on_open_serial_command_editor(
+        &mut self,
+        _: &OpenSerialCommandEditor,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if window.has_active_dialog(cx) {
+            return;
+        }
+        let Some(assistant) = self.serial_assistant_tab.as_ref() else {
+            return;
+        };
+        if let Some(editor) = self.serial_command_editor.clone() {
+            self.activate_tab(editor.read(cx).tab_group(), editor.entity_id(), window, cx);
+            editor.update(cx, |editor, cx| editor.show(window, cx));
+            return;
+        }
+        let tools = assistant.read(cx).tools().clone();
+        let editor = cx.new(|cx| SerialCommandEditorPanel::new(tools, cx));
+        self._subscriptions.push(
+            cx.subscribe_in(&editor, window, |this, _, event, window, cx| {
+                match event {
+                    SerialCommandEditorEvent::Activated => {
+                        this.set_active_tab(Some(CenterTab::SerialCommandEditor), window, cx)
+                    }
+                    SerialCommandEditorEvent::Closed => {
+                        this.serial_command_editor = None;
+                        if this.active_tab == Some(CenterTab::SerialCommandEditor) {
+                            this.set_active_tab(None, window, cx);
+                        }
+                    }
+                }
+                cx.notify();
+            }),
+        );
+        let focus = editor.read(cx).focus_handle(cx);
+        self._subscriptions.push(follow_focus(
+            CenterTab::SerialCommandEditor,
+            &focus,
+            window,
+            cx,
+        ));
+        self.serial_command_editor = Some(editor.clone());
+        self.dock_area.update(cx, |area, cx| {
+            area.add_panel_view(
+                panel_handle(editor),
+                DockPlacement::Center,
+                None,
+                window,
+                cx,
+            );
+        });
+    }
+
+    fn on_show_serial_assistant(
+        &mut self,
+        _: &ShowSerialAssistant,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(panel) = self.serial_assistant_tab.clone() {
+            self.activate_tab(panel.read(cx).tab_group(), panel.entity_id(), window, cx);
+            panel.update(cx, |panel, cx| panel.show(window, cx));
+        }
+    }
+
+    fn on_load_serial_command(
+        &mut self,
+        action: &LoadSerialCommand,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(panel) = self.serial_assistant_tab.clone() else {
+            return;
+        };
+        if panel.update(cx, |panel, cx| panel.load_command(action.0, window, cx)) {
+            self.on_show_serial_assistant(&ShowSerialAssistant, window, cx);
+            let focus = panel.read(cx).sender_focus(cx);
+            window.focus(&focus, cx);
+        }
+    }
+
+    fn on_close_serial_command_editor(
+        &mut self,
+        _: &CloseSerialCommandEditor,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(panel) = self.serial_command_editor.clone() {
+            self.remove_tab_panel(panel, window, cx);
+        }
+    }
+
+    fn on_close_serial_assistant(
+        &mut self,
+        _: &CloseSerialAssistant,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(panel) = self.serial_assistant_tab.clone() {
+            self.remove_tab_panel(panel, window, cx);
+        }
+    }
+
     fn on_check_flashing_driver(
         &mut self,
         _: &crate::app::CheckFlashingDriver,
@@ -2888,6 +3092,12 @@ impl Workspace {
             }
             CenterTab::Settings => self.on_close_settings(&CloseSettings, window, cx),
             CenterTab::Flashing => self.on_close_flashing(&CloseFlashing, window, cx),
+            CenterTab::SerialAssistant => {
+                self.on_close_serial_assistant(&CloseSerialAssistant, window, cx)
+            }
+            CenterTab::SerialCommandEditor => {
+                self.on_close_serial_command_editor(&CloseSerialCommandEditor, window, cx)
+            }
             CenterTab::Editor(id) => self.on_close_editor(&CloseEditor(id), window, cx),
         }
     }
@@ -2917,6 +3127,14 @@ impl Workspace {
             }
             CenterTab::Flashing => {
                 let panel = self.flashing_tab.as_ref()?;
+                (panel.read(cx).tab_group(), panel.entity_id())
+            }
+            CenterTab::SerialAssistant => {
+                let panel = self.serial_assistant_tab.as_ref()?;
+                (panel.read(cx).tab_group(), panel.entity_id())
+            }
+            CenterTab::SerialCommandEditor => {
+                let panel = self.serial_command_editor.as_ref()?;
                 (panel.read(cx).tab_group(), panel.entity_id())
             }
             CenterTab::Editor(id) => {
@@ -2957,6 +3175,18 @@ impl Workspace {
                     .as_ref()
                     .filter(|panel| is(panel.entity_id()))
                     .map(|_| CenterTab::Flashing)
+            })
+            .or_else(|| {
+                self.serial_assistant_tab
+                    .as_ref()
+                    .filter(|panel| is(panel.entity_id()))
+                    .map(|_| CenterTab::SerialAssistant)
+            })
+            .or_else(|| {
+                self.serial_command_editor
+                    .as_ref()
+                    .filter(|panel| is(panel.entity_id()))
+                    .map(|_| CenterTab::SerialCommandEditor)
             })
             .or_else(|| {
                 self.editors
@@ -3127,9 +3357,16 @@ impl Workspace {
             CenterTab::LocalTerminal(id) => {
                 Some(self.local_terminals.get(&id)?.read(cx).terminal().clone())
             }
+            CenterTab::SerialAssistant => self
+                .serial_assistant_tab
+                .as_ref()?
+                .read(cx)
+                .terminal()
+                .cloned(),
             CenterTab::Explorer(_)
             | CenterTab::Settings
             | CenterTab::Flashing
+            | CenterTab::SerialCommandEditor
             | CenterTab::Editor(_) => None,
         }
     }
@@ -4433,10 +4670,6 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let serial_tools = detached.as_ref().and_then(|content| content.serial.clone());
-        let serial_commands = serial_tools.clone();
-        let serial_toggle = serial_tools.clone();
-        let serial_sidebar_toggle = serial_tools;
         let status = match self.active_tab {
             // A terminal tells its own connection, to the host as it took it.
             Some(CenterTab::Terminal(id)) => match self.terminals.get(&id) {
@@ -4518,17 +4751,6 @@ impl Workspace {
             .on_action(cx.listener(Self::on_new_host))
             .on_action(cx.listener(Self::on_lan_action))
             .on_action(cx.listener(Self::on_utility_action))
-            .on_action(cx.listener(
-                move |this, action: &crate::app::SerialToolAction, window, cx| {
-                    if let Some(tools) = &serial_commands {
-                        tools
-                            .panel
-                            .update(cx, |panel, cx| panel.command(&action.0, window, cx));
-                    } else {
-                        this.on_serial_tool_action(action, window, cx);
-                    }
-                },
-            ))
             .on_action(cx.listener(Self::on_new_temporary_connection))
             .on_action(cx.listener(Self::on_quick_connect))
             .on_action(cx.listener(Self::on_new_local_terminal))
@@ -4598,6 +4820,13 @@ impl Workspace {
             .on_action(cx.listener(Self::on_flashing_action))
             .on_action(cx.listener(Self::on_check_flashing_driver))
             .on_action(cx.listener(Self::on_close_flashing))
+            .on_action(cx.listener(Self::on_open_serial_assistant))
+            .on_action(cx.listener(Self::on_open_serial_command_editor))
+            .on_action(cx.listener(Self::on_show_serial_assistant))
+            .on_action(cx.listener(Self::on_load_serial_command))
+            .on_action(cx.listener(Self::on_close_serial_command_editor))
+            .on_action(cx.listener(Self::on_serial_assistant_action))
+            .on_action(cx.listener(Self::on_close_serial_assistant))
             .on_action(cx.listener(Self::on_install_cli_command))
             .on_action(cx.listener(Self::on_remove_cli_command))
             .on_action(cx.listener(Self::on_install_agent_skill))
@@ -4649,26 +4878,8 @@ impl Workspace {
             .on_action(cx.listener(Self::on_maximize_window))
             .on_action(cx.listener(Self::on_restore_window))
             .on_action(cx.listener(Self::on_show_or_hide_app))
-            .on_action(cx.listener(
-                move |this, action: &crate::app::ToggleToolSidebar, window, cx| {
-                    if let Some(tools) = &serial_sidebar_toggle {
-                        tools.toggle(window, cx);
-                    } else {
-                        this.on_toggle_tool_sidebar(action, window, cx);
-                    }
-                },
-            ))
-            .on_action(
-                cx.listener(move |this, action: &crate::app::ToggleTool, window, cx| {
-                    if let Some(tools) = &serial_toggle
-                        && action.0 == crate::app::ToolKind::Serial
-                    {
-                        tools.toggle(window, cx);
-                    } else {
-                        this.on_toggle_tool(action, window, cx);
-                    }
-                }),
-            )
+            .on_action(cx.listener(Self::on_toggle_tool_sidebar))
+            .on_action(cx.listener(Self::on_toggle_tool))
             .on_action(cx.listener(Self::on_auto_serial_files))
             .on_action(cx.listener(Self::on_upload_serial_file))
             .on_action(cx.listener(Self::on_download_serial_file))
@@ -4760,11 +4971,8 @@ impl Workspace {
             .map(|root| {
                 if let Some(detached) = detached {
                     let tab = detached.tab;
-                    let content = if let Some(serial) = detached.serial {
-                        serial.render(detached.view, &self.focus_handle, cx)
-                    } else {
-                        detached.view.into_any_element()
-                    };
+                    let content = detached.view;
+                    let dispatch = self.focus_handle.clone();
                     root.child(
                         TitleBar::new().child(crate::app::APP_NAME).child(
                             div()
@@ -4774,8 +4982,9 @@ impl Workspace {
                                         .small()
                                         .label(t!("workspace.detached.return"))
                                         .on_click(move |_, window, cx| {
-                                            window.dispatch_action(
-                                                Box::new(ReturnDetachedTab(tab)),
+                                            dispatch.dispatch_action(
+                                                &ReturnDetachedTab(tab),
+                                                window,
                                                 cx,
                                             )
                                         }),
@@ -4797,7 +5006,7 @@ impl Workspace {
                         running_forwards,
                         self.updater.read(cx).snapshot().badge(),
                         self.cmder.read(cx).directory().is_some(),
-                        self.settings.read(cx).settings().flashing_enabled,
+                        &self.settings.read(cx).settings(),
                         &self.focus_handle,
                         cx,
                     ))
@@ -4888,17 +5097,6 @@ impl Workspace {
 }
 
 impl Workspace {
-    fn on_serial_tool_action(
-        &mut self,
-        action: &crate::app::SerialToolAction,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.tools.update(cx, |tools, cx| {
-            tools.serial_tool_command(&action.0, window, cx)
-        });
-    }
-
     fn on_utility_action(
         &mut self,
         action: &crate::app::UtilityAction,

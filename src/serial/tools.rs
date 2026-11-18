@@ -6,7 +6,7 @@ use gpui_kit::component::{
     button::{Button, ButtonVariants as _},
     checkbox::Checkbox,
     h_flex,
-    input::{Input, InputState, Textarea, TextareaState},
+    input::{Input, InputEvent, InputState, Textarea, TextareaState},
     scroll::ScrollableElement as _,
     tab::{Tab, TabBar},
     v_flex,
@@ -15,11 +15,7 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use super::SerialLineEnding;
-use crate::{
-    app::{CatalogIcon, SerialToolAction},
-    i18n::t,
-    terminal::TerminalView,
-};
+use crate::{app::CatalogIcon, i18n::t, terminal::TerminalView};
 
 #[path = "assistant.rs"]
 mod assistant;
@@ -62,17 +58,38 @@ pub enum SerialToolCommand {
     Repeat(bool),
 }
 
+#[derive(Clone)]
+struct ToolDispatch {
+    focus: FocusHandle,
+}
+
+impl ToolDispatch {
+    fn send(&self, command: SerialToolCommand, window: &mut Window, cx: &mut App) {
+        self.focus.dispatch_action(
+            &crate::app::SerialAssistantAction(super::SerialAssistantTabCommand::Tool(command)),
+            window,
+            cx,
+        );
+    }
+}
+
 pub struct SerialToolsPanel {
     assistant: Option<assistant::AssistantEditor>,
-    assistant_layout_enabled: bool,
+    assistant_storage: Option<(
+        Entity<crate::host::HostStore>,
+        String,
+        Option<crate::host::HostId>,
+    )>,
+    assistant_send_hex: bool,
+    assistant_encoding: crate::host::TerminalEncoding,
+    _assistant_input: Option<Subscription>,
     body_scroll: ScrollHandle,
     preview_scroll: ScrollHandle,
     group_task: Option<Task<()>>,
     drafts: HashMap<EntityId, SerialToolDraft>,
     target: Option<WeakEntity<TerminalView>>,
     observer: Option<Subscription>,
-    assistant_observer: Option<Subscription>,
-    dispatch: FocusHandle,
+    dispatch: ToolDispatch,
     baud: Entity<InputState>,
     message: Entity<TextareaState>,
     pattern: Entity<InputState>,
@@ -102,18 +119,20 @@ struct SerialToolDraft {
 }
 
 impl SerialToolsPanel {
-    pub fn new(dispatch: FocusHandle, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    fn new(dispatch: FocusHandle, window: &mut Window, cx: &mut Context<Self>) -> Self {
         Self {
             assistant: None,
-            assistant_layout_enabled: false,
+            assistant_storage: None,
+            assistant_send_hex: false,
+            assistant_encoding: crate::host::TerminalEncoding::default(),
+            _assistant_input: None,
             body_scroll: ScrollHandle::new(),
             preview_scroll: ScrollHandle::new(),
             group_task: None,
             drafts: HashMap::new(),
             target: None,
             observer: None,
-            assistant_observer: None,
-            dispatch,
+            dispatch: ToolDispatch { focus: dispatch },
             baud: cx.new(|cx| InputState::new(window, cx)),
             message: cx.new(|cx| TextareaState::new(window, cx).rows(4)),
             pattern: cx
@@ -136,6 +155,113 @@ impl SerialToolsPanel {
         }
     }
 
+    pub(super) fn new_assistant(
+        dispatch: FocusHandle,
+        store: Entity<crate::host::HostStore>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let mut tools = Self::new(dispatch, window, cx);
+        tools.message = cx.new(|cx| {
+            TextareaState::new(window, cx)
+                .rows(4)
+                .submit_on_enter(true)
+                .placeholder(t!("serial.assistant.message_placeholder"))
+        });
+        tools._assistant_input = Some(cx.subscribe(
+            &tools.message,
+            |_, _, event: &InputEvent, cx| {
+                if matches!(event, InputEvent::Change) {
+                    cx.notify();
+                }
+            },
+        ));
+        tools.set_assistant_port(store, None, window, cx);
+        tools
+    }
+
+    pub(super) fn set_assistant_port(
+        &mut self,
+        store: Entity<crate::host::HostStore>,
+        port: Option<&str>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let key = port.map(super::presence::device_key);
+        let port_target = key.as_ref().map_or_else(
+            || "serial-assistant".into(),
+            |key| format!("serial-assistant:{key}"),
+        );
+        let legacy = key.as_ref().and_then(|key| {
+            let data = store.read(cx);
+            if data.serial_assistant(&port_target).is_some() {
+                return None;
+            }
+            let mut matching = data.hosts().iter().filter_map(|host| {
+                if !host.is_serial() || super::presence::device_key(&host.address) != *key {
+                    return None;
+                }
+                let target = format!("host:{}", host.public_id);
+                data.serial_assistant(&target).map(|_| (target, host.id))
+            });
+            let first = matching.next()?;
+            matching.next().is_none().then_some(first)
+        });
+        let (target, host) =
+            legacy.map_or((port_target, None), |(target, host)| (target, Some(host)));
+        if self
+            .assistant_storage
+            .as_ref()
+            .is_some_and(|(_, current, _)| *current == target)
+        {
+            return;
+        }
+        self.assistant_storage = Some((store, target, host));
+        self.assistant = Some(assistant::AssistantEditor::new(window, cx));
+        self.message
+            .update(cx, |input, cx| input.set_value("", window, cx));
+        self.status = SharedString::default();
+        self.body_scroll.set_offset(Point::default());
+        cx.notify();
+    }
+
+    pub(super) fn assistant_send_hex(&self) -> bool {
+        self.assistant_send_hex
+    }
+
+    pub(super) fn set_assistant_send_hex(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        self.assistant_send_hex = enabled;
+        if let Some(view) = self.target.as_ref().and_then(WeakEntity::upgrade) {
+            view.update(cx, |view, cx| {
+                let mut modes = view.serial_modes(cx);
+                modes.send_hex = enabled;
+                view.set_serial_modes(modes, cx);
+            });
+        }
+        cx.notify();
+    }
+
+    pub(super) fn set_assistant_encoding(&mut self, encoding: crate::host::TerminalEncoding) {
+        self.assistant_encoding = encoding;
+    }
+
+    pub(super) fn sender_focus(&self, cx: &App) -> FocusHandle {
+        self.message.read(cx).focus_handle(cx)
+    }
+
+    pub(super) fn stop_sending(&mut self, cx: &mut Context<Self>) {
+        let group = self.group_task.take().is_some();
+        let repeating = self.repeat_task.take().is_some();
+        if group || repeating {
+            self.status = if group {
+                t!("serial.assistant.stopped")
+            } else {
+                t!("serial.tool.repeat_stopped")
+            };
+            cx.notify();
+        }
+    }
+
     pub fn set_target(
         &mut self,
         target: Option<WeakEntity<TerminalView>>,
@@ -148,66 +274,66 @@ impl SerialToolsPanel {
         self.baud_task = None;
         self.repeat_task = None;
         self.group_task = None;
-        self.assistant = None;
-        self.assistant_layout_enabled = false;
         self.body_scroll.set_offset(Point::default());
         self.preview_scroll.set_offset(Point::default());
         self.status = SharedString::default();
-        self.drafts
-            .retain(|_, draft| draft.target.upgrade().is_some());
-        if let Some(previous) = self
-            .target
-            .as_ref()
-            .filter(|target| target.upgrade().is_some())
-        {
-            self.drafts.insert(
-                previous.entity_id(),
-                SerialToolDraft {
-                    target: previous.clone(),
-                    baud: self.baud.clone(),
-                    message: self.message.clone(),
-                    pattern: self.pattern.clone(),
-                    reply: self.reply.clone(),
-                    hex: self.hex,
-                    ending: self.ending,
-                    crc: self.crc,
-                    interval: self.interval.clone(),
-                },
-            );
-        }
-        if let Some(target) = &target {
-            let draft =
-                self.drafts
-                    .remove(&target.entity_id())
-                    .unwrap_or_else(|| SerialToolDraft {
-                        target: target.clone(),
-                        baud: cx.new(|cx| {
-                            InputState::new(window, cx).validate(|text, _| text.len() <= 10)
-                        }),
-                        message: cx.new(|cx| TextareaState::new(window, cx).rows(4)),
-                        pattern: cx.new(|cx| {
-                            InputState::new(window, cx).validate(|text, _| text.len() <= 4096)
-                        }),
-                        reply: cx.new(|cx| {
-                            InputState::new(window, cx).validate(|text, _| text.len() <= 4096)
-                        }),
-                        hex: false,
-                        ending: SerialLineEnding::default(),
-                        crc: false,
-                        interval: cx.new(|cx| {
-                            InputState::new(window, cx)
-                                .default_value("1000")
-                                .validate(|text, _| text.len() <= 5)
-                        }),
-                    });
-            self.baud = draft.baud;
-            self.message = draft.message;
-            self.pattern = draft.pattern;
-            self.reply = draft.reply;
-            self.hex = draft.hex;
-            self.ending = draft.ending;
-            self.crc = draft.crc;
-            self.interval = draft.interval;
+        if self.assistant.is_none() {
+            self.drafts
+                .retain(|_, draft| draft.target.upgrade().is_some());
+            if let Some(previous) = self
+                .target
+                .as_ref()
+                .filter(|target| target.upgrade().is_some())
+            {
+                self.drafts.insert(
+                    previous.entity_id(),
+                    SerialToolDraft {
+                        target: previous.clone(),
+                        baud: self.baud.clone(),
+                        message: self.message.clone(),
+                        pattern: self.pattern.clone(),
+                        reply: self.reply.clone(),
+                        hex: self.hex,
+                        ending: self.ending,
+                        crc: self.crc,
+                        interval: self.interval.clone(),
+                    },
+                );
+            }
+            if let Some(target) = &target {
+                let draft =
+                    self.drafts
+                        .remove(&target.entity_id())
+                        .unwrap_or_else(|| SerialToolDraft {
+                            target: target.clone(),
+                            baud: cx.new(|cx| {
+                                InputState::new(window, cx).validate(|text, _| text.len() <= 10)
+                            }),
+                            message: cx.new(|cx| TextareaState::new(window, cx).rows(4)),
+                            pattern: cx.new(|cx| {
+                                InputState::new(window, cx).validate(|text, _| text.len() <= 4096)
+                            }),
+                            reply: cx.new(|cx| {
+                                InputState::new(window, cx).validate(|text, _| text.len() <= 4096)
+                            }),
+                            hex: false,
+                            ending: SerialLineEnding::default(),
+                            crc: false,
+                            interval: cx.new(|cx| {
+                                InputState::new(window, cx)
+                                    .default_value("1000")
+                                    .validate(|text, _| text.len() <= 5)
+                            }),
+                        });
+                self.baud = draft.baud;
+                self.message = draft.message;
+                self.pattern = draft.pattern;
+                self.reply = draft.reply;
+                self.hex = draft.hex;
+                self.ending = draft.ending;
+                self.crc = draft.crc;
+                self.interval = draft.interval;
+            }
         }
         self.observer = target.as_ref().and_then(WeakEntity::upgrade).map(|view| {
             cx.observe(&view, |owner, view, cx| {
@@ -238,22 +364,6 @@ impl SerialToolsPanel {
             .and_then(WeakEntity::upgrade)
             .map(|view| view.read(cx).generation(cx));
         self.target = target;
-        self.apply_assistant_layout(self.assistant_enabled(cx), window, cx);
-        self.assistant_observer = self
-            .target
-            .as_ref()
-            .and_then(WeakEntity::upgrade)
-            .and_then(|view| view.read(cx).serial_assistant_target())
-            .map(|(store, key, _)| {
-                cx.observe_in(&store, window, move |owner, store, window, cx| {
-                    let enabled = store
-                        .read(cx)
-                        .serial_assistant(&key)
-                        .is_some_and(|value| value.enabled);
-                    owner.apply_assistant_layout(enabled, window, cx);
-                    cx.notify();
-                })
-            });
         cx.notify();
     }
 
@@ -263,15 +373,40 @@ impl SerialToolsPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if matches!(command, SerialToolCommand::Send)
+            && self.assistant.is_some()
+            && !self.can_send_assistant(cx)
+        {
+            return;
+        }
+        if let SerialToolCommand::Assistant(command) = command {
+            if self.assistant.is_some() {
+                self.status = SharedString::default();
+                if let Err(error) = self.assistant_command(command, window, cx) {
+                    self.status = error;
+                }
+                cx.notify();
+            }
+            return;
+        }
         let Some(view) = self.target.as_ref().and_then(WeakEntity::upgrade) else {
+            match command {
+                SerialToolCommand::Ending(ending) => self.ending = *ending,
+                SerialToolCommand::Crc(enabled) => self.crc = *enabled,
+                SerialToolCommand::Hex(hex) => self.hex = *hex,
+                SerialToolCommand::Page(page) => {
+                    self.page = *page;
+                    self.body_scroll.set_offset(Point::default());
+                }
+                _ => {}
+            }
+            cx.notify();
             return;
         };
         self.status = SharedString::default();
         let result: Result<(), SharedString> = (|| {
             match command {
-                SerialToolCommand::Assistant(command) => {
-                    self.assistant_command(command, window, cx)?
-                }
+                SerialToolCommand::Assistant(_) => unreachable!(),
                 SerialToolCommand::Capture(enabled) => {
                     view.update(cx, |view, cx| view.serial_tool_capture(*enabled, cx))
                 }
@@ -513,25 +648,20 @@ impl SerialToolsPanel {
     }
 }
 
-impl Render for SerialToolsPanel {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let target = self.target.as_ref().and_then(WeakEntity::upgrade);
+impl SerialToolsPanel {
+    fn render_standard_page(
+        &self,
+        target: Option<&Entity<TerminalView>>,
+        running: bool,
+        cx: &App,
+    ) -> (AnyElement, bool) {
         let snapshot = target
-            .as_ref()
             .map(|view| view.read(cx).serial_tool_snapshot(cx))
             .unwrap_or_default();
         let modes = target
-            .as_ref()
             .map(|view| view.read(cx).serial_modes(cx))
             .unwrap_or_default();
-        let running = target.as_ref().is_some_and(|view| {
-            matches!(
-                view.read(cx).lifecycle(cx),
-                crate::terminal::TerminalLifecycle::Running
-            )
-        });
         let repeating = self.repeat_task.is_some() || self.group_task.is_some();
-        let assistant = self.assistant_enabled(cx);
         let preview = {
             let text = self.display_bytes(
                 &snapshot.bytes[snapshot.bytes.len().saturating_sub(256)..],
@@ -542,19 +672,12 @@ impl Render for SerialToolsPanel {
             lines.reverse();
             lines.join("\n")
         };
-        let status = if snapshot.paused {
-            t!("serial.tool.circuit_breaker")
-        } else {
-            self.status.clone()
-        };
         let action = |id: &'static str, label: SharedString, command: SerialToolCommand| {
             let dispatch = self.dispatch.clone();
             Button::new(id)
                 .small()
                 .label(label)
-                .on_click(move |_, window, cx| {
-                    dispatch.dispatch_action(&SerialToolAction(command.clone()), window, cx)
-                })
+                .on_click(move |_, window, cx| dispatch.send(command.clone(), window, cx))
         };
         let check = |id: &'static str,
                      label: SharedString,
@@ -567,12 +690,9 @@ impl Render for SerialToolsPanel {
                 .flex_shrink_0()
                 .label(label)
                 .checked(checked)
-                .on_click(move |enabled, window, cx| {
-                    dispatch.dispatch_action(&SerialToolAction(command(*enabled)), window, cx)
-                })
+                .on_click(move |enabled, window, cx| dispatch.send(command(*enabled), window, cx))
         };
         let body = match self.page {
-            SerialToolPage::Transfer if assistant => self.render_assistant(running, cx),
             SerialToolPage::Transfer => v_flex()
                 .id("serial-default-transfer")
                 .test_support()
@@ -695,11 +815,7 @@ impl Render for SerialToolsPanel {
                                     .selected(self.ending == ending)
                                     .disabled(repeating)
                                     .on_click(move |_, window, cx| {
-                                        dispatch.dispatch_action(
-                                            &SerialToolAction(SerialToolCommand::Ending(ending)),
-                                            window,
-                                            cx,
-                                        )
+                                        dispatch.send(SerialToolCommand::Ending(ending), window, cx)
                                     })
                             }),
                         ))
@@ -890,11 +1006,7 @@ impl Render for SerialToolsPanel {
                             .small()
                             .label(baud.to_string())
                             .on_click(move |_, window, cx| {
-                                dispatch.dispatch_action(
-                                    &SerialToolAction(SerialToolCommand::BaudPreset(baud)),
-                                    window,
-                                    cx,
-                                )
+                                dispatch.send(SerialToolCommand::BaudPreset(baud), window, cx)
                             })
                     }),
                 ))
@@ -923,6 +1035,11 @@ impl Render for SerialToolsPanel {
                 )
                 .into_any_element(),
         };
+        (body, snapshot.paused)
+    }
+
+    fn render_tabbed_tools(&self, body: AnyElement, status: SharedString) -> AnyElement {
+        let assistant = self.assistant.is_some();
         let dispatch = self.dispatch.clone();
         let status_line = |status: SharedString| {
             div()
@@ -940,16 +1057,14 @@ impl Render for SerialToolsPanel {
                 .flex_1()
                 .min_h_0()
                 .overflow_y_scroll()
-                .when(!assistant, |body| {
-                    body.track_scroll(&self.body_scroll)
-                        .vertical_scrollbar(&self.body_scroll)
-                })
+                .track_scroll(&self.body_scroll)
+                .vertical_scrollbar(&self.body_scroll)
                 .child(
                     v_flex()
                         .p_3()
                         .size_full()
                         .min_h_0()
-                        .when(!assistant, |body| body.min_h(rems(34.)))
+                        .min_h(rems(if assistant { 35. } else { 34. }))
                         .gap_2()
                         .child(body)
                         .child(status_line(status.clone())),
@@ -973,23 +1088,27 @@ impl Render for SerialToolsPanel {
                         .when(
                             self.repeat_task.is_some() && self.page != SerialToolPage::Transfer,
                             |body| {
-                                body.child(action(
-                                    "serial-tool-stop-repeat",
-                                    t!("serial.tool.stop_repeat"),
-                                    SerialToolCommand::Repeat(false),
-                                ))
+                                let target = dispatch.clone();
+                                body.child(
+                                    Button::new("serial-tool-stop-repeat")
+                                        .small()
+                                        .label(t!("serial.tool.stop_repeat"))
+                                        .on_click(move |_, window, cx| {
+                                            target.send(
+                                                SerialToolCommand::Repeat(false),
+                                                window,
+                                                cx,
+                                            );
+                                        }),
+                                )
                             },
                         ),
                 )
                 .into_any_element()
         };
         v_flex()
-            .id("serial-tools")
-            .test_support()
-            .track_focus(&self.focus_handle)
             .size_full()
             .min_h_0()
-            .child(self.render_assistant_switch(cx))
             .child(
                 TabBar::new("serial-tool-tabs")
                     .small()
@@ -1001,20 +1120,135 @@ impl Render for SerialToolsPanel {
                             .unwrap_or(0),
                     )
                     .on_click(move |index: &usize, window, cx| {
-                        dispatch.dispatch_action(
-                            &SerialToolAction(SerialToolCommand::Page(SerialToolPage::ALL[*index])),
+                        dispatch.send(
+                            SerialToolCommand::Page(SerialToolPage::ALL[*index]),
                             window,
                             cx,
                         )
                     })
-                    .children(SerialToolPage::ALL.into_iter().map(|page| {
-                        Tab::new().label(if assistant && page == SerialToolPage::Transfer {
-                            t!("serial.assistant.title")
-                        } else {
-                            page.label()
-                        })
-                    })),
+                    .children(
+                        SerialToolPage::ALL
+                            .into_iter()
+                            .filter(|page| !assistant || *page != SerialToolPage::Connection)
+                            .map(|page| {
+                                Tab::new().label(if assistant && page == SerialToolPage::Transfer {
+                                    t!("serial.assistant.commands_tab")
+                                } else {
+                                    page.label()
+                                })
+                            }),
+                    ),
             )
             .child(body_area)
+            .into_any_element()
+    }
+
+    pub(super) fn render_command_editor(&self, cx: &App) -> AnyElement {
+        if self.page == SerialToolPage::Transfer {
+            return self.render_assistant(cx);
+        }
+        let target = self.target.as_ref().and_then(WeakEntity::upgrade);
+        let running = self.target_running(target.as_ref(), cx);
+        let (body, paused) = self.render_standard_page(target.as_ref(), running, cx);
+        let status = self.tool_status(paused);
+        v_flex()
+            .size_full()
+            .min_h_0()
+            .gap_2()
+            .p_2()
+            .child(
+                h_flex()
+                    .gap_2()
+                    .child(self.editor_page_button(SerialToolPage::Transfer))
+                    .child(self.return_to_console_button()),
+            )
+            .child(
+                div()
+                    .id("serial-command-editor-body")
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .child(body),
+            )
+            .child(
+                div()
+                    .id("serial-tool-status")
+                    .test_support()
+                    .role(Role::Status)
+                    .aria_label(status.clone())
+                    .child(status),
+            )
+            .into_any_element()
+    }
+
+    fn return_to_console_button(&self) -> Button {
+        let dispatch = self.dispatch.focus.clone();
+        Button::new("serial-assistant-back")
+            .small()
+            .ghost()
+            .label(t!("serial.assistant.back_to_console"))
+            .on_click(move |_, window, cx| {
+                dispatch.dispatch_action(&crate::app::ShowSerialAssistant, window, cx)
+            })
+    }
+
+    fn editor_page_button(&self, page: SerialToolPage) -> Button {
+        let dispatch = self.dispatch.clone();
+        let (id, label) = if page == SerialToolPage::Transfer {
+            (
+                "serial-assistant-show-commands",
+                t!("serial.assistant.commands_tab"),
+            )
+        } else {
+            ("serial-assistant-show-reply", page.label())
+        };
+        Button::new(id)
+            .small()
+            .ghost()
+            .label(label)
+            .on_click(move |_, window, cx| dispatch.send(SerialToolCommand::Page(page), window, cx))
+    }
+
+    fn tool_status(&self, paused: bool) -> SharedString {
+        if paused {
+            t!("serial.tool.circuit_breaker")
+        } else {
+            self.status.clone()
+        }
+    }
+
+    fn target_running(&self, target: Option<&Entity<TerminalView>>, cx: &App) -> bool {
+        target.is_some_and(|view| {
+            view.read(cx).lifecycle(cx) == crate::terminal::TerminalLifecycle::Running
+        })
+    }
+
+    fn can_send_assistant(&self, cx: &App) -> bool {
+        self.group_task.is_none()
+            && self.repeat_task.is_none()
+            && self.target_running(
+                self.target.as_ref().and_then(WeakEntity::upgrade).as_ref(),
+                cx,
+            )
+            && !self.message.read(cx).value().is_empty()
+    }
+}
+
+impl Render for SerialToolsPanel {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let target = self.target.as_ref().and_then(WeakEntity::upgrade);
+        let running = self.target_running(target.as_ref(), cx);
+        let body = if self.assistant.is_some() {
+            self.render_quick_assistant(running, cx)
+        } else {
+            let (body, paused) = self.render_standard_page(target.as_ref(), running, cx);
+            self.render_tabbed_tools(body, self.tool_status(paused))
+        };
+        v_flex()
+            .id("serial-tools")
+            .test_support()
+            .track_focus(&self.focus_handle)
+            .when(self.assistant.is_none(), |view| view.size_full().min_h_0())
+            .child(body)
     }
 }

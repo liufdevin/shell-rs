@@ -9,8 +9,8 @@ use gpui_kit::*;
 
 use crate::app::{
     CatalogIcon, NewCmderTerminal, NewLocalTerminal, NewTemporaryConnection, OpenAdbDevices,
-    OpenFlashing, OpenLocalTerminalOptions, QuickConnect, ShowCredentials, ShowForwards, ShowHosts,
-    ShowUpdate, StartLocalTerminal, ToggleHostPanel, ToggleTheme,
+    OpenFlashing, OpenLocalTerminalOptions, OpenSerialAssistant, QuickConnect, ShowCredentials,
+    ShowForwards, ShowHosts, ShowUpdate, StartLocalTerminal, ToggleHostPanel, ToggleTheme,
 };
 use crate::i18n::t;
 use crate::shared::tinted;
@@ -32,12 +32,13 @@ pub fn render_title_bar(
     forwards: usize,
     update: Option<UpdateBadge>,
     cmder_available: bool,
-    flashing_enabled: bool,
+    settings: &crate::settings::AppSettings,
     target: &FocusHandle,
     cx: &App,
 ) -> TitleBar {
     let dark = cx.theme().is_dark();
     let devices = target.clone();
+    let serial_assistant = target.clone();
     let cmder = target.clone();
     let (mode, quick, temporary, new_local, theme, show_update, flashing) = (
         target.clone(),
@@ -152,7 +153,7 @@ pub fn render_title_bar(
                             devices.dispatch_action(&OpenAdbDevices, window, cx)
                         }),
                 )
-                .when(cfg!(windows) && flashing_enabled, |row| {
+                .when(cfg!(windows) && settings.flashing_enabled, |row| {
                     row.child(
                         Button::new("open-flashing")
                             .ghost()
@@ -164,6 +165,21 @@ pub fn render_title_bar(
                             .accessibility_label(t!("flashing.title"))
                             .on_click(move |_, window, cx| {
                                 flashing.dispatch_action(&OpenFlashing, window, cx)
+                            }),
+                    )
+                })
+                .when(settings.window.show_serial_assistant, |row| {
+                    row.child(
+                        Button::new("open-serial-assistant")
+                            .ghost()
+                            .small()
+                            .icon(
+                                gpui_kit::component::Icon::default().path(crate::app::SERIAL_ICON),
+                            )
+                            .tooltip(t!("serial.assistant.title"))
+                            .accessibility_label(t!("serial.assistant.title"))
+                            .on_click(move |_, window, cx| {
+                                serial_assistant.dispatch_action(&OpenSerialAssistant, window, cx)
                             }),
                     )
                 })

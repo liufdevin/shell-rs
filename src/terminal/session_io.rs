@@ -280,10 +280,14 @@ pub(super) struct SessionIo {
     pub receive_hex: AtomicBool,
     pub send_hex: AtomicBool,
     pub backspace: AtomicU8,
+    pub output_follow: AtomicU8,
     recording: Mutex<Option<Recording>>,
     stopped_failures: Mutex<Vec<Arc<Mutex<Option<String>>>>>,
     failure: Mutex<Option<String>>,
 }
+
+pub(super) const FOLLOW_OUTPUT: u8 = 1;
+pub(super) const HOLD_OUTPUT: u8 = 2;
 
 impl SessionIo {
     pub fn set_recording(&self, recording: Recording) {

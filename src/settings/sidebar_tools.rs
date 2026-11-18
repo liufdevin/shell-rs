@@ -263,6 +263,5 @@ pub(super) fn description(tool: ToolKind) -> SharedString {
         ToolKind::Logs => t!("device_logs.description"),
         ToolKind::Gpu => t!("settings.sidebar_tools.gpu"),
         ToolKind::Projects => t!("settings.sidebar_tools.projects"),
-        ToolKind::Serial => t!("settings.sidebar_tools.serial"),
     }
 }

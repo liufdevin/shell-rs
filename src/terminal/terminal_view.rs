@@ -479,6 +479,56 @@ impl TerminalView {
     pub fn timestamp_enabled(&self, cx: &App) -> bool {
         self.engine.read(cx).timestamps_enabled()
     }
+
+    pub(crate) fn set_output_follow(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        self.engine.read(cx).set_output_follow(enabled);
+        if enabled
+            && let Some(find) = &self.find
+            && !find.results.lines.is_empty()
+        {
+            find.scroll
+                .scroll_to_item(find.results.lines.len() - 1, ScrollStrategy::Bottom);
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn toggle_log_filter(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.find.as_ref().is_some_and(|find| find.matching_lines) {
+            self.dismiss_find(window, cx);
+        } else {
+            self.open_find(window, cx);
+            self.toggle_find_option(TerminalFindOption::MatchingLines, window, cx);
+        }
+    }
+
+    pub(crate) fn log_filter_active(&self) -> bool {
+        self.find.as_ref().is_some_and(|find| find.matching_lines)
+    }
+
+    pub(crate) fn log_export(&self, cx: &App) -> impl FnOnce() -> String + Send + 'static {
+        let timestamps = self.timestamp_enabled(cx);
+        let filtered = self
+            .find
+            .as_ref()
+            .filter(|find| find.matching_lines)
+            .map(|find| {
+                find.results
+                    .lines
+                    .iter()
+                    .map(|line| (line.text.clone(), line.timestamp))
+                    .collect::<Vec<_>>()
+            });
+        let source = self.engine.read(cx).log_source();
+        move || match filtered {
+            Some(lines) => super::log_filter::format_log(
+                lines
+                    .iter()
+                    .map(|(text, timestamp)| (text.as_ref(), *timestamp)),
+                timestamps,
+            ),
+            None => source.text(timestamps),
+        }
+    }
     pub fn has_timestamp_target(&self, cx: &App) -> bool {
         self.timestamp_target
             .as_ref()
@@ -682,6 +732,29 @@ impl TerminalView {
         }
     }
 
+    pub(crate) fn new_serial_assistant(
+        factory: SharedTerminalTransportFactory,
+        encoding: crate::host::TerminalEncoding,
+        modes: super::SerialDataModes,
+        timestamps: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        Self::new_connection(
+            "serial-assistant-terminal",
+            |_| t!("serial.assistant.title"),
+            factory,
+            super::session_io::TerminalOptions {
+                serial: Some(("serial-assistant".into(), modes)),
+                encoding,
+                timestamps,
+                ..Default::default()
+            },
+            window,
+            cx,
+        )
+    }
+
     pub fn focus(&self, window: &mut Window, cx: &mut App) {
         window.focus(&self.focus_handle, cx);
     }
@@ -694,7 +767,7 @@ impl TerminalView {
         self.unread_output
     }
 
-    pub(super) fn set_tab_active(&mut self, active: bool, cx: &mut Context<Self>) {
+    pub(crate) fn set_tab_active(&mut self, active: bool, cx: &mut Context<Self>) {
         if self.tab_active == active && (!active || !self.unread_output) {
             return;
         }
@@ -796,6 +869,10 @@ impl TerminalView {
         self.engine.read(cx).serial_tool_snapshot()
     }
 
+    pub(crate) fn serial_diagnostics(&self, cx: &App) -> Option<crate::serial::SerialDiagnostics> {
+        self.engine.read(cx).serial_diagnostics()
+    }
+
     pub(crate) fn serial_tool_capture(&mut self, enabled: bool, cx: &mut Context<Self>) {
         self.engine.read(cx).serial_tool_capture(enabled);
         cx.notify();
@@ -828,16 +905,6 @@ impl TerminalView {
         cx: &App,
     ) -> Result<(), SharedString> {
         self.engine.read(cx).serial_tool_send(bytes)
-    }
-
-    pub(crate) fn serial_assistant_target(
-        &self,
-    ) -> Option<(
-        Entity<crate::host::HostStore>,
-        String,
-        Option<crate::host::HostId>,
-    )> {
-        self.timestamp_target.clone()
     }
 
     pub(crate) fn serial_tool_send_checked(
@@ -1221,7 +1288,7 @@ impl TerminalView {
             .visible_text()
     }
 
-    pub(super) fn set_connection_encoding(
+    pub(crate) fn set_connection_encoding(
         &self,
         encoding: crate::host::TerminalEncoding,
         cx: &mut Context<Self>,
@@ -1548,6 +1615,10 @@ impl TerminalView {
                     })
                     .or_else(|| (!result.lines.is_empty()).then_some(0));
                 find.results = Rc::new(result);
+                if this.engine.read(cx).output_follows() && !find.results.lines.is_empty() {
+                    find.scroll
+                        .scroll_to_item(find.results.lines.len() - 1, ScrollStrategy::Bottom);
+                }
                 find.filter_task = None;
                 cx.notify();
                 this.refresh_log_filter(cx);
@@ -2567,6 +2638,7 @@ impl TerminalView {
             .max_by_key(|(_, line)| line.text.len())
             .map(|(index, _)| index);
         let focus = find.focus.clone();
+        let timestamps = self.timestamp_enabled(cx);
         let theme = cx.theme();
         v_flex()
             .id("terminal-filtered-logs")
@@ -2624,7 +2696,7 @@ impl TerminalView {
                                         font_weight: Some(FontWeight::BOLD),
                                         ..HighlightStyle::default()
                                     };
-                                    div()
+                                    h_flex()
                                         .id(SharedString::from(format!(
                                             "terminal-filter-row:{}",
                                             line.line
@@ -2637,6 +2709,19 @@ impl TerminalView {
                                         .whitespace_nowrap()
                                         .font_family(TerminalFont::current(cx).family(cx))
                                         .when(focused, |row| row.bg(cx.theme().list_active))
+                                        .when(timestamps, |row| {
+                                            let stamp = line
+                                                .timestamp
+                                                .map(|stamp| stamp.display())
+                                                .unwrap_or_default();
+                                            row.child(
+                                                div()
+                                                    .w_40()
+                                                    .flex_shrink_0()
+                                                    .text_color(cx.theme().muted_foreground)
+                                                    .child(stamp),
+                                            )
+                                        })
                                         .child(StyledText::new(line.text.clone()).with_highlights(
                                             line.spans.iter().map(|span| (span.clone(), style)),
                                         ))

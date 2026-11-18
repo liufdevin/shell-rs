@@ -94,6 +94,10 @@ jobs:
       - run: "cargo test --locked --test ui connection::"
       - run: "cargo test --locked --test ui settings::closing_to_the_tray"
       - run: "cargo test --locked --test ui editor::quitting_with_unsaved_changes"
+      - name: Test serial command editing with the main window's stack size
+        env:
+          RUST_MIN_STACK: "1048576"
+        run: cargo test --locked -p shellrs --test ui -- serial_tools::serial_assistant_editing_keeps_a_live_port_open_and_filters_command_groups --exact
       - run: "cargo test --locked --lib settings::"
       - run: "cargo test --locked --lib app::tray::"
       - run: "cargo test --lib cli::"

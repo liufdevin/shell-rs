@@ -588,7 +588,6 @@ async fn linux_shell_is_saved_per_host_and_enables_only_supported_tools(cx: &mut
             "tool-processes",
             "tool-connections",
             "tool-monitor",
-            "tool-serial",
         ] {
             assert!(window.find(tool).visible(), "{tool}");
         }
@@ -982,9 +981,14 @@ async fn serial_hex_sends_actual_bytes_and_rejects_invalid_input_without_sending
     );
     connect(cx, handle, id).await;
     in_frame(cx, handle, |window, cx| {
-        window.click("tool-serial", cx);
-        window.click(("serial-hex-receive", 1_u64), cx);
-        window.click(("serial-hex-transmit", 1_u64), cx);
+        window.dispatch_action(
+            Box::new(shellrs::app::ToggleSerialReceiveHex(RemoteTerminalId(1))),
+            cx,
+        );
+        window.dispatch_action(
+            Box::new(shellrs::app::ToggleSerialSendHex(RemoteTerminalId(1))),
+            cx,
+        );
     });
     in_frame(cx, handle, |window, cx| {
         window.click(("terminal", 1_u64), cx);
@@ -1020,7 +1024,10 @@ async fn serial_hex_sends_actual_bytes_and_rejects_invalid_input_without_sending
     assert_eq!(line.writes.lock().unwrap()[1], vec![0x41, 0]);
     in_frame(cx, handle, |window, cx| window.clear_notifications(cx));
     in_frame(cx, handle, |window, cx| {
-        window.click(("serial-hex-transmit", 1_u64), cx)
+        window.dispatch_action(
+            Box::new(shellrs::app::ToggleSerialSendHex(RemoteTerminalId(1))),
+            cx,
+        )
     });
     in_frame(cx, handle, |window, _| {
         assert!(window.try_find(("serial-hex-input", 1_u64)).is_none())
@@ -1243,9 +1250,14 @@ async fn serial_hex_logs_are_append_only_and_a_bad_path_does_not_disconnect(
     );
     connect(cx, handle, id).await;
     in_frame(cx, handle, |window, cx| {
-        window.click("tool-serial", cx);
-        window.click(("serial-hex-receive", 1_u64), cx);
-        window.click(("serial-hex-transmit", 1_u64), cx);
+        window.dispatch_action(
+            Box::new(shellrs::app::ToggleSerialReceiveHex(RemoteTerminalId(1))),
+            cx,
+        );
+        window.dispatch_action(
+            Box::new(shellrs::app::ToggleSerialSendHex(RemoteTerminalId(1))),
+            cx,
+        );
     });
     in_frame(cx, handle, |window, cx| {
         window.dispatch_action(Box::new(StartTerminalRecording(RemoteTerminalId(1))), cx)
@@ -1318,13 +1330,14 @@ async fn serial_hex_modes_are_independent_per_tab_and_remembered_per_host(cx: &m
         window.click(("terminal-tab", 1_u64), cx)
     });
     in_frame(cx, handle, |window, cx| {
-        window.click("tool-serial", cx);
-        assert_eq!(
-            window.find(("serial-hex-receive", 1_u64)).checked(),
-            Some(false)
+        window.dispatch_action(
+            Box::new(shellrs::app::ToggleSerialReceiveHex(RemoteTerminalId(1))),
+            cx,
         );
-        window.click(("serial-hex-receive", 1_u64), cx);
-        window.click(("serial-hex-transmit", 1_u64), cx);
+        window.dispatch_action(
+            Box::new(shellrs::app::ToggleSerialSendHex(RemoteTerminalId(1))),
+            cx,
+        );
     });
     cx.update(|cx| {
         let workspace = workspace.read(cx);
@@ -1391,29 +1404,21 @@ async fn serial_hex_modes_are_independent_per_tab_and_remembered_per_host(cx: &m
     })
     .await;
     in_frame(cx, handle, |window, cx| {
-        assert_eq!(
-            window.find(("serial-hex-receive", 4_u64)).checked(),
-            Some(true)
-        );
-        assert_eq!(
-            window.find(("serial-hex-transmit", 4_u64)).checked(),
-            Some(true)
-        );
+        assert!(window.find(("serial-hex-input", 4_u64)).visible());
         window.dispatch_action(
             Box::new(shellrs::app::DuplicateTerminal(RemoteTerminalId(4))),
             cx,
         );
     });
     cx.wait_for(handle.into(), Duration::from_secs(2), |window, _| {
-        window.try_find(("serial-hex-receive", 5_u64)).is_some()
+        window.try_find(("serial-hex-input", 5_u64)).is_some()
     })
     .await;
     in_frame(cx, handle, |window, cx| {
-        assert_eq!(
-            window.find(("serial-hex-receive", 5_u64)).checked(),
-            Some(true)
+        window.dispatch_action(
+            Box::new(shellrs::app::ToggleSerialReceiveHex(RemoteTerminalId(5))),
+            cx,
         );
-        window.click(("serial-hex-receive", 5_u64), cx);
     });
     cx.update(|cx| {
         let workspace = workspace.read(cx);
@@ -1456,22 +1461,35 @@ async fn serial_backspace_sequence_is_remembered_per_host(cx: &mut TestAppContex
     );
     connect(cx, handle, first).await;
     in_frame(cx, handle, |window, cx| {
-        window.click("tool-serial", cx);
-    });
-    in_frame(cx, handle, |window, cx| {
         window.click(("terminal", 1_u64), cx);
         window.press("backspace", cx);
     });
     assert_eq!(*line.writes.lock().unwrap(), vec![vec![0x08]]);
     in_frame(cx, handle, |window, cx| {
-        window.click("serial-backspace-1-delete", cx);
+        window.dispatch_action(
+            Box::new(shellrs::app::SetSerialBackspace(
+                shellrs::app::SerialBackspaceChoice {
+                    terminal: RemoteTerminalId(1),
+                    key: shellrs::terminal::BackspaceKey::Delete,
+                },
+            )),
+            cx,
+        );
     });
     in_frame(cx, handle, |window, cx| {
         window.click(("terminal", 1_u64), cx);
         window.press("backspace", cx);
     });
     in_frame(cx, handle, |window, cx| {
-        window.click("serial-backspace-1-vt220", cx);
+        window.dispatch_action(
+            Box::new(shellrs::app::SetSerialBackspace(
+                shellrs::app::SerialBackspaceChoice {
+                    terminal: RemoteTerminalId(1),
+                    key: shellrs::terminal::BackspaceKey::Vt220,
+                },
+            )),
+            cx,
+        );
     });
     in_frame(cx, handle, |window, cx| {
         window.click(("terminal", 1_u64), cx);

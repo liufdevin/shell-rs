@@ -17,7 +17,8 @@ use gpui_kit::*;
 use crate::app::{
     CatalogIcon, CenterTab, ClearTerminalLog, CloseTerminal, CopyHostAddress, CopyHostId,
     DeleteTerminalLog, DisconnectTerminal, DuplicateTerminal, EditHost, OpenExplorer,
-    ReconnectTerminal, RenameTerminal, SendBreak, SendSerialHex,
+    ReconnectTerminal, RenameTerminal, SendBreak, SendSerialHex, SerialBackspaceChoice,
+    SetSerialBackspace, ToggleSerialReceiveHex, ToggleSerialSendHex,
 };
 use crate::connection::{ConnectionPrompt, ConnectionPromptReply};
 use crate::host::{ConnectionState, Host, HostConnection, HostId, HostOs, HostStore, ProtocolKind};
@@ -374,6 +375,7 @@ impl TerminalPanel {
             host_id: self.host_id,
             host_is_ip: self.host.address_is_ip(),
             protocol: self.host.kind(),
+            serial_modes: self.host.is_serial().then(|| self.serial_modes(cx)),
             running: self.lifecycle(cx) == TerminalLifecycle::Running,
             host_exists: store.host(self.host_id).is_some(),
             host_is_ssh: store.host(self.host_id).is_some_and(|host| host.is_ssh()),
@@ -918,6 +920,7 @@ struct TabMenu {
     /// What the host is: an SSH host's tab has SFTP, a Telnet or serial
     /// host's 发送 Break, and all but a serial host's the address.
     protocol: ProtocolKind,
+    serial_modes: Option<super::SerialDataModes>,
     /// Whether the terminal is connected, which a break needs.
     running: bool,
     /// The host is still there: deleted, it has nothing to connect to,
@@ -975,6 +978,40 @@ impl TabMenu {
             });
         let protocol = self.protocol;
         menu = menu
+            .when_some(self.serial_modes, |menu, modes| {
+                use gpui_kit::component::menu::PopupMenuItem;
+                let menu = menu
+                    .item(
+                        PopupMenuItem::new(t!("serial.mode.receive_hex"))
+                            .checked(modes.receive_hex)
+                            .action(Box::new(ToggleSerialReceiveHex(id))),
+                    )
+                    .item(
+                        PopupMenuItem::new(t!("serial.mode.send_hex"))
+                            .checked(modes.send_hex)
+                            .action(Box::new(ToggleSerialSendHex(id))),
+                    );
+                super::BackspaceKey::ALL
+                    .into_iter()
+                    .fold(menu, |menu, key| {
+                        menu.item(
+                            PopupMenuItem::new(match key {
+                                super::BackspaceKey::Backspace => {
+                                    t!("serial.backspace.name_backspace")
+                                }
+                                super::BackspaceKey::Delete => {
+                                    t!("serial.backspace.name_delete")
+                                }
+                                super::BackspaceKey::Vt220 => t!("serial.backspace.name_vt220"),
+                            })
+                            .checked(modes.backspace == key)
+                            .action(Box::new(SetSerialBackspace(SerialBackspaceChoice {
+                                terminal: id,
+                                key,
+                            }))),
+                        )
+                    })
+            })
             .when(protocol.sends_break(), |menu| {
                 menu.menu_with_icon_and_disabled(
                     t!("terminal.remote.send_break"),

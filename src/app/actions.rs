@@ -146,6 +146,9 @@ gpui_kit::actions!(
         ShowCredentials,
         ShowRemoteManagement,
         OpenAdbDevices,
+        OpenSerialAssistant,
+        OpenSerialCommandEditor,
+        ShowSerialAssistant,
         /// Open the firmware flashing tab.
         OpenFlashing,
         CheckFlashingDriver,
@@ -199,6 +202,8 @@ gpui_kit::actions!(
         CloseSettings,
         /// Close the firmware flashing tab.
         CloseFlashing,
+        CloseSerialAssistant,
+        CloseSerialCommandEditor,
         /// Increase the application base font (interface zoom).
         ZoomIn,
         /// Decrease the application base font (interface zoom).
@@ -389,7 +394,8 @@ id_actions! {
     /// already showing that tool.
     ToggleTool(ToolKind);
     UtilityAction(crate::utilities::UtilityCommand);
-    SerialToolAction(crate::serial::SerialToolCommand);
+    SerialAssistantAction(crate::serial::SerialAssistantTabCommand);
+    LoadSerialCommand(u64);
     /// Browse Kubernetes resources and logs on the SSH host.
     KubernetesAction(KubernetesCommand);
     /// 目录跟随 in a terminal's 文件: follow the terminal's folder, or stop.
@@ -595,6 +601,8 @@ pub enum CenterTab {
     Settings,
     /// There is at most one firmware flashing tab.
     Flashing,
+    SerialAssistant,
+    SerialCommandEditor,
     Editor(EditorId),
 }
 
@@ -639,11 +647,10 @@ pub enum ToolKind {
     Gpu,
     /// 项目, the one tool of local terminals.
     Projects,
-    Serial,
 }
 
 impl ToolKind {
-    pub const ALL: [ToolKind; 15] = [
+    pub const ALL: [ToolKind; 14] = [
         ToolKind::Snippets,
         ToolKind::History,
         ToolKind::Files,
@@ -657,7 +664,6 @@ impl ToolKind {
         ToolKind::Logs,
         ToolKind::Gpu,
         ToolKind::Projects,
-        ToolKind::Serial,
         ToolKind::Utilities,
     ];
 
@@ -680,7 +686,6 @@ impl ToolKind {
             ToolKind::Logs => "logs",
             ToolKind::Gpu => "gpu",
             ToolKind::Projects => "projects",
-            ToolKind::Serial => "serial",
         }
     }
 
@@ -712,7 +717,6 @@ impl ToolKind {
             ToolKind::Logs => t!("device_logs.title"),
             ToolKind::Gpu => "GPU/NPU".into(),
             ToolKind::Projects => t!("tools.kind.projects"),
-            ToolKind::Serial => t!("tools.kind.serial"),
         }
     }
 
@@ -735,7 +739,6 @@ impl ToolKind {
             ToolKind::Logs => CatalogIcon::FileText,
             ToolKind::Gpu => CatalogIcon::Gpu,
             ToolKind::Projects => CatalogIcon::FolderCode,
-            ToolKind::Serial => return Icon::default().path(super::SERIAL_ICON),
         })
     }
 }

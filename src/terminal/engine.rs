@@ -254,6 +254,16 @@ impl TerminalEngine {
             .unwrap_or_default()
     }
 
+    pub(super) fn serial_diagnostics(&self) -> Option<crate::serial::SerialDiagnostics> {
+        self.runtime
+            .serial_tool
+            .lock()
+            .unwrap()
+            .as_ref()?
+            .diagnostics
+            .clone()
+    }
+
     pub(crate) fn serial_tool_capture(&self, enabled: bool) {
         if self.serial_name.is_some() {
             self.runtime
@@ -292,18 +302,7 @@ impl TerminalEngine {
         text: &str,
         hex: bool,
     ) -> Result<Vec<u8>, SharedString> {
-        if text.len() > super::serial_tools::MESSAGE_LIMIT {
-            return Err(t!("serial.tool.invalid_data"));
-        }
-        let bytes = if hex {
-            super::session_io::decode_hex(text)?
-        } else {
-            encode_input(self.encoding, text.as_bytes().to_vec())?
-        };
-        if bytes.is_empty() || bytes.len() > super::serial_tools::MESSAGE_LIMIT {
-            return Err(t!("serial.tool.invalid_data"));
-        }
-        Ok(bytes)
+        super::encode_serial_tool(self.encoding, text, hex)
     }
 
     fn serial_tool_ready(&self) -> Result<(), SharedString> {
@@ -361,6 +360,21 @@ impl TerminalEngine {
 
     pub fn timestamps_enabled(&self) -> bool {
         self.io.timestamps_enabled.load(Ordering::Acquire)
+    }
+
+    pub(super) fn set_output_follow(&self, enabled: bool) {
+        use super::session_io::{FOLLOW_OUTPUT, HOLD_OUTPUT};
+        self.io.output_follow.store(
+            if enabled { FOLLOW_OUTPUT } else { HOLD_OUTPUT },
+            Ordering::Release,
+        );
+        if enabled {
+            self.runtime.term.lock().scroll_display(Scroll::Bottom);
+        }
+    }
+
+    pub(super) fn output_follows(&self) -> bool {
+        self.io.output_follow.load(Ordering::Acquire) == super::session_io::FOLLOW_OUTPUT
     }
 
     pub fn selected_timestamp(&self, end: bool) -> Option<super::LineTimestamp> {
@@ -1173,7 +1187,7 @@ impl TerminalEngine {
     }
 
     pub(super) fn log_source(&self) -> LogSource {
-        LogSource::new(self.runtime.term.clone())
+        LogSource::new(self.runtime.term.clone(), self.runtime.timestamps.clone())
     }
 
     pub(super) fn output_revision(&self) -> u64 {
@@ -1737,6 +1751,7 @@ impl TerminalRuntime {
         let (zmodem, zmodem_controls) = async_channel::unbounded();
         let transferring = Arc::new(AtomicBool::new(false));
         let mut parser = Parser {
+            io: io.clone(),
             timestamps: Arc::new(Mutex::new(super::timestamps::Timestamps::default())),
             decoder: TerminalDecoder::new(encoding),
             hex_mode: false,
@@ -1780,11 +1795,13 @@ impl TerminalRuntime {
                         Received::Overdue => {
                             {
                                 let mut term = parser.term.lock();
+                                let scroll = OutputScroll::capture(&parser.io, &term);
                                 if end_overdue_sync_timestamps(
                                     &mut parser.processor,
                                     &mut term,
                                     &parser.timestamps,
                                 ) {
+                                    scroll.restore(&mut term);
                                     parser.proxy.answer(&term);
                                     parser
                                         .proxy
@@ -1829,10 +1846,7 @@ impl TerminalRuntime {
                                     &bytes,
                                     parser.transferring.load(Ordering::Acquire),
                                 );
-                                let text = format!("{}\r\n", format_hex(&bytes));
-                                parser
-                                    .processor
-                                    .advance(&mut *parser.term.lock(), text.as_bytes());
+                                parser.present_hex(&bytes);
                                 if !bytes.is_empty() {
                                     parser.proxy.received_output.fetch_add(1, Ordering::Release);
                                 }
@@ -2272,6 +2286,7 @@ fn earliest(one: Option<Instant>, other: Option<Instant>) -> Option<Instant> {
 /// What the parser thread keeps: the emulator it feeds, and what reads
 /// the output beside it.
 struct Parser {
+    io: Arc<SessionIo>,
     timestamps: Arc<Mutex<super::timestamps::Timestamps>>,
     decoder: TerminalDecoder,
     hex_mode: bool,
@@ -2290,6 +2305,21 @@ struct Parser {
 }
 
 impl Parser {
+    fn present_hex(&mut self, bytes: &[u8]) {
+        let text = format!("{}\r\n", format_hex(bytes));
+        let mut term = self.term.lock();
+        let scroll = OutputScroll::capture(&self.io, &term);
+        let mut timestamps = self.timestamps.lock().unwrap();
+        if timestamps.is_tracking() {
+            let mut handler = super::timestamps::TimestampHandler::new(&mut *term, &mut timestamps);
+            self.processor.advance(&mut handler, text.as_bytes());
+            timestamps.prune(&*term);
+        } else {
+            self.processor.advance(&mut *term, text.as_bytes());
+        }
+        scroll.restore(&mut term);
+    }
+
     /// Show what ZMODEM let through and wrote, in order, send what it
     /// answers, and ask what it asks.
     fn transfer(&mut self, fed: Fed) {
@@ -2340,6 +2370,7 @@ impl Parser {
         // once it is let go.
         let lines = {
             let mut term = self.term.lock();
+            let scroll = OutputScroll::capture(&self.io, &term);
             // Output that never pauses gives the wait no chance to see the
             // time is up.
             end_overdue_sync_timestamps(&mut self.processor, &mut term, &self.timestamps);
@@ -2374,6 +2405,7 @@ impl Parser {
                     self.watcher.is_watching(),
                 )
             };
+            scroll.restore(&mut term);
             self.proxy.answer(&term);
             self.proxy.synchronized_output.store(
                 self.processor.sync_timeout().pending_timeout(),
@@ -2399,6 +2431,52 @@ impl Parser {
                 .rewritten_output
                 .store(self.rewrites.count, Ordering::Release);
             self.proxy.received_output.fetch_add(1, Ordering::Release);
+        }
+    }
+}
+
+enum OutputScroll {
+    Natural,
+    Follow,
+    Hold(usize),
+}
+
+impl OutputScroll {
+    fn capture(io: &SessionIo, term: &AlacrittyTerm) -> Self {
+        use super::session_io::{FOLLOW_OUTPUT, HOLD_OUTPUT};
+        if term.mode().contains(TermMode::ALT_SCREEN) {
+            return Self::Natural;
+        }
+        match io.output_follow.load(Ordering::Acquire) {
+            FOLLOW_OUTPUT => Self::Follow,
+            HOLD_OUTPUT if term.grid().display_offset() == 0 => Self::Hold(Self::row_key(term, 0)),
+            _ => Self::Natural,
+        }
+    }
+
+    fn row_key(term: &AlacrittyTerm, line: i32) -> usize {
+        &term.grid()[Line(line)][Column(0)] as *const _ as usize
+    }
+
+    fn restore(self, term: &mut AlacrittyTerm) {
+        if term.mode().contains(TermMode::ALT_SCREEN) {
+            return;
+        }
+        match self {
+            Self::Natural => {}
+            Self::Follow => {
+                if term.grid().display_offset() != 0 {
+                    term.scroll_display(Scroll::Bottom);
+                }
+            }
+            Self::Hold(anchor) if Self::row_key(term, 0) != anchor => {
+                if let Some(offset) = (1..=term.history_size() as i32)
+                    .find(|offset| Self::row_key(term, -*offset) == anchor)
+                {
+                    term.scroll_display(Scroll::Delta(offset));
+                }
+            }
+            Self::Hold(_) => {}
         }
     }
 }
@@ -3375,7 +3453,7 @@ mod tests {
         feed(&mut term, log.as_bytes());
         let term = Arc::new(FairMutex::new(term));
         let before = crate::terminal::kept_output::kept_output(&term.lock(), 100);
-        let source = super::LogSource::new(term.clone());
+        let source = super::LogSource::new(term.clone(), Default::default());
         let result = source.filter(
             r"^ERROR.*code=\d+$",
             super::SearchOptions {
@@ -3726,6 +3804,29 @@ mod tests {
         assert_eq!(term.grid().display_offset(), 1);
         // Past the bottom is the bottom.
         scroll_to(&mut term, 10);
+        assert_eq!(term.grid().display_offset(), 0);
+    }
+
+    #[test]
+    fn assistant_scroll_holds_the_bottom_view_until_follow_is_enabled_again() {
+        use crate::terminal::session_io::{FOLLOW_OUTPUT, HOLD_OUTPUT};
+
+        let mut term = test_term(8, 2);
+        let io = SessionIo::default();
+        feed(&mut term, b"one\r\ntwo");
+        assert_eq!(term.grid().display_offset(), 0);
+        io.output_follow.store(HOLD_OUTPUT, Ordering::Release);
+        let scroll = OutputScroll::capture(&io, &term);
+        feed(&mut term, b"\r\nthree\r\nfour");
+        scroll.restore(&mut term);
+        assert_eq!(term.grid().display_offset(), 2);
+        assert_eq!(term.grid()[Line(-2)][Column(0)].c, 'o');
+        let scroll = OutputScroll::capture(&io, &term);
+        feed(&mut term, b"\r\nfive");
+        scroll.restore(&mut term);
+        assert_eq!(term.grid().display_offset(), 3);
+        io.output_follow.store(FOLLOW_OUTPUT, Ordering::Release);
+        OutputScroll::capture(&io, &term).restore(&mut term);
         assert_eq!(term.grid().display_offset(), 0);
     }
 

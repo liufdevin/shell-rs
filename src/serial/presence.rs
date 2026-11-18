@@ -125,7 +125,7 @@ impl PresenceTracker {
     }
 }
 
-fn device_key(device: &str) -> String {
+pub(super) fn device_key(device: &str) -> String {
     let device = device.trim();
     if cfg!(windows) {
         device
@@ -139,6 +139,7 @@ fn device_key(device: &str) -> String {
 
 pub struct SerialPresence {
     store: Entity<HostStore>,
+    source: Arc<dyn SerialPortSource>,
     devices: HashMap<String, PresenceTracker>,
     generation: u64,
     poll_task: Option<Task<()>>,
@@ -150,6 +151,7 @@ impl SerialPresence {
         let subscription = cx.observe(&store, |this, _, cx| this.sync_hosts(cx));
         let mut this = Self {
             store,
+            source: Arc::new(SystemSerialPortSource),
             devices: HashMap::new(),
             generation: 0,
             poll_task: None,
@@ -190,6 +192,7 @@ impl SerialPresence {
     }
 
     pub fn start(&mut self, source: Arc<dyn SerialPortSource>, cx: &mut Context<Self>) {
+        self.source = source.clone();
         self.poll_task = None;
         for tracker in self.devices.values_mut() {
             *tracker = PresenceTracker::default();
@@ -218,6 +221,10 @@ impl SerialPresence {
                 cx.background_executor().timer(SCAN_INTERVAL).await;
             }
         }));
+    }
+
+    pub(crate) fn source(&self) -> Arc<dyn SerialPortSource> {
+        self.source.clone()
     }
 
     fn apply_scan(

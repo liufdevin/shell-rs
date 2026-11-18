@@ -5,7 +5,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use gpui_kit::base::SelectableText;
+use gpui_kit::base::{SelectableText, TextSelection, TextSelectionEvent, TextSelectionHandle};
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Sizable as _,
     button::{Button, ButtonVariants as _},
@@ -15,6 +15,7 @@ use gpui_kit::component::{
     menu::PopupMenu,
     progress::Progress,
     radio::Radio,
+    tooltip::Tooltip,
     v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
@@ -24,6 +25,7 @@ use crate::app::{CatalogIcon, CenterTab, CloseFlashing, FlashingAction};
 use crate::i18n::t;
 use crate::settings::SettingsStore;
 use crate::shared::{ClosableTabTitle, close_tab_items};
+use crate::terminal::TerminalInteraction;
 
 use super::firmware::FirmwareCapabilities;
 use super::model::{DeviceProgress, FirmwarePartition};
@@ -96,6 +98,8 @@ pub struct FlashingPanel {
     phase: Phase,
     progress: FlashProgress,
     logs: VecDeque<LogLine>,
+    log_selection: TextSelectionHandle,
+    pending_log_copy: bool,
     follow: bool,
     scroll: ScrollHandle,
     started: Instant,
@@ -108,6 +112,8 @@ pub struct FlashingPanel {
     picking: bool,
     listening: bool,
     wait_timed_out: bool,
+    #[cfg(windows)]
+    device_watch: Option<super::device_monitor::DeviceWatch>,
     fel_devices: BTreeSet<String>,
     device_lost_at: Option<Instant>,
     closed: bool,
@@ -137,6 +143,18 @@ impl FlashingPanel {
         } else {
             Phase::NoFirmware
         };
+        let log_selection = TextSelectionHandle::new(String::new(), cx);
+        let panel_id = cx.entity_id();
+        log_selection
+            .subscribe(
+                move |event, cx| {
+                    if matches!(event, TextSelectionEvent::SelectionChanged(_)) {
+                        cx.notify(panel_id);
+                    }
+                },
+                cx,
+            )
+            .detach();
         let mut panel = Self {
             dispatch,
             settings,
@@ -161,6 +179,8 @@ impl FlashingPanel {
             phase,
             progress: FlashProgress::default(),
             logs: VecDeque::new(),
+            log_selection,
+            pending_log_copy: false,
             follow: true,
             scroll: ScrollHandle::new(),
             started: Instant::now(),
@@ -173,6 +193,8 @@ impl FlashingPanel {
             picking: false,
             listening: false,
             wait_timed_out: false,
+            #[cfg(windows)]
+            device_watch: None,
             fel_devices: BTreeSet::new(),
             device_lost_at: None,
             closed: false,
@@ -493,7 +515,6 @@ impl FlashingPanel {
 
     fn retire_listener(&mut self) {
         self.stop_process();
-        self.fel_devices.clear();
         self.device_lost_at = None;
         self.receiver = None;
         if let Some(run) = self.run.take() {
@@ -526,9 +547,12 @@ impl FlashingPanel {
     }
 
     fn start_wait(&mut self, cx: &mut Context<Self>) {
-        if !self.can_wait() || self.retiring.is_some() || !self.source.ready() {
+        if !self.can_wait() || self.retiring.is_some() {
             return;
         }
+        let Some(revision) = self.source.revision().cloned() else {
+            return;
+        };
         let Some(tool_dir) = self.tool_dir.clone() else {
             self.phase = Phase::Failed;
             self.append(
@@ -558,10 +582,17 @@ impl FlashingPanel {
         let partitions = self
             .partition_mode
             .then(|| self.selected_partitions.iter().copied().collect());
-        let (run, receiver) = start_wait(&tool_dir, &firmware, self.mode, partitions);
+        let (run, receiver) = start_wait(&tool_dir, &firmware, revision, self.mode, partitions);
+        self.set_listener(run, receiver);
+        cx.notify();
+    }
+
+    fn set_listener(&mut self, run: Run, receiver: Receiver<RunEvent>) {
         self.run = Some(run);
         self.receiver = Some(receiver);
-        cx.notify();
+        if !self.fel_devices.is_empty() {
+            self.fel_arrived(Instant::now());
+        }
     }
 
     fn firmware_ready(&mut self, info: FirmwareInfo, cx: &mut Context<Self>) {
@@ -608,11 +639,20 @@ impl FlashingPanel {
         self.restart_at = None;
     }
 
+    fn stop_device_watch(&mut self) {
+        #[cfg(windows)]
+        {
+            self.device_watch = None;
+        }
+        self.fel_devices.clear();
+    }
+
     fn shutdown(&mut self) {
         self.closed = true;
         self.picking = false;
         self.phase = Phase::Stopped;
         self.stop_process();
+        self.stop_device_watch();
         self.receiver = None;
         self.inspection_receiver = None;
         self.adb_trigger = None;
@@ -631,6 +671,7 @@ impl FlashingPanel {
             return;
         }
         self.retire_listener();
+        self.stop_device_watch();
         self.source_probe = None;
         self.source_retry_at = None;
         self.progress.interrupt_active(Instant::now());
@@ -719,7 +760,11 @@ impl FlashingPanel {
             && Instant::now() >= self.next_source_probe
             && let Some(path) = &self.firmware
         {
-            self.source_probe = Some(source::probe(path.clone()));
+            let may_acknowledge = self.run.is_none()
+                && self.inspection.is_none()
+                && self.retiring.is_none()
+                && !self.is_rebooting();
+            self.source_probe = Some(source::probe(path.clone(), may_acknowledge));
             self.next_source_probe = Instant::now() + source::CHECK_INTERVAL;
         }
         changed
@@ -774,6 +819,13 @@ impl FlashingPanel {
 
     fn source_hint(&self) -> Option<SharedString> {
         match self.source.observation() {
+            Some(Observation::Packing(_)) if self.progress.has_active() => {
+                Some(t!("flashing.source.pack_after_burn"))
+            }
+            Some(Observation::Packing(Some(error))) => {
+                Some(t!("flashing.source.pack_ack_failed", error = error))
+            }
+            Some(Observation::Packing(None)) => Some(t!("flashing.source.packing")),
             Some(Observation::Missing) => Some(t!("flashing.source.missing")),
             Some(Observation::Unavailable(error)) => {
                 Some(t!("flashing.source.unavailable", error = error))
@@ -793,6 +845,17 @@ impl FlashingPanel {
         let mut changed = self.drain_run_events();
         changed |= self.poll_source();
         changed |= self.apply_source_reload();
+        #[cfg(windows)]
+        if self.phase != Phase::Stopped && self.firmware.is_some() && self.tool_dir.is_some() {
+            let watch = self
+                .device_watch
+                .get_or_insert_with(super::device_monitor::DeviceWatch::start);
+            let events: Vec<_> = watch.events().try_iter().take(512).collect();
+            changed |= !events.is_empty();
+            for event in events {
+                self.handle_event(event);
+            }
+        }
         if matches!(self.phase, Phase::Preparing | Phase::Unclaimed)
             && self.fel_devices.is_empty()
             && self
@@ -825,6 +888,9 @@ impl FlashingPanel {
         }
         if self.retiring.as_ref().is_some_and(Run::is_finished) {
             self.retiring = None;
+            if matches!(self.source.observation(), Some(Observation::Packing(_))) {
+                self.next_source_probe = Instant::now();
+            }
             changed = true;
         }
         if self.source_retry_at.is_some_and(|at| Instant::now() >= at)
@@ -945,6 +1011,7 @@ impl FlashingPanel {
 
     fn handle_event(&mut self, event: RunEvent) {
         match event {
+            #[cfg(any(windows, test))]
             RunEvent::DevicesPresent { at, devices } => {
                 let arrived = devices
                     .iter()
@@ -958,6 +1025,7 @@ impl FlashingPanel {
                     self.device_lost_at = Some(at);
                 }
             }
+            #[cfg(any(windows, test))]
             RunEvent::DeviceChanged {
                 at,
                 instance,
@@ -974,12 +1042,21 @@ impl FlashingPanel {
                     self.device_lost_at = Some(at);
                 }
             }
+            #[cfg(windows)]
             RunEvent::DetectionUnavailable { at, error } => {
                 self.append(
                     t!("flashing.log.device_monitor_unavailable", error = error),
                     Tone::Muted,
                     at,
                 );
+            }
+            RunEvent::SourceChanged(observation) => {
+                self.run = None;
+                self.receiver = None;
+                self.listening = false;
+                self.source_probe = None;
+                self.next_source_probe = Instant::now();
+                self.update_source(observation, Instant::now());
             }
             RunEvent::Line { at, text: line } => {
                 let parsed = super::parse_line(&line);
@@ -1145,7 +1222,7 @@ impl FlashingPanel {
 
     fn fel_arrived(&mut self, at: Instant) {
         self.device_lost_at = None;
-        if self.phase.is_waiting() {
+        if self.phase.is_waiting() && self.restart_at.is_none() {
             self.begin_attempt(at);
             self.phase = Phase::Preparing;
             self.append(t!("flashing.log.fel_found"), Tone::Success, at);
@@ -1227,6 +1304,9 @@ impl FlashingPanel {
     }
 
     fn phase_label(&self) -> SharedString {
+        if self.fel_waiting_for_firmware() {
+            return t!("flashing.phase.fel_waiting_for_firmware");
+        }
         match self.phase {
             Phase::NoFirmware => t!("flashing.phase.no_firmware"),
             Phase::ReadingFirmware => t!("flashing.phase.reading"),
@@ -1243,13 +1323,23 @@ impl FlashingPanel {
     }
 
     fn phase_hint(&self) -> SharedString {
+        if self.fel_waiting_for_firmware()
+            && !matches!(
+                self.source.observation(),
+                Some(Observation::Packing(Some(_)))
+            )
+        {
+            return t!("flashing.hint.fel_waiting_for_firmware");
+        }
         match self.phase {
             Phase::NoFirmware => t!("flashing.hint.no_firmware"),
             Phase::ReadingFirmware => t!("flashing.hint.reading"),
             Phase::FirmwareMissing => self
                 .source_hint()
                 .unwrap_or_else(|| t!("flashing.source.missing")),
-            Phase::FirmwareUpdating => t!("flashing.source.updating"),
+            Phase::FirmwareUpdating => self
+                .source_hint()
+                .unwrap_or_else(|| t!("flashing.source.updating")),
             Phase::Ready => t!("flashing.partitions.hint"),
             Phase::Waiting if self.last_result == Some(true) => {
                 t!("flashing.hint.waiting_after_success")
@@ -1266,7 +1356,18 @@ impl FlashingPanel {
         }
     }
 
+    fn fel_waiting_for_firmware(&self) -> bool {
+        !self.fel_devices.is_empty()
+            && (matches!(
+                self.phase,
+                Phase::ReadingFirmware | Phase::FirmwareMissing | Phase::FirmwareUpdating
+            ) || self.source_retry_at.is_some())
+    }
+
     fn phase_color(&self, cx: &App) -> Hsla {
+        if self.fel_waiting_for_firmware() {
+            return cx.theme().warning;
+        }
         match self.phase {
             Phase::Burning => cx.theme().success,
             Phase::Failed => cx.theme().danger,
@@ -1815,13 +1916,33 @@ impl FlashingPanel {
                     .text_sm()
                     .overflow_y_scroll()
                     .track_scroll(&self.scroll)
+                    .capture_any_mouse_up(cx.listener(|panel, event: &MouseUpEvent, _, cx| {
+                        if event.button != MouseButton::Left {
+                            return;
+                        }
+                        panel.pending_log_copy = TerminalInteraction::current(cx).copy_on_select
+                            && panel.log_selection.snapshot(cx).is_some_and(|snapshot| {
+                                let log = Some(panel.log_selection.entity_id());
+                                snapshot.anchor().entity_id() == log
+                                    && snapshot.cursor().entity_id() == log
+                                    && snapshot.anchor() != snapshot.cursor()
+                            });
+                        if panel.pending_log_copy {
+                            cx.notify();
+                        }
+                    }))
                     .child(
                         div()
                             .id("flashing-log-text")
                             .test_support()
                             .w_full()
+                            .cursor_text()
                             .text_color(cx.theme().foreground)
-                            .child(SelectableText::new("flashing-log-content", log_text)),
+                            .child(SelectableText::with_handle(
+                                "flashing-log-content",
+                                self.log_selection.clone(),
+                                log_text,
+                            )),
                     ),
             )
     }
@@ -1901,7 +2022,20 @@ impl Panel for FlashingPanel {
 }
 
 impl Render for FlashingPanel {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if std::mem::take(&mut self.pending_log_copy)
+            && let Some(selection) = self.log_selection.snapshot(cx)
+        {
+            let log_selection = self.log_selection.clone();
+            window.defer(cx, move |window, cx| {
+                if log_selection.snapshot(cx) == Some(selection) && !selection.is_selecting() {
+                    let text = TextSelection::selected_text(window, cx);
+                    if !text.is_empty() {
+                        cx.write_to_clipboard(ClipboardItem::new_string(text));
+                    }
+                }
+            });
+        }
         let tool_state = if let Some(dir) = &self.tool_dir {
             t!("flashing.tool.ready", path = dir.display())
         } else {
@@ -1910,8 +2044,15 @@ impl Render for FlashingPanel {
         let firmware = self
             .firmware
             .as_ref()
-            .map(|path| path.display().to_string())
-            .unwrap_or_else(|| t!("flashing.no_firmware").to_string());
+            .map(|path| SharedString::from(path.display().to_string()))
+            .unwrap_or_else(|| t!("flashing.no_firmware"));
+        let created = self.source.created_at().map(|created| {
+            let local = chrono::DateTime::<chrono::Local>::from(created);
+            t!(
+                "flashing.firmware_created",
+                time = local.format("%Y-%m-%d %H:%M:%S")
+            )
+        });
         v_flex()
             .id("flashing")
             .test_support()
@@ -1967,27 +2108,49 @@ impl Render for FlashingPanel {
                     .border_color(cx.theme().border)
                     .child(
                         h_flex()
-                            .gap_2()
+                            .flex_wrap()
+                            .justify_between()
+                            .gap_3()
                             .child(
                                 div()
-                                    .w_16()
-                                    .flex_shrink_0()
-                                    .text_xs()
-                                    .text_color(cx.theme().muted_foreground)
+                                    .id("flashing-firmware-label")
+                                    .test_support()
+                                    .text_base()
+                                    .font_weight(FontWeight::SEMIBOLD)
                                     .child(t!("flashing.firmware")),
                             )
-                            .child(
-                                div()
-                                    .id("flashing-firmware-path")
-                                    .test_support()
-                                    .aria_label(firmware.clone())
-                                    .flex_1()
-                                    .min_w_0()
-                                    .truncate()
-                                    .font_family(cx.theme().mono_font_family.clone())
-                                    .text_sm()
-                                    .child(firmware),
-                            ),
+                            .when_some(created, |row, created| {
+                                row.child(
+                                    div()
+                                        .id("flashing-firmware-created")
+                                        .test_support()
+                                        .aria_label(created.clone())
+                                        .text_base()
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .tooltip(|window, cx| {
+                                            Tooltip::new(t!("flashing.firmware_created_hint"))
+                                                .build(window, cx)
+                                        })
+                                        .child(created),
+                                )
+                            }),
+                    )
+                    .child(
+                        div()
+                            .id("flashing-firmware-path")
+                            .test_support()
+                            .aria_label(firmware.clone())
+                            .min_w_0()
+                            .truncate()
+                            .font_family(cx.theme().mono_font_family.clone())
+                            .text_base()
+                            .when(self.firmware.is_some(), |path| {
+                                let full_path = firmware.clone();
+                                path.tooltip(move |window, cx| {
+                                    Tooltip::new(full_path.clone()).build(window, cx)
+                                })
+                            })
+                            .child(firmware),
                     )
                     .when_some(
                         self.source_hint().filter(|_| self.progress.has_active()),
@@ -2192,6 +2355,63 @@ mod tests {
     }
 
     #[gpui_kit::test]
+    fn the_flash_log_copies_only_the_selected_line_when_copy_on_select_is_enabled(
+        cx: &mut TestAppContext,
+    ) {
+        use gpui_kit::component::Root;
+        use gpui_kit::{ClipboardItem, point, px, size, test::TestWindowExt as _};
+
+        cx.update(crate::init);
+        let selected_line = "device [2] progress = 86%";
+        let sentinel = "clipboard unchanged";
+        let settings = cx.new(|_| crate::settings::SettingsStore::in_memory());
+        let panel = cx.new(|cx| FlashingPanel::new(cx.focus_handle(), settings, cx));
+        panel.update(cx, |panel, _| {
+            panel.logs.clear();
+            panel.append(selected_line, super::Tone::Normal, Instant::now());
+            panel.append("第二行不应复制", super::Tone::Normal, Instant::now());
+        });
+        let handle = cx.open_window(size(px(1000.), px(800.)), |window, cx| {
+            Root::new(panel, window, cx)
+        });
+        for enabled in [false, true] {
+            cx.update(|cx| {
+                cx.set_global(crate::terminal::TerminalInteraction {
+                    copy_on_select: enabled,
+                    ..Default::default()
+                });
+                cx.write_to_clipboard(ClipboardItem::new_string(sentinel.into()));
+            });
+            cx.update_window(handle.into(), |_, window, cx| {
+                window.render_frame(cx);
+                let bounds = window.find("flashing-log-text").bounds();
+                let top_line = bounds.top() + px(3.);
+                window.drag(
+                    point(bounds.left() + px(1.), top_line),
+                    point(bounds.right() - px(2.), top_line),
+                    cx,
+                );
+                window.render_frame(cx);
+            })
+            .unwrap();
+            let copied = cx.read_from_clipboard().unwrap().text().unwrap();
+            if enabled {
+                assert_eq!(copied.trim_end(), format!("00:00 {selected_line}"));
+            } else {
+                assert_eq!(copied, sentinel);
+            }
+        }
+
+        cx.update_window(handle.into(), |_, window, cx| {
+            cx.write_to_clipboard(ClipboardItem::new_string(sentinel.into()));
+            window.click_at("flashing-log-text", point(px(8.), px(3.)), cx);
+            window.render_frame(cx);
+        })
+        .unwrap();
+        assert_eq!(cx.read_from_clipboard().unwrap().text().unwrap(), sentinel);
+    }
+
+    #[gpui_kit::test]
     fn missing_firmware_is_retained_and_recovers_while_the_tab_is_inactive(
         cx: &mut TestAppContext,
     ) {
@@ -2205,6 +2425,30 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("firmware.img");
         std::fs::write(&path, b"first image").unwrap();
+        let timestamp = |seconds| {
+            let times = std::fs::FileTimes::new()
+                .set_modified(std::time::UNIX_EPOCH + Duration::from_secs(seconds));
+            #[cfg(windows)]
+            let times = {
+                use std::os::windows::fs::FileTimesExt as _;
+                times.set_created(std::time::UNIX_EPOCH + Duration::from_secs(seconds + 3600))
+            };
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(&path)
+                .unwrap()
+                .set_times(times)
+                .unwrap();
+            std::fs::metadata(&path)
+                .unwrap()
+                .created()
+                .ok()
+                .map(|created| {
+                    let local = chrono::DateTime::<chrono::Local>::from(created);
+                    format!("固件生成时间：{}", local.format("%Y-%m-%d %H:%M:%S"))
+                })
+        };
+        let first_timestamp = timestamp(1_700_000_000);
         let settings = cx.new(|_| crate::settings::SettingsStore::in_memory());
         let panel = cx.new(|cx| FlashingPanel::new(cx.focus_handle(), settings.clone(), cx));
         let (run, stopped) = super::Run::test_run();
@@ -2232,6 +2476,23 @@ mod tests {
         let handle = cx.open_window(size(px(1280.), px(800.)), |window, cx| {
             Root::new(panel.clone(), window, cx)
         });
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            let created = window.try_find("flashing-firmware-created");
+            assert_eq!(
+                created.as_ref().and_then(|created| created.label()),
+                first_timestamp.as_deref()
+            );
+            if let Some(created) = created {
+                let label = window.find("flashing-firmware-label");
+                let path = window.find("flashing-firmware-path");
+                assert!(created.visible());
+                assert!(created.bounds().left() >= label.bounds().right());
+                assert!(path.bounds().top() >= created.bounds().bottom());
+                assert_eq!(created.bounds().right(), path.bounds().right());
+            }
+        })
+        .unwrap();
         std::fs::remove_file(&path).unwrap();
         cx.update_window(handle.into(), |_, window, cx| {
             panel.update(cx, |panel, cx| {
@@ -2251,9 +2512,11 @@ mod tests {
             window.render_frame(cx);
             assert_eq!(window.find("flashing-phase").label(), Some("文件不存在"));
             assert_eq!(window.find("flashing-firmware-path").label(), path.to_str());
+            assert!(window.try_find("flashing-firmware-created").is_none());
         })
         .unwrap();
         std::fs::write(&path, b"second image with a new partition layout").unwrap();
+        let second_timestamp = timestamp(1_700_086_400);
         let present = super::source::observe(&path);
         panel.update(cx, |panel, cx| {
             panel.update_source(present.clone(), at + Duration::from_secs(301));
@@ -2285,6 +2548,15 @@ mod tests {
                 Some(&path)
             );
         });
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            let created = window.try_find("flashing-firmware-created");
+            assert_eq!(
+                created.as_ref().and_then(|created| created.label()),
+                second_timestamp.as_deref()
+            );
+        })
+        .unwrap();
         assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 1);
     }
 
@@ -2320,6 +2592,88 @@ mod tests {
             panel.shutdown();
             assert!(sender.send(super::Observation::Missing).is_err());
         });
+    }
+
+    #[gpui_kit::test]
+    fn fel_waits_through_packaging_and_only_a_present_board_is_handed_off(cx: &mut TestAppContext) {
+        use gpui_kit::component::Root;
+        use gpui_kit::test::TestWindowExt as _;
+        use gpui_kit::{px, size};
+
+        crate::i18n::isolate_thread();
+        crate::i18n::set_locale("zh-CN");
+        cx.update(crate::init);
+        let folder = tempfile::tempdir().unwrap();
+        let firmware = folder.path().join("board.img");
+        std::fs::write(&firmware, b"new image").unwrap();
+        let settings = cx.new(|_| crate::settings::SettingsStore::in_memory());
+        let panel = cx.new(|cx| FlashingPanel::new(cx.focus_handle(), settings, cx));
+        let handle = cx.open_window(size(px(1280.), px(800.)), |window, cx| {
+            Root::new(panel.clone(), window, cx)
+        });
+        cx.update_window(handle.into(), |_, window, cx| {
+            for stays_connected in [false, true] {
+                let at = Instant::now();
+                panel.update(cx, |panel, cx| {
+                    panel.select_firmware(firmware.clone(), cx);
+                    panel.tool_dir = Some(folder.path().to_path_buf());
+                    panel.update_source(super::Observation::Packing(None), at);
+                    panel.apply_source_reload();
+                    panel.handle_event(usb_event(at, true));
+                    assert_eq!(panel.phase, Phase::FirmwareUpdating);
+                    assert!(!panel.can_wait());
+                    assert!(panel.run.is_none());
+                    cx.notify();
+                });
+                window.render_frame(cx);
+                assert_eq!(
+                    window.find("flashing-phase").label(),
+                    Some("已检测到开发板，新固件尚未就绪")
+                );
+
+                if !stays_connected {
+                    panel.update(cx, |panel, cx| {
+                        panel.handle_event(usb_event(at, false));
+                        cx.notify();
+                    });
+                    window.render_frame(cx);
+                    assert_eq!(window.find("flashing-phase").label(), Some("等待固件就绪"));
+                }
+
+                panel.update(cx, |panel, cx| {
+                    let published = super::source::observe(&firmware);
+                    panel.update_source(published.clone(), at);
+                    panel.update_source(published, at + super::source::STABLE_INTERVAL);
+                    panel.apply_source_reload();
+                    assert_eq!(panel.phase, Phase::ReadingFirmware);
+                    assert_eq!(panel.fel_waiting_for_firmware(), stays_connected);
+                    panel.firmware_ready(
+                        super::FirmwareInfo {
+                            partitions: vec![],
+                            capabilities: super::FirmwareCapabilities::default(),
+                        },
+                        cx,
+                    );
+                    assert!(panel.restart_at.take().is_some());
+                    assert!(panel.can_wait());
+                    assert!(panel.source.revision().is_some());
+                    let (run, _) = super::Run::test_run();
+                    let (_sender, receiver) = std::sync::mpsc::channel();
+                    panel.set_listener(run, receiver);
+                    assert_eq!(
+                        panel.phase,
+                        if stays_connected {
+                            Phase::Preparing
+                        } else {
+                            Phase::Waiting
+                        }
+                    );
+                    panel.retire_listener();
+                    panel.retiring = None;
+                });
+            }
+        })
+        .unwrap();
     }
 
     #[gpui_kit::test]

@@ -1,20 +1,29 @@
 use super::*;
 use crate::host::{SerialAssistant, SerialCommand, SerialCommandEnding, SerialCommandGroup};
-use gpui_kit::component::switch::Switch;
+use gpui_kit::component::table::{Table, TableBody, TableCell, TableHead, TableHeader, TableRow};
+use gpui_kit::component::{
+    WindowExt as _,
+    form::{Field, Form},
+};
+
+const COMMANDS_PER_PAGE: usize = 16;
+const COMMAND_COLUMNS: [f32; 5] = [4.5, 9.5, 3., 10., 5.5];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SerialAssistantCommand {
-    Enable(bool),
     SelectGroup(u64),
     CreateGroup,
     RenameGroup,
     DeleteGroup,
-    SaveCommand,
     NewCommand,
+    InsertCommand,
+    SelectCommand(u64),
     EditCommand(u64),
+    DuplicateCommand(u64),
     DeleteCommand(u64),
     ToggleCommand(u64, bool),
     MoveUp(u64),
+    MoveDown(u64),
     Run(Option<u64>),
     Stop,
     Undo,
@@ -24,79 +33,479 @@ pub enum SerialAssistantCommand {
 pub(super) struct AssistantEditor {
     group: Option<u64>,
     command: Option<u64>,
-    group_name: Entity<InputState>,
-    name: Entity<InputState>,
-    delay: Entity<InputState>,
+    group_search: Entity<InputState>,
+    command_scroll: ScrollHandle,
+    _group_search_observer: Subscription,
     undo: Option<SerialAssistant>,
     page: usize,
 }
 
 impl AssistantEditor {
     pub(super) fn new(window: &mut Window, cx: &mut Context<SerialToolsPanel>) -> Self {
+        let group_search = cx.new(|cx| {
+            InputState::new(window, cx).placeholder(t!("serial.assistant.search_groups"))
+        });
+        let group_search_observer = cx.observe(&group_search, |_, _, cx| cx.notify());
         Self {
             group: None,
             command: None,
-            group_name: cx.new(|cx| {
-                InputState::new(window, cx)
-                    .placeholder(t!("serial.assistant.group_name"))
-                    .validate(|text, _| text.len() <= 128)
-            }),
-            name: cx.new(|cx| {
-                InputState::new(window, cx)
-                    .placeholder(t!("serial.assistant.command_name"))
-                    .validate(|text, _| text.len() <= 128)
-            }),
-            delay: cx.new(|cx| {
-                InputState::new(window, cx)
-                    .default_value("500")
-                    .validate(|text, _| text.len() <= 5)
-            }),
+            group_search,
+            command_scroll: ScrollHandle::new(),
+            _group_search_observer: group_search_observer,
             undo: None,
             page: 0,
         }
     }
 }
 
+#[derive(Clone, Copy)]
+enum CommandPlacement {
+    Append,
+    Before(u64),
+    Replace(u64),
+}
+
+struct CommandForm {
+    name: Entity<InputState>,
+    content: Entity<TextareaState>,
+    delay: Entity<InputState>,
+    ending: SerialLineEnding,
+    hex: bool,
+    crc: bool,
+}
+
+impl CommandForm {
+    fn new(saved: Option<&SerialCommand>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        Self {
+            name: cx.new(|cx| {
+                InputState::new(window, cx).default_value(saved.map_or("", |command| &command.name))
+            }),
+            content: cx.new(|cx| {
+                TextareaState::new(window, cx)
+                    .rows(4)
+                    .default_value(saved.map_or("", |command| &command.content))
+            }),
+            delay: cx.new(|cx| {
+                InputState::new(window, cx)
+                    .default_value(saved.map_or(500, |command| command.delay_ms).to_string())
+            }),
+            ending: saved.map_or_else(SerialLineEnding::default, |command| {
+                runtime_ending(&command.ending)
+            }),
+            hex: saved.is_some_and(|command| command.hex),
+            crc: saved.is_some_and(|command| command.crc),
+        }
+    }
+
+    fn draft(&self, cx: &App) -> Result<SerialCommand, SharedString> {
+        let name = required_name(self.name.read(cx).value().as_str())?;
+        let delay_ms = self
+            .delay
+            .read(cx)
+            .value()
+            .trim()
+            .parse::<u32>()
+            .ok()
+            .filter(|delay| *delay <= 60000)
+            .ok_or_else(|| t!("serial.assistant.invalid_delay"))?;
+        let mut draft = SerialCommand::default();
+        draft.name = name;
+        draft.content = self.content.read(cx).value().to_string();
+        draft.delay_ms = delay_ms;
+        draft.ending = stored_ending(self.ending);
+        draft.hex = self.hex;
+        draft.crc = self.crc;
+        draft.enabled = true;
+        Ok(draft)
+    }
+}
+
+impl Render for CommandForm {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let content_label = t!("serial.assistant.command_content");
+        Form::new()
+            .child(
+                Field::new()
+                    .label(t!("serial.assistant.command_name"))
+                    .required(true)
+                    .child(Input::new(&self.name).id("serial-assistant-command-name")),
+            )
+            .child(
+                Field::new()
+                    .label(t!("serial.assistant.command_delay"))
+                    .child(Input::new(&self.delay).id("serial-assistant-delay")),
+            )
+            .child(
+                Field::new()
+                    .label(content_label.clone())
+                    .required(true)
+                    .child(
+                        div()
+                            .id("serial-assistant-command-content")
+                            .test_support()
+                            .h(rems(7.))
+                            .child(
+                                Textarea::new(&self.content)
+                                    .h_full()
+                                    .aria_label(content_label)
+                                    .font_family(cx.theme().mono_font_family.clone()),
+                            ),
+                    ),
+            )
+            .child(Field::new().child(h_flex().gap_2().flex_wrap().children(
+                SerialLineEnding::ALL.into_iter().map(|ending| {
+                    ending_style(
+                        Button::new(ending_id(ending))
+                            .small()
+                            .label(ending.label())
+                            .on_click(cx.listener(move |form, _, _, cx| {
+                                form.ending = ending;
+                                cx.notify();
+                            })),
+                        self.ending == ending,
+                    )
+                }),
+            )))
+            .child(
+                Field::new().child(
+                    h_flex()
+                        .gap_2()
+                        .flex_wrap()
+                        .child(
+                            Checkbox::new("serial-assistant-draft-hex")
+                                .small()
+                                .w_auto()
+                                .label(t!("serial.mode.send_hex"))
+                                .checked(self.hex)
+                                .on_click(cx.listener(|form, enabled, _, cx| {
+                                    form.hex = *enabled;
+                                    cx.notify();
+                                })),
+                        )
+                        .child(
+                            Checkbox::new("serial-assistant-draft-crc")
+                                .small()
+                                .w_auto()
+                                .label(t!("serial.tool.crc"))
+                                .checked(self.crc)
+                                .on_click(cx.listener(|form, enabled, _, cx| {
+                                    form.crc = *enabled;
+                                    cx.notify();
+                                })),
+                        ),
+                ),
+            )
+    }
+}
+
+fn required_name(name: &str) -> Result<String, SharedString> {
+    let name = name.trim();
+    if name.is_empty() {
+        Err(t!("serial.assistant.name_required"))
+    } else {
+        Ok(name.to_owned())
+    }
+}
+
+fn dialog_result(result: Result<(), SharedString>, window: &mut Window, cx: &mut App) -> bool {
+    if let Err(error) = result {
+        window.push_notification(crate::shared::form_error_notification(error), cx);
+        false
+    } else {
+        true
+    }
+}
+
+fn ending_id(ending: SerialLineEnding) -> &'static str {
+    match ending {
+        SerialLineEnding::None => "serial-assistant-ending-none",
+        SerialLineEnding::Lf => "serial-assistant-ending-lf",
+        SerialLineEnding::Cr => "serial-assistant-ending-cr",
+        SerialLineEnding::CrLf => "serial-assistant-ending-crlf",
+    }
+}
+
+fn ending_style(button: Button, selected: bool) -> Button {
+    button.selected(selected).toggled(selected).map(|button| {
+        if selected {
+            button.primary().font_weight(FontWeight::SEMIBOLD)
+        } else {
+            button.outline()
+        }
+    })
+}
+
 impl SerialToolsPanel {
-    pub(super) fn apply_assistant_layout(
-        &mut self,
-        enabled: bool,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if self.assistant_layout_enabled == enabled {
-            return;
-        }
-        self.assistant_layout_enabled = enabled;
-        self.group_task = None;
-        self.repeat_task = None;
-        self.page = SerialToolPage::Transfer;
-        self.body_scroll.set_offset(Point::default());
-        if enabled && self.assistant.is_none() {
-            self.assistant = Some(AssistantEditor::new(window, cx));
-        }
+    pub(super) fn render_quick_assistant(&self, running: bool, cx: &App) -> AnyElement {
+        use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
+
+        let dispatch = self.dispatch.clone();
+        let value = self.assistant_value(cx);
+        let group = self.assistant.as_ref().and_then(|editor| editor.group);
+        let current = value
+            .groups
+            .iter()
+            .find(|saved| Some(saved.id) == group)
+            .or_else(|| value.groups.first());
+        let group = current.map(|group| group.id);
+        let any_enabled =
+            current.is_some_and(|group| group.commands.iter().any(|command| command.enabled));
+        let busy = self.group_task.is_some() || self.repeat_task.is_some();
+        let assistant_button = |id, label: SharedString, command: SerialAssistantCommand| {
+            let dispatch = dispatch.clone();
+            Button::new(id)
+                .small()
+                .label(label)
+                .on_click(move |_, window, cx| {
+                    dispatch.send(SerialToolCommand::Assistant(command.clone()), window, cx);
+                })
+        };
+        let tool_button = |id, label: SharedString, command: SerialToolCommand| {
+            let dispatch = dispatch.clone();
+            Button::new(id)
+                .small()
+                .label(label)
+                .on_click(move |_, window, cx| {
+                    dispatch.send(command.clone(), window, cx);
+                })
+        };
+        let edit = dispatch.clone();
+        let choose = dispatch.clone();
+        let automatic = self
+            .target
+            .as_ref()
+            .and_then(WeakEntity::upgrade)
+            .is_some_and(|view| view.read(cx).serial_tool_snapshot(cx).automatic);
+        v_flex()
+            .id("serial-assistant")
+            .test_support()
+            .gap_2()
+            .child(
+                h_flex()
+                    .gap_2()
+                    .flex_wrap()
+                    .child(
+                        Button::new("serial-assistant-edit-groups")
+                            .small()
+                            .outline()
+                            .label(t!("serial.assistant.edit_groups"))
+                            .on_click(move |_, window, cx| {
+                                edit.focus.dispatch_action(
+                                    &crate::app::OpenSerialCommandEditor,
+                                    window,
+                                    cx,
+                                );
+                            }),
+                    )
+                    .child(
+                        Button::new("serial-assistant-group-picker")
+                            .small()
+                            .outline()
+                            .label(
+                                current
+                                    .map(|group| SharedString::from(group.name.clone()))
+                                    .unwrap_or_else(|| t!("serial.assistant.no_groups")),
+                            )
+                            .icon(IconName::ChevronDown)
+                            .disabled(value.groups.is_empty() || busy)
+                            .dropdown_menu(move |menu, _, _| {
+                                value.groups.iter().fold(menu, |menu, saved| {
+                                    let id = saved.id;
+                                    let choose = choose.clone();
+                                    menu.item(
+                                        PopupMenuItem::new(saved.name.clone())
+                                            .checked(group == Some(id))
+                                            .on_click(move |_, window, cx| {
+                                                choose.send(
+                                                    SerialToolCommand::Assistant(
+                                                        SerialAssistantCommand::SelectGroup(id),
+                                                    ),
+                                                    window,
+                                                    cx,
+                                                );
+                                            }),
+                                    )
+                                })
+                            }),
+                    )
+                    .child(
+                        assistant_button(
+                            "serial-assistant-run-quick",
+                            t!("serial.assistant.run"),
+                            SerialAssistantCommand::Run(None),
+                        )
+                        .disabled(!running || !any_enabled || busy || automatic),
+                    )
+                    .when(self.group_task.is_some(), |row| {
+                        row.child(assistant_button(
+                            "serial-assistant-stop-quick",
+                            t!("serial.assistant.stop"),
+                            SerialAssistantCommand::Stop,
+                        ))
+                    })
+                    .when(self.repeat_task.is_some(), |row| {
+                        row.child(tool_button(
+                            "serial-assistant-stop-repeat-quick",
+                            t!("serial.tool.stop_repeat"),
+                            SerialToolCommand::Repeat(false),
+                        ))
+                    }),
+            )
+            .child(
+                h_flex()
+                    .gap_2()
+                    .items_end()
+                    .child(
+                        div()
+                            .id("serial-tool-message")
+                            .test_support()
+                            .capture_action(|action: &gpui_kit::base::input::Enter, window, cx| {
+                                if !action.shift && !action.secondary {
+                                    cx.stop_propagation();
+                                    window.dispatch_action(
+                                        Box::new(crate::app::SerialAssistantAction(
+                                            super::super::SerialAssistantTabCommand::Tool(
+                                                SerialToolCommand::Send,
+                                            ),
+                                        )),
+                                        cx,
+                                    );
+                                }
+                            })
+                            .flex_1()
+                            .min_w_0()
+                            .h(rems(3.5))
+                            .child(
+                                Textarea::new(&self.message)
+                                    .h_full()
+                                    .text_sm()
+                                    .disabled(busy)
+                                    .aria_label(t!("serial.tool.message"))
+                                    .font_family(cx.theme().mono_font_family.clone()),
+                            ),
+                    )
+                    .child(
+                        tool_button(
+                            "serial-tool-send",
+                            t!("serial.hex.send"),
+                            SerialToolCommand::Send,
+                        )
+                        .primary()
+                        .disabled(!self.can_send_assistant(cx)),
+                    ),
+            )
+            .child(
+                h_flex()
+                    .gap_1()
+                    .flex_wrap()
+                    .children(SerialLineEnding::ALL.into_iter().map(|ending| {
+                        ending_style(
+                            tool_button(
+                                ending_id(ending),
+                                ending.label(),
+                                SerialToolCommand::Ending(ending),
+                            ),
+                            self.ending == ending,
+                        )
+                        .disabled(busy)
+                    }))
+                    .child(
+                        Checkbox::new("serial-tool-crc")
+                            .small()
+                            .w_auto()
+                            .label(t!("serial.tool.crc"))
+                            .checked(self.crc)
+                            .disabled(busy)
+                            .on_click({
+                                let dispatch = dispatch.clone();
+                                move |enabled, window, cx| {
+                                    dispatch.send(SerialToolCommand::Crc(*enabled), window, cx)
+                                }
+                            }),
+                    )
+                    .child(
+                        Checkbox::new("serial-tool-repeat")
+                            .small()
+                            .w_auto()
+                            .label(t!("serial.tool.repeat"))
+                            .checked(self.repeat_task.is_some())
+                            .disabled(
+                                self.repeat_task.is_none()
+                                    && (!self.can_send_assistant(cx) || automatic),
+                            )
+                            .on_click(move |enabled, window, cx| {
+                                dispatch.send(SerialToolCommand::Repeat(*enabled), window, cx)
+                            }),
+                    )
+                    .child(
+                        Input::new(&self.interval)
+                            .id("serial-tool-interval")
+                            .small()
+                            .w_16()
+                            .disabled(busy)
+                            .aria_label(t!("serial.tool.repeat")),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child("ms"),
+                    )
+                    .child(
+                        div()
+                            .ml_auto()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(t!("serial.assistant.send_keys")),
+                    ),
+            )
+            .when(!self.status.is_empty(), |body| {
+                body.child(
+                    div()
+                        .id("serial-tool-status")
+                        .test_support()
+                        .role(Role::Status)
+                        .aria_label(self.status.clone())
+                        .text_sm()
+                        .child(self.status.clone()),
+                )
+            })
+            .into_any_element()
     }
 
     fn assistant_value(&self, cx: &App) -> SerialAssistant {
-        self.target
+        self.assistant_storage
             .as_ref()
-            .and_then(WeakEntity::upgrade)
-            .and_then(|view| view.read(cx).serial_assistant_target())
-            .and_then(|(store, key, _)| store.read(cx).serial_assistant(&key).cloned())
+            .and_then(|(store, key, _)| store.read(cx).serial_assistant(key).cloned())
             .unwrap_or_default()
     }
 
-    pub(super) fn assistant_enabled(&self, cx: &App) -> bool {
-        self.target
-            .as_ref()
-            .and_then(WeakEntity::upgrade)
-            .and_then(|view| view.read(cx).serial_assistant_target())
-            .is_some_and(|(store, key, _)| {
-                store
-                    .read(cx)
-                    .serial_assistant(&key)
-                    .is_some_and(|value| value.enabled)
-            })
+    pub(in crate::serial) fn load_saved_command(
+        &mut self,
+        id: u64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self.group_task.is_some() || self.repeat_task.is_some() {
+            return false;
+        }
+        let value = self.assistant_value(cx);
+        let Some(command) = value
+            .groups
+            .iter()
+            .flat_map(|group| &group.commands)
+            .find(|command| command.id == id)
+        else {
+            return false;
+        };
+        self.message.update(cx, |input, cx| {
+            input.set_value(command.content.clone(), window, cx)
+        });
+        self.ending = runtime_ending(&command.ending);
+        self.crc = command.crc;
+        self.set_assistant_send_hex(command.hex, cx);
+        self.status = t!("serial.assistant.loaded_draft");
+        true
     }
 
     fn save_assistant(
@@ -105,18 +514,221 @@ impl SerialToolsPanel {
         cx: &mut Context<Self>,
     ) -> Result<(), SharedString> {
         let (store, key, host) = self
-            .target
+            .assistant_storage
             .as_ref()
-            .and_then(WeakEntity::upgrade)
-            .and_then(|view| view.read(cx).serial_assistant_target())
             .ok_or_else(|| t!("serial.tool.unavailable"))?;
         if store.update(cx, |store, cx| {
-            store.set_serial_assistant(key, host, value, cx)
+            store.set_serial_assistant(key.clone(), *host, value, cx)
         }) {
             Ok(())
         } else {
             Err(t!("serial.assistant.limits"))
         }
+    }
+
+    fn open_group_form(
+        &self,
+        group: Option<&SerialCommandGroup>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if window.has_active_dialog(cx) {
+            return;
+        }
+        let key = self
+            .assistant_storage
+            .as_ref()
+            .map(|(_, key, _)| key.clone());
+        let group_id = group.map(|group| group.id);
+        let name = cx.new(|cx| {
+            InputState::new(window, cx)
+                .default_value(group.map_or("", |group| &group.name))
+                .placeholder(t!("serial.assistant.group_name"))
+        });
+        let owner = cx.weak_entity();
+        let title = if group_id.is_some() {
+            t!("serial.assistant.rename_group")
+        } else {
+            t!("serial.assistant.create_group")
+        };
+        window.open_dialog(cx, move |dialog, _, _| {
+            let (name, owner, key) = (name.clone(), owner.clone(), key.clone());
+            dialog
+                .title(title.clone())
+                .overlay_closable(false)
+                .child(
+                    Form::new().child(
+                        Field::new()
+                            .label(t!("serial.assistant.group_name"))
+                            .required(true)
+                            .child(Input::new(&name).id("serial-assistant-group-name")),
+                    ),
+                )
+                .footer(crate::shared::commit_footer(
+                    "serial-assistant-save-group",
+                    t!("common.save"),
+                ))
+                .on_ok(move |_, window, cx| {
+                    let result = required_name(name.read(cx).value().as_str()).and_then(|name| {
+                        owner
+                            .update(cx, |tools, cx| {
+                                tools.commit_group(key.as_deref(), group_id, name, cx)
+                            })
+                            .map_err(|_| t!("serial.tool.unavailable"))?
+                    });
+                    dialog_result(result, window, cx)
+                })
+                .on_close(|_, window, cx| crate::shared::dismiss_form_error(window, cx))
+        });
+    }
+
+    fn commit_group(
+        &mut self,
+        key: Option<&str>,
+        group_id: Option<u64>,
+        name: String,
+        cx: &mut Context<Self>,
+    ) -> Result<(), SharedString> {
+        self.check_editor_target(key)?;
+        let mut value = self.assistant_value(cx);
+        let id = if let Some(id) = group_id {
+            let group = value
+                .groups
+                .iter_mut()
+                .find(|group| group.id == id)
+                .ok_or_else(|| t!("serial.assistant.create_first"))?;
+            group.name = name;
+            id
+        } else {
+            let mut group = SerialCommandGroup::default();
+            group.id = value.allocate_id();
+            group.name = name;
+            let id = group.id;
+            value.groups.push(group);
+            id
+        };
+        self.save_assistant(value, cx)?;
+        if let Some(editor) = &mut self.assistant {
+            editor.undo = None;
+            if editor.group != Some(id) {
+                editor.group = Some(id);
+                editor.command = None;
+                editor.page = 0;
+            }
+        }
+        self.status = SharedString::default();
+        cx.notify();
+        Ok(())
+    }
+
+    fn check_editor_target(&self, key: Option<&str>) -> Result<(), SharedString> {
+        if self.group_task.is_some()
+            || self.repeat_task.is_some()
+            || !self
+                .assistant_storage
+                .as_ref()
+                .is_some_and(|(_, current, _)| key == Some(current.as_str()))
+        {
+            return Err(t!("serial.tool.unavailable"));
+        }
+        Ok(())
+    }
+
+    fn open_command_form(
+        &self,
+        group: &SerialCommandGroup,
+        placement: CommandPlacement,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if window.has_active_dialog(cx) {
+            return;
+        }
+        let key = self
+            .assistant_storage
+            .as_ref()
+            .map(|(_, key, _)| key.clone());
+        let group_id = group.id;
+        let saved = match placement {
+            CommandPlacement::Replace(id) => group.commands.iter().find(|command| command.id == id),
+            _ => None,
+        };
+        let title = match placement {
+            CommandPlacement::Append => t!("serial.assistant.add_command"),
+            CommandPlacement::Before(_) => t!("serial.assistant.insert_command"),
+            CommandPlacement::Replace(_) => t!("serial.assistant.edit_command"),
+        };
+        let form = cx.new(|cx| CommandForm::new(saved, window, cx));
+        let owner = cx.weak_entity();
+        window.open_dialog(cx, move |dialog, _, _| {
+            let (form, owner, key) = (form.clone(), owner.clone(), key.clone());
+            dialog
+                .title(title.clone())
+                .overlay_closable(false)
+                .child(form.clone())
+                .footer(crate::shared::commit_footer(
+                    "serial-assistant-save-command",
+                    t!("common.save"),
+                ))
+                .on_ok(move |_, window, cx| {
+                    let result = form.read(cx).draft(cx).and_then(|draft| {
+                        owner
+                            .update(cx, |tools, cx| {
+                                tools.commit_command(key.as_deref(), group_id, placement, draft, cx)
+                            })
+                            .map_err(|_| t!("serial.tool.unavailable"))?
+                    });
+                    dialog_result(result, window, cx)
+                })
+                .on_close(|_, window, cx| crate::shared::dismiss_form_error(window, cx))
+        });
+    }
+
+    fn commit_command(
+        &mut self,
+        key: Option<&str>,
+        group_id: u64,
+        placement: CommandPlacement,
+        mut draft: SerialCommand,
+        cx: &mut Context<Self>,
+    ) -> Result<(), SharedString> {
+        self.check_editor_target(key)?;
+        crate::terminal::encode_serial_tool(self.assistant_encoding, &draft.content, draft.hex)?;
+        let mut value = self.assistant_value(cx);
+        draft.id = match placement {
+            CommandPlacement::Replace(id) => id,
+            _ => value.allocate_id(),
+        };
+        let group = value
+            .groups
+            .iter_mut()
+            .find(|group| group.id == group_id)
+            .ok_or_else(|| t!("serial.assistant.create_first"))?;
+        let index = match placement {
+            CommandPlacement::Append => group.commands.len(),
+            CommandPlacement::Before(id) | CommandPlacement::Replace(id) => group
+                .commands
+                .iter()
+                .position(|command| command.id == id)
+                .ok_or_else(|| t!("serial.assistant.command_missing"))?,
+        };
+        let id = draft.id;
+        if matches!(placement, CommandPlacement::Replace(_)) {
+            draft.enabled = group.commands[index].enabled;
+            group.commands[index] = draft;
+        } else {
+            group.commands.insert(index, draft);
+        }
+        self.save_assistant(value, cx)?;
+        if let Some(editor) = &mut self.assistant {
+            editor.group = Some(group_id);
+            editor.command = Some(id);
+            editor.page = index / COMMANDS_PER_PAGE;
+            editor.undo = None;
+        }
+        self.status = SharedString::default();
+        cx.notify();
+        Ok(())
     }
 
     pub(super) fn assistant_command(
@@ -131,63 +743,75 @@ impl SerialToolsPanel {
             return Ok(());
         }
         let mut value = self.assistant_value(cx);
-        if let SerialAssistantCommand::Enable(enabled) = command {
-            self.group_task = None;
-            self.repeat_task = None;
-            value.enabled = *enabled;
-            self.apply_assistant_layout(*enabled, window, cx);
-            window.focus(&self.focus_handle, cx);
-            return self.save_assistant(value, cx);
-        }
-        if !value.enabled || self.group_task.is_some() {
+        if self.group_task.is_some() || self.repeat_task.is_some() {
             return Err(t!("serial.tool.unavailable"));
         }
         if let SerialAssistantCommand::Run(id) = command {
             return self.run_group(*id, cx);
         }
+        let selected_group = self.assistant.as_ref().and_then(|editor| editor.group);
+        let group = value
+            .groups
+            .iter()
+            .find(|group| Some(group.id) == selected_group)
+            .or_else(|| value.groups.first());
+        match command {
+            SerialAssistantCommand::CreateGroup => {
+                self.open_group_form(None, window, cx);
+                return Ok(());
+            }
+            SerialAssistantCommand::RenameGroup => {
+                let group = group.ok_or_else(|| t!("serial.assistant.create_first"))?;
+                self.open_group_form(Some(group), window, cx);
+                return Ok(());
+            }
+            SerialAssistantCommand::NewCommand
+            | SerialAssistantCommand::InsertCommand
+            | SerialAssistantCommand::EditCommand(_) => {
+                let group = group.ok_or_else(|| t!("serial.assistant.create_first"))?;
+                let placement = match command {
+                    SerialAssistantCommand::NewCommand => CommandPlacement::Append,
+                    SerialAssistantCommand::InsertCommand => CommandPlacement::Before(
+                        self.assistant
+                            .as_ref()
+                            .and_then(|editor| editor.command)
+                            .filter(|id| group.commands.iter().any(|saved| saved.id == *id))
+                            .ok_or_else(|| t!("serial.assistant.command_missing"))?,
+                    ),
+                    SerialAssistantCommand::EditCommand(id)
+                        if group.commands.iter().any(|saved| saved.id == *id) =>
+                    {
+                        if let Some(editor) = &mut self.assistant {
+                            editor.command = Some(*id);
+                        }
+                        CommandPlacement::Replace(*id)
+                    }
+                    _ => return Err(t!("serial.assistant.command_missing")),
+                };
+                self.open_command_form(group, placement, window, cx);
+                return Ok(());
+            }
+            _ => {}
+        }
+        let group_id = group.map(|group| group.id);
         let previous = value.clone();
         let Some(editor) = self.assistant.as_mut() else {
             return Ok(());
         };
-        let group_id = editor
-            .group
-            .or_else(|| value.groups.first().map(|group| group.id));
         let selection = (editor.group, editor.command);
         match command {
-            SerialAssistantCommand::CreateGroup => {
-                let name = editor.group_name.read(cx).value().trim().to_owned();
-                if name.is_empty() {
-                    return Err(t!("serial.assistant.name_required"));
-                }
-                let mut group = SerialCommandGroup::default();
-                group.id = value.allocate_id();
-                group.name = name;
-                editor.group = Some(group.id);
-                editor.command = None;
-                editor.page = 0;
-                value.groups.push(group);
-            }
             SerialAssistantCommand::SelectGroup(id) => {
-                if let Some(group) = value.groups.iter().find(|group| group.id == *id) {
+                if value.groups.iter().any(|group| group.id == *id) {
                     editor.group = Some(*id);
                     editor.command = None;
                     editor.page = 0;
-                    editor.group_name.update(cx, |input, cx| {
-                        input.set_value(group.name.clone(), window, cx)
-                    });
+                    editor.command_scroll.set_offset(Point::default());
                 }
             }
-            SerialAssistantCommand::RenameGroup => {
-                let name = editor.group_name.read(cx).value().trim().to_owned();
-                if name.is_empty() {
-                    return Err(t!("serial.assistant.name_required"));
-                }
-                if let Some(group) = value
-                    .groups
-                    .iter_mut()
-                    .find(|group| Some(group.id) == group_id)
+            SerialAssistantCommand::SelectCommand(id) => {
+                if group.is_some_and(|group| group.commands.iter().any(|command| command.id == *id))
                 {
-                    group.name = name;
+                    editor.command = Some(*id);
                 }
             }
             SerialAssistantCommand::DeleteGroup => {
@@ -196,82 +820,20 @@ impl SerialToolsPanel {
                 editor.command = None;
                 editor.undo = Some(previous.clone());
             }
-            SerialAssistantCommand::NewCommand => {
-                editor.command = None;
-                editor
-                    .name
-                    .update(cx, |input, cx| input.set_value("", window, cx));
-            }
-            SerialAssistantCommand::SaveCommand => {
-                let name = editor.name.read(cx).value().trim().to_owned();
-                if name.is_empty() {
-                    return Err(t!("serial.assistant.name_required"));
-                }
-                let delay_ms = editor
-                    .delay
-                    .read(cx)
-                    .value()
-                    .parse::<u32>()
-                    .ok()
-                    .filter(|delay| *delay <= 60000)
-                    .ok_or_else(|| t!("serial.assistant.invalid_delay"))?;
-                let view = self
-                    .target
-                    .as_ref()
-                    .and_then(WeakEntity::upgrade)
-                    .ok_or_else(|| t!("serial.tool.unavailable"))?;
-                let content = self.message.read(cx).value().to_string();
-                let hex = view.read(cx).serial_modes(cx).send_hex;
-                view.read(cx)
-                    .serial_tool_message(&content, hex, self.ending, self.crc, cx)?;
-                let id = editor.command.unwrap_or_else(|| value.allocate_id());
-                let mut saved = SerialCommand::default();
-                saved.id = id;
-                saved.name = name;
-                saved.content = content;
-                saved.hex = hex;
-                saved.ending = stored_ending(self.ending);
-                saved.crc = self.crc;
-                saved.delay_ms = delay_ms;
-                saved.enabled = true;
-                let group = value
+            SerialAssistantCommand::DuplicateCommand(id) => {
+                let new_id = value.allocate_id();
+                if let Some(group) = value
                     .groups
                     .iter_mut()
                     .find(|group| Some(group.id) == group_id)
-                    .ok_or_else(|| t!("serial.assistant.create_first"))?;
-                if let Some(existing) = group.commands.iter_mut().find(|command| command.id == id) {
-                    saved.enabled = existing.enabled;
-                    *existing = saved;
-                } else {
-                    group.commands.push(saved);
-                }
-                editor.command = Some(id);
-            }
-            SerialAssistantCommand::EditCommand(id) => {
-                if let Some(saved) = value
-                    .groups
-                    .iter()
-                    .flat_map(|group| &group.commands)
-                    .find(|command| command.id == *id)
+                    && let Some(index) = group.commands.iter().position(|command| command.id == *id)
                 {
-                    editor.command = Some(*id);
-                    editor.name.update(cx, |input, cx| {
-                        input.set_value(saved.name.clone(), window, cx)
-                    });
-                    editor.delay.update(cx, |input, cx| {
-                        input.set_value(saved.delay_ms.to_string(), window, cx)
-                    });
-                    self.message.update(cx, |input, cx| {
-                        input.set_value(saved.content.clone(), window, cx)
-                    });
-                    self.ending = runtime_ending(&saved.ending);
-                    self.crc = saved.crc;
-                    if let Some(view) = self.target.as_ref().and_then(WeakEntity::upgrade) {
-                        view.update(cx, |view, cx| {
-                            let mut modes = view.serial_modes(cx);
-                            modes.send_hex = saved.hex;
-                            view.set_serial_modes(modes, cx);
-                        });
+                    let mut copy = group.commands[index].clone();
+                    copy.id = new_id;
+                    group.commands.insert(index + 1, copy);
+                    if value.is_valid() {
+                        editor.page = (index + 1) / COMMANDS_PER_PAGE;
+                        editor.command = Some(new_id);
                     }
                 }
             }
@@ -294,15 +856,22 @@ impl SerialToolsPanel {
                     saved.enabled = *enabled;
                 }
             }
-            SerialAssistantCommand::MoveUp(id) => {
+            SerialAssistantCommand::MoveUp(id) | SerialAssistantCommand::MoveDown(id) => {
                 if let Some(group) = value
                     .groups
                     .iter_mut()
                     .find(|group| Some(group.id) == group_id)
                     && let Some(index) = group.commands.iter().position(|command| command.id == *id)
-                    && index > 0
                 {
-                    group.commands.swap(index, index - 1);
+                    let neighbor = if matches!(command, SerialAssistantCommand::MoveUp(_)) {
+                        index.checked_sub(1)
+                    } else {
+                        (index + 1 < group.commands.len()).then_some(index + 1)
+                    };
+                    if let Some(neighbor) = neighbor {
+                        group.commands.swap(index, neighbor);
+                        editor.page = neighbor / COMMANDS_PER_PAGE;
+                    }
                 }
             }
             SerialAssistantCommand::Undo => {
@@ -317,16 +886,23 @@ impl SerialToolsPanel {
                     .groups
                     .iter()
                     .find(|group| Some(group.id) == group_id)
-                    .map_or(1, |group| group.commands.len().max(1).div_ceil(6));
+                    .map_or(1, |group| {
+                        group.commands.len().max(1).div_ceil(COMMANDS_PER_PAGE)
+                    });
                 editor.page = if *next {
                     (editor.page + 1).min(pages - 1)
                 } else {
                     editor.page.saturating_sub(1)
                 };
+                editor.command_scroll.set_offset(Point::default());
             }
             SerialAssistantCommand::Run(_)
             | SerialAssistantCommand::Stop
-            | SerialAssistantCommand::Enable(_) => unreachable!(),
+            | SerialAssistantCommand::CreateGroup
+            | SerialAssistantCommand::RenameGroup
+            | SerialAssistantCommand::NewCommand
+            | SerialAssistantCommand::InsertCommand
+            | SerialAssistantCommand::EditCommand(_) => unreachable!(),
         }
         if !value.is_valid() {
             editor.group = selection.0;
@@ -442,43 +1018,13 @@ impl SerialToolsPanel {
         Ok(())
     }
 
-    pub(super) fn render_assistant_switch(&self, cx: &App) -> impl IntoElement + use<> {
-        let dispatch = self.dispatch.clone();
-        let available = self
-            .target
-            .as_ref()
-            .and_then(WeakEntity::upgrade)
-            .is_some_and(|view| view.read(cx).serial_assistant_target().is_some());
-        div().p_3().flex_shrink_0().child(
-            Switch::new("serial-assistant-enable")
-                .small()
-                .label(t!("serial.assistant.enable"))
-                .checked(self.assistant_enabled(cx))
-                .disabled(!available)
-                .tooltip(t!("serial.assistant.scope"))
-                .on_click(move |enabled, window, cx| {
-                    dispatch.dispatch_action(
-                        &SerialToolAction(SerialToolCommand::Assistant(
-                            SerialAssistantCommand::Enable(*enabled),
-                        )),
-                        window,
-                        cx,
-                    )
-                }),
-        )
-    }
-
-    pub(super) fn render_assistant(&self, running: bool, cx: &App) -> AnyElement {
+    pub(super) fn render_assistant(&self, cx: &App) -> AnyElement {
         let Some(editor) = &self.assistant else {
             return div().into_any_element();
         };
-        let source = self
-            .target
-            .as_ref()
-            .and_then(WeakEntity::upgrade)
-            .and_then(|view| view.read(cx).serial_assistant_target());
         let default = SerialAssistant::default();
-        let value = source
+        let value = self
+            .assistant_storage
             .as_ref()
             .and_then(|(store, key, _)| store.read(cx).serial_assistant(key))
             .unwrap_or(&default);
@@ -488,12 +1034,9 @@ impl SerialToolsPanel {
             .find(|group| Some(group.id) == editor.group)
             .or_else(|| value.groups.first());
         let busy = self.group_task.is_some() || self.repeat_task.is_some();
-        let automatic = self
-            .target
-            .as_ref()
-            .and_then(WeakEntity::upgrade)
-            .is_some_and(|view| view.read(cx).serial_tool_snapshot(cx).automatic);
-        let page_count = group.map_or(1, |group| group.commands.len().max(1).div_ceil(6));
+        let page_count = group.map_or(1, |group| {
+            group.commands.len().max(1).div_ceil(COMMANDS_PER_PAGE)
+        });
         let page = editor.page.min(page_count - 1);
         let button = |id: ElementId, label: SharedString, command: SerialAssistantCommand| {
             let dispatch = self.dispatch.clone();
@@ -502,203 +1045,60 @@ impl SerialToolsPanel {
                 .label(label)
                 .disabled(busy)
                 .on_click(move |_, window, cx| {
-                    dispatch.dispatch_action(
-                        &SerialToolAction(SerialToolCommand::Assistant(command.clone())),
-                        window,
-                        cx,
-                    )
-                })
-        };
-        let tool = |id: &'static str, label: SharedString, command: SerialToolCommand| {
-            let dispatch = self.dispatch.clone();
-            Button::new(id)
-                .small()
-                .label(label)
-                .on_click(move |_, window, cx| {
-                    dispatch.dispatch_action(&SerialToolAction(command.clone()), window, cx)
-                })
-        };
-        let icon_button = |id: ElementId,
-                           icon: Icon,
-                           label: SharedString,
-                           command: SerialAssistantCommand,
-                           disabled: bool| {
-            let dispatch = self.dispatch.clone();
-            Button::new(id)
-                .ghost()
-                .xsmall()
-                .icon(icon)
-                .tooltip(label.clone())
-                .accessibility_label(label)
-                .disabled(disabled)
-                .on_click(move |_, window, cx| {
-                    dispatch.dispatch_action(
-                        &SerialToolAction(SerialToolCommand::Assistant(command.clone())),
-                        window,
-                        cx,
-                    )
+                    dispatch.send(SerialToolCommand::Assistant(command.clone()), window, cx)
                 })
         };
         let commands = group
             .map(|group| group.commands.as_slice())
             .unwrap_or_default();
-        let any_enabled = commands.iter().any(|command| command.enabled);
-        let command_list = if commands.is_empty() {
-            v_flex()
-                .size_full()
-                .min_h_0()
-                .items_center()
-                .justify_center()
-                .gap_2()
-                .px_4()
-                .text_center()
-                .child(
-                    div()
-                        .text_sm()
-                        .text_color(cx.theme().muted_foreground)
-                        .child(t!("serial.assistant.empty")),
-                )
-                .into_any_element()
-        } else {
-            v_flex()
-                .gap_1()
-                .children(commands.iter().enumerate().skip(page * 6).take(6).map(
-                    |(index, command)| {
-                        let dispatch = self.dispatch.clone();
-                        let id = command.id;
-                        v_flex()
-                            .gap_1()
-                            .py_2()
-                            .border_b_1()
-                            .border_color(cx.theme().border)
-                            .child(
-                                h_flex()
-                                    .gap_1()
-                                    .items_center()
-                                    .child(
-                                        Checkbox::new(("serial-assistant-command-enabled", id))
-                                            .small()
-                                            .w_auto()
-                                            .checked(command.enabled)
-                                            .disabled(busy)
-                                            .label(t!("serial.assistant.include"))
-                                            .on_click(move |enabled, window, cx| {
-                                                dispatch.dispatch_action(
-                                                    &SerialToolAction(
-                                                        SerialToolCommand::Assistant(
-                                                            SerialAssistantCommand::ToggleCommand(
-                                                                id, *enabled,
-                                                            ),
-                                                        ),
-                                                    ),
-                                                    window,
-                                                    cx,
-                                                )
-                                            }),
-                                    )
-                                    .child(
-                                        div().flex_1().min_w_0().child(
-                                            button(
-                                                ("serial-assistant-edit", id).into(),
-                                                command.name.clone().into(),
-                                                SerialAssistantCommand::EditCommand(id),
-                                            )
-                                            .ghost()
-                                            .selected(editor.command == Some(id)),
-                                        ),
-                                    )
-                                    .child(
-                                        button(
-                                            ("serial-assistant-send", id).into(),
-                                            t!("serial.hex.send"),
-                                            SerialAssistantCommand::Run(Some(id)),
-                                        )
-                                        .disabled(!running || busy || automatic),
-                                    ),
-                            )
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .truncate()
-                                    .font_family(cx.theme().mono_font_family.clone())
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child(command.content.chars().take(80).collect::<String>()),
-                            )
-                            .child(
-                                h_flex()
-                                    .gap_1()
-                                    .items_center()
-                                    .child(
-                                        div()
-                                            .flex_1()
-                                            .text_xs()
-                                            .text_color(cx.theme().muted_foreground)
-                                            .child(t!(
-                                                "serial.assistant.command_info",
-                                                format = if command.hex { "HEX" } else { "STR" },
-                                                ending = runtime_ending(&command.ending).label(),
-                                                delay = command.delay_ms
-                                            )),
-                                    )
-                                    .child(icon_button(
-                                        ("serial-assistant-up", id).into(),
-                                        Icon::new(IconName::ArrowUp),
-                                        t!("serial.assistant.move_up"),
-                                        SerialAssistantCommand::MoveUp(id),
-                                        busy || index == 0,
-                                    ))
-                                    .child(icon_button(
-                                        ("serial-assistant-delete", id).into(),
-                                        Icon::new(CatalogIcon::Trash),
-                                        t!("serial.assistant.delete"),
-                                        SerialAssistantCommand::DeleteCommand(id),
-                                        busy,
-                                    )),
-                            )
-                    },
-                ))
-                .into_any_element()
-        };
-        v_flex()
+        let command_list = self.render_command_table(commands, editor.command, page, busy, cx);
+        let query = editor.group_search.read(cx).value().trim().to_lowercase();
+        h_flex()
             .id("serial-assistant")
             .test_support()
             .size_full()
             .min_h_0()
-            .gap_3()
+            .items_start()
             .child(
                 v_flex()
-                    .flex_1()
+                    .w(rems(13.))
+                    .h_full()
+                    .flex_shrink_0()
                     .min_h_0()
+                    .p_2()
                     .gap_2()
-                    .child(div().text_sm().child(t!("serial.assistant.groups")))
+                    .border_r_1()
+                    .border_color(cx.theme().border)
+                    .bg(cx.theme().sidebar)
+                    .child(
+                        button(
+                            "serial-assistant-create-group".into(),
+                            t!("serial.assistant.create_group_button"),
+                            SerialAssistantCommand::CreateGroup,
+                        )
+                        .icon(IconName::Plus)
+                        .outline()
+                        .w_full()
+                        .disabled(busy || value.groups.len() >= 32),
+                    )
+                    .child(
+                        Input::new(&editor.group_search)
+                            .id("serial-assistant-group-search")
+                            .small()
+                            .aria_label(t!("serial.assistant.search_groups")),
+                    )
                     .child(
                         h_flex()
                             .gap_1()
                             .items_center()
-                            .child(
-                                div().flex_1().min_w_0().child(
-                                    Input::new(&editor.group_name)
-                                        .id("serial-assistant-group-name")
-                                        .small()
-                                        .disabled(busy)
-                                        .aria_label(t!("serial.assistant.group_name")),
-                                ),
-                            )
-                            .child(icon_button(
-                                "serial-assistant-create-group".into(),
-                                Icon::new(IconName::Plus),
-                                t!("serial.assistant.create_group"),
-                                SerialAssistantCommand::CreateGroup,
-                                busy,
-                            ))
-                            .child(icon_button(
+                            .child(self.command_icon(
                                 "serial-assistant-rename-group".into(),
                                 Icon::new(CatalogIcon::Pencil),
-                                t!("serial.assistant.rename_group"),
+                                t!("serial.assistant.rename_group_button"),
                                 SerialAssistantCommand::RenameGroup,
                                 busy || group.is_none(),
                             ))
-                            .child(icon_button(
+                            .child(self.command_icon(
                                 "serial-assistant-delete-group".into(),
                                 Icon::new(CatalogIcon::Trash),
                                 t!("serial.assistant.delete_group"),
@@ -706,7 +1106,7 @@ impl SerialToolsPanel {
                                 busy || group.is_none(),
                             ))
                             .when(editor.undo.is_some(), |row| {
-                                row.child(icon_button(
+                                row.child(self.command_icon(
                                     "serial-assistant-undo".into(),
                                     Icon::new(CatalogIcon::RotateCcw),
                                     t!("serial.assistant.undo"),
@@ -716,242 +1116,382 @@ impl SerialToolsPanel {
                             }),
                     )
                     .child(
-                        h_flex()
-                            .gap_1()
-                            .flex_wrap()
-                            .children(value.groups.iter().map(|saved| {
-                                button(
-                                    ("serial-assistant-group", saved.id).into(),
-                                    saved.name.clone().into(),
-                                    SerialAssistantCommand::SelectGroup(saved.id),
-                                )
-                                .selected(group.is_some_and(|group| group.id == saved.id))
-                            })),
-                    )
-                    .child(
-                        div()
-                            .id("serial-assistant-commands")
+                        v_flex()
+                            .id("serial-assistant-groups")
                             .test_support()
+                            .gap_1()
                             .flex_1()
                             .min_h_0()
                             .overflow_y_scroll()
-                            .track_scroll(&self.body_scroll)
-                            .vertical_scrollbar(&self.body_scroll)
-                            .child(command_list),
-                    )
-                    .when(page_count > 1, |body| {
-                        body.child(
-                            h_flex()
-                                .gap_2()
-                                .items_center()
-                                .child(
-                                    button(
-                                        "serial-assistant-previous".into(),
-                                        t!("serial.assistant.previous"),
-                                        SerialAssistantCommand::CommandPage(false),
-                                    )
-                                    .disabled(busy || page == 0),
-                                )
-                                .child(div().flex_1().text_xs().child(t!(
-                                    "serial.assistant.page",
-                                    page = page + 1,
-                                    total = page_count
-                                )))
-                                .child(
-                                    button(
-                                        "serial-assistant-next".into(),
-                                        t!("serial.assistant.next"),
-                                        SerialAssistantCommand::CommandPage(true),
-                                    )
-                                    .disabled(busy || page + 1 == page_count),
-                                ),
-                        )
-                    })
-                    .child(
-                        h_flex()
-                            .gap_2()
-                            .child(
-                                button(
-                                    "serial-assistant-run".into(),
-                                    t!("serial.assistant.run"),
-                                    SerialAssistantCommand::Run(None),
-                                )
-                                .flex_1()
-                                .disabled(!running || busy || automatic || !any_enabled),
-                            )
-                            .child(
-                                tool(
-                                    "serial-assistant-stop",
-                                    t!("serial.assistant.stop"),
-                                    SerialToolCommand::Assistant(SerialAssistantCommand::Stop),
-                                )
-                                .disabled(self.group_task.is_none()),
+                            .children(
+                                value
+                                    .groups
+                                    .iter()
+                                    .filter(|saved| saved.name.to_lowercase().contains(&query))
+                                    .map(|saved| {
+                                        button(
+                                            ("serial-assistant-group", saved.id).into(),
+                                            saved.name.clone().into(),
+                                            SerialAssistantCommand::SelectGroup(saved.id),
+                                        )
+                                        .ghost()
+                                        .w_full()
+                                        .selected(group.is_some_and(|group| group.id == saved.id))
+                                    }),
                             ),
                     ),
             )
             .child(
                 v_flex()
-                    .flex_shrink_0()
-                    .gap_1()
-                    .pt_3()
-                    .border_t_1()
-                    .border_color(cx.theme().border)
+                    .flex_1()
+                    .h_full()
+                    .min_w_0()
+                    .min_h_0()
+                    .p_2()
+                    .gap_3()
                     .child(
-                        h_flex()
-                            .justify_between()
-                            .items_center()
-                            .child(div().text_sm().child(t!("serial.tool.message")))
+                        v_flex()
+                            .flex_1()
+                            .min_h_0()
+                            .gap_2()
                             .child(
-                                button(
-                                    "serial-assistant-new-command".into(),
-                                    t!("serial.assistant.new_command"),
-                                    SerialAssistantCommand::NewCommand,
+                                h_flex()
+                                    .gap_2()
+                                    .items_center()
+                                    .flex_wrap()
+                                    .child(
+                                        button(
+                                            "serial-assistant-new-command".into(),
+                                            t!("serial.assistant.add_command_button"),
+                                            SerialAssistantCommand::NewCommand,
+                                        )
+                                        .icon(IconName::Plus)
+                                        .outline()
+                                        .disabled(busy || group.is_none() || commands.len() >= 128),
+                                    )
+                                    .child(
+                                        button(
+                                            "serial-assistant-insert-command".into(),
+                                            t!("serial.assistant.insert_command_button"),
+                                            SerialAssistantCommand::InsertCommand,
+                                        )
+                                        .outline()
+                                        .disabled(
+                                            busy || commands.len() >= 128
+                                                || !commands.iter().any(|command| {
+                                                    Some(command.id) == editor.command
+                                                }),
+                                        ),
+                                    )
+                                    .child(div().flex_1())
+                                    .child(self.editor_page_button(SerialToolPage::Reply))
+                                    .child(self.return_to_console_button()),
+                            )
+                            .child(
+                                div()
+                                    .id("serial-assistant-commands")
+                                    .test_support()
+                                    .flex_1()
+                                    .min_h_0()
+                                    .overflow_scroll()
+                                    .track_scroll(&editor.command_scroll)
+                                    .vertical_scrollbar(&editor.command_scroll)
+                                    .horizontal_scrollbar(&editor.command_scroll)
+                                    .child(
+                                        v_flex()
+                                            .min_w(rems(45.))
+                                            .w_full()
+                                            .child(command_list)
+                                            .when(commands.is_empty(), |column| {
+                                                column.child(
+                                                    div()
+                                                        .id("serial-assistant-command-empty")
+                                                        .test_support()
+                                                        .text_center()
+                                                        .py_6()
+                                                        .text_sm()
+                                                        .text_color(cx.theme().muted_foreground)
+                                                        .child(if group.is_some() {
+                                                            t!("serial.assistant.empty")
+                                                        } else {
+                                                            t!("serial.assistant.create_first")
+                                                        }),
+                                                )
+                                            }),
+                                    ),
+                            )
+                            .when(page_count > 1, |body| {
+                                body.child(
+                                    h_flex()
+                                        .gap_2()
+                                        .items_center()
+                                        .child(
+                                            button(
+                                                "serial-assistant-previous".into(),
+                                                t!("serial.assistant.previous"),
+                                                SerialAssistantCommand::CommandPage(false),
+                                            )
+                                            .disabled(busy || page == 0),
+                                        )
+                                        .child(div().flex_1().text_xs().child(t!(
+                                            "serial.assistant.page",
+                                            page = page + 1,
+                                            total = page_count
+                                        )))
+                                        .child(
+                                            button(
+                                                "serial-assistant-next".into(),
+                                                t!("serial.assistant.next"),
+                                                SerialAssistantCommand::CommandPage(true),
+                                            )
+                                            .disabled(busy || page + 1 == page_count),
+                                        ),
                                 )
-                                .ghost(),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .id("serial-tool-message")
-                            .test_support()
-                            .h(rems(6.))
-                            .child(
-                                Textarea::new(&self.message)
-                                    .h(relative(1.))
-                                    .text_sm()
-                                    .disabled(busy)
-                                    .aria_label(t!("serial.tool.message"))
-                                    .font_family(cx.theme().mono_font_family.clone()),
-                            ),
-                    )
-                    .child(h_flex().gap_1().flex_wrap().children(
-                        SerialLineEnding::ALL.into_iter().map(|ending| {
-                            tool(
-                                match ending {
-                                    SerialLineEnding::None => "serial-assistant-ending-none",
-                                    SerialLineEnding::Lf => "serial-assistant-ending-lf",
-                                    SerialLineEnding::Cr => "serial-assistant-ending-cr",
-                                    SerialLineEnding::CrLf => "serial-assistant-ending-crlf",
-                                },
-                                ending.label(),
-                                SerialToolCommand::Ending(ending),
-                            )
-                            .selected(self.ending == ending)
-                            .disabled(busy)
-                        }),
-                    ))
-                    .child(
-                        h_flex()
-                            .gap_2()
-                            .items_center()
-                            .child(
-                                Checkbox::new("serial-tool-crc")
-                                    .small()
-                                    .w_auto()
-                                    .label(t!("serial.tool.crc"))
-                                    .checked(self.crc)
-                                    .disabled(busy)
-                                    .on_click({
-                                        let dispatch = self.dispatch.clone();
-                                        move |enabled, window, cx| {
-                                            dispatch.dispatch_action(
-                                                &SerialToolAction(SerialToolCommand::Crc(*enabled)),
-                                                window,
-                                                cx,
-                                            )
-                                        }
-                                    }),
-                            )
-                            .child(div().flex_1()),
-                    )
-                    .child(
-                        tool(
-                            "serial-tool-send",
-                            t!("serial.hex.send"),
-                            SerialToolCommand::Send,
-                        )
-                        .primary()
-                        .w_full()
-                        .disabled(!running || busy),
-                    )
-                    .child(
-                        h_flex()
-                            .gap_2()
-                            .items_center()
-                            .child(
-                                Checkbox::new("serial-tool-repeat")
-                                    .small()
-                                    .w_auto()
-                                    .label(t!("serial.tool.repeat"))
-                                    .checked(self.repeat_task.is_some())
-                                    .disabled(!running || self.group_task.is_some())
-                                    .on_click({
-                                        let dispatch = self.dispatch.clone();
-                                        move |enabled, window, cx| {
-                                            dispatch.dispatch_action(
-                                                &SerialToolAction(SerialToolCommand::Repeat(
-                                                    *enabled,
-                                                )),
-                                                window,
-                                                cx,
-                                            )
-                                        }
-                                    }),
-                            )
-                            .child(
-                                div().flex_1().min_w_0().child(
-                                    Input::new(&self.interval)
-                                        .id("serial-tool-interval")
-                                        .small()
-                                        .disabled(busy)
-                                        .aria_label(t!("serial.tool.repeat")),
-                                ),
-                            )
-                            .child(div().text_xs().child("ms")),
-                    )
-                    .child(
-                        Input::new(&editor.name)
-                            .id("serial-assistant-command-name")
-                            .small()
-                            .disabled(busy)
-                            .aria_label(t!("serial.assistant.command_name")),
-                    )
-                    .child(
-                        h_flex()
-                            .gap_2()
-                            .items_center()
-                            .child(div().text_xs().child(t!("serial.assistant.delay")))
-                            .child(
-                                div().flex_1().min_w_0().child(
-                                    Input::new(&editor.delay)
-                                        .id("serial-assistant-delay")
-                                        .small()
-                                        .disabled(busy),
-                                ),
-                            )
-                            .child(div().text_xs().child("ms")),
-                    )
-                    .child(
-                        button(
-                            "serial-assistant-save-command".into(),
-                            if editor.command.is_some() {
-                                t!("serial.assistant.save_command")
-                            } else {
-                                t!("serial.assistant.add_command")
-                            },
-                            SerialAssistantCommand::SaveCommand,
-                        )
-                        .w_full()
-                        .disabled(busy || group.is_none()),
-                    )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(t!("serial.assistant.saved_hint")),
+                            })
+                            .when(!self.status.is_empty(), |body| {
+                                body.child(
+                                    div()
+                                        .id("serial-tool-status")
+                                        .test_support()
+                                        .text_sm()
+                                        .aria_label(self.status.clone())
+                                        .child(self.status.clone()),
+                                )
+                            }),
                     ),
             )
             .into_any_element()
+    }
+
+    fn command_icon(
+        &self,
+        id: ElementId,
+        icon: Icon,
+        label: SharedString,
+        command: SerialAssistantCommand,
+        disabled: bool,
+    ) -> Button {
+        let dispatch = self.dispatch.clone();
+        Button::new(id)
+            .ghost()
+            .xsmall()
+            .icon(icon)
+            .tooltip(label.clone())
+            .accessibility_label(label)
+            .disabled(disabled)
+            .on_click(move |_, window, cx| {
+                dispatch.send(SerialToolCommand::Assistant(command.clone()), window, cx)
+            })
+    }
+
+    fn render_command_table(
+        &self,
+        commands: &[SerialCommand],
+        selected: Option<u64>,
+        page: usize,
+        busy: bool,
+        cx: &App,
+    ) -> Table {
+        let fixed_head = |width, label: SharedString| {
+            TableHead::new()
+                .w(rems(width))
+                .min_w_0()
+                .flex_shrink_0()
+                .child(label)
+        };
+        let header = TableRow::new()
+            .child(fixed_head(
+                COMMAND_COLUMNS[0],
+                t!("serial.assistant.command_sort"),
+            ))
+            .child(fixed_head(
+                COMMAND_COLUMNS[1],
+                t!("serial.assistant.command_actions"),
+            ))
+            .child(fixed_head(
+                COMMAND_COLUMNS[2],
+                t!("serial.assistant.command_index"),
+            ))
+            .child(fixed_head(
+                COMMAND_COLUMNS[3],
+                t!("serial.assistant.command_name"),
+            ))
+            .child(fixed_head(
+                COMMAND_COLUMNS[4],
+                t!("serial.assistant.command_delay"),
+            ))
+            .child(
+                TableHead::new()
+                    .flex_1()
+                    .min_w_0()
+                    .child(t!("serial.assistant.command_content")),
+            );
+        Table::new()
+            .small()
+            .accessibility_label(t!("serial.assistant.commands"))
+            .child(TableHeader::new().child(header))
+            .child(
+                TableBody::new().children(
+                    commands
+                        .iter()
+                        .enumerate()
+                        .skip(page * COMMANDS_PER_PAGE)
+                        .take(COMMANDS_PER_PAGE)
+                        .map(|(index, command)| {
+                            self.render_command_row(
+                                index,
+                                command,
+                                commands.len(),
+                                selected == Some(command.id),
+                                busy,
+                                cx,
+                            )
+                        }),
+                ),
+            )
+    }
+
+    fn render_command_row(
+        &self,
+        index: usize,
+        command: &SerialCommand,
+        count: usize,
+        selected: bool,
+        busy: bool,
+        cx: &App,
+    ) -> TableRow {
+        let cell = |width| {
+            TableCell::new()
+                .w(rems(width))
+                .min_w_0()
+                .flex_shrink_0()
+                .items_center()
+        };
+        let id = command.id;
+        let dispatch = self.dispatch.clone();
+        let select = dispatch.clone();
+        let load = self.dispatch.focus.clone();
+        let load_label = t!("serial.assistant.load_draft");
+        let preview = command.content.replace('\r', "").replace('\n', " ↵ ");
+        TableRow::new()
+            .when(selected, |row| row.bg(cx.theme().list_active))
+            .child(
+                cell(COMMAND_COLUMNS[0]).child(
+                    h_flex()
+                        .child(self.command_icon(
+                            ("serial-assistant-up", id).into(),
+                            Icon::new(IconName::ArrowUp),
+                            t!("serial.assistant.move_up"),
+                            SerialAssistantCommand::MoveUp(id),
+                            busy || index == 0,
+                        ))
+                        .child(self.command_icon(
+                            ("serial-assistant-down", id).into(),
+                            Icon::new(IconName::ArrowDown),
+                            t!("serial.assistant.move_down"),
+                            SerialAssistantCommand::MoveDown(id),
+                            busy || index + 1 == count,
+                        )),
+                ),
+            )
+            .child(
+                cell(COMMAND_COLUMNS[1]).child(
+                    h_flex()
+                        .items_center()
+                        .child(
+                            Checkbox::new(("serial-assistant-command-enabled", id))
+                                .small()
+                                .w_auto()
+                                .accessibility_label(t!("serial.assistant.include"))
+                                .checked(command.enabled)
+                                .disabled(busy)
+                                .on_click(move |enabled, window, cx| {
+                                    dispatch.send(
+                                        SerialToolCommand::Assistant(
+                                            SerialAssistantCommand::ToggleCommand(id, *enabled),
+                                        ),
+                                        window,
+                                        cx,
+                                    )
+                                }),
+                        )
+                        .child(self.command_icon(
+                            ("serial-assistant-edit", id).into(),
+                            Icon::new(CatalogIcon::Pencil),
+                            t!("serial.assistant.edit_command_button"),
+                            SerialAssistantCommand::EditCommand(id),
+                            busy,
+                        ))
+                        .child(self.command_icon(
+                            ("serial-assistant-duplicate", id).into(),
+                            Icon::new(IconName::Copy),
+                            t!("serial.assistant.duplicate"),
+                            SerialAssistantCommand::DuplicateCommand(id),
+                            busy || count >= 128,
+                        ))
+                        .child(
+                            Button::new(("serial-assistant-load", id))
+                                .ghost()
+                                .xsmall()
+                                .icon(IconName::ArrowLeft)
+                                .tooltip(load_label.clone())
+                                .accessibility_label(load_label)
+                                .disabled(busy)
+                                .on_click(move |_, window, cx| {
+                                    load.dispatch_action(
+                                        &crate::app::LoadSerialCommand(id),
+                                        window,
+                                        cx,
+                                    )
+                                }),
+                        )
+                        .child(self.command_icon(
+                            ("serial-assistant-delete", id).into(),
+                            Icon::new(CatalogIcon::Trash),
+                            t!("serial.assistant.delete"),
+                            SerialAssistantCommand::DeleteCommand(id),
+                            busy,
+                        )),
+                ),
+            )
+            .child(cell(COMMAND_COLUMNS[2]).child((index + 1).to_string()))
+            .child(
+                cell(COMMAND_COLUMNS[3]).child(
+                    Button::new(("serial-assistant-select-command", id))
+                        .xsmall()
+                        .ghost()
+                        .label(command.name.clone())
+                        .w_full()
+                        .truncate()
+                        .toggled(selected)
+                        .disabled(busy)
+                        .on_click(move |_, window, cx| {
+                            select.send(
+                                SerialToolCommand::Assistant(
+                                    SerialAssistantCommand::SelectCommand(id),
+                                ),
+                                window,
+                                cx,
+                            )
+                        }),
+                ),
+            )
+            .child(cell(COMMAND_COLUMNS[4]).child(command.delay_ms.to_string()))
+            .child(
+                TableCell::new()
+                    .min_w_0()
+                    .flex_1()
+                    .items_center()
+                    .overflow_hidden()
+                    .child(
+                        div()
+                            .min_w_0()
+                            .truncate()
+                            .whitespace_nowrap()
+                            .font_family(cx.theme().mono_font_family.clone())
+                            .child(preview),
+                    ),
+            )
     }
 }
 

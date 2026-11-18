@@ -3,9 +3,132 @@ _version: 2
 serial.assistant.title:
   zh-CN: 串口助手
   en: Serial assistant
-serial.assistant.enable:
-  zh-CN: 增加串口助手
-  en: Enable serial assistant
+serial.assistant.show_entry:
+  zh-CN: 显示串口助手入口
+  en: Show serial assistant button
+serial.assistant.show_entry_description:
+  zh-CN: 在窗口右上角显示入口，用于打开独立的串口助手标签页。
+  en: Show a title bar button that opens the serial assistant in its own tab.
+serial.assistant.connect:
+  zh-CN: 打开串口
+  en: Open port
+serial.assistant.disconnect:
+  zh-CN: 关闭串口
+  en: Close port
+serial.assistant.connecting:
+  zh-CN: 正在打开
+  en: Opening port
+serial.assistant.connected:
+  zh-CN: 已连接
+  en: Connected
+serial.assistant.disconnected:
+  zh-CN: 未连接
+  en: Disconnected
+serial.assistant.connection_failed:
+  zh-CN: 连接失败
+  en: Connection failed
+serial.assistant.select_port:
+  zh-CN: 选择串口
+  en: Select a port
+serial.assistant.custom_baud:
+  zh-CN: 自定义波特率
+  en: Custom baud rate
+serial.assistant.encoding:
+  zh-CN: 编码
+  en: Encoding
+serial.assistant.waiting:
+  zh-CN: 打开串口后，接收内容将在此显示。
+  en: Received data appears here after you open the port.
+serial.assistant.no_ports_hint:
+  zh-CN: 接入设备后刷新串口列表，再选择要打开的串口。
+  en: Plug in a device, refresh the port list, then select a port.
+serial.assistant.scan_failed:
+  zh-CN: "无法读取串口列表：%{error}"
+  en: "Couldn’t read the serial port list: %{error}"
+serial.assistant.edit_groups:
+  zh-CN: 编辑命令组
+  en: Edit command groups
+serial.assistant.search_groups:
+  zh-CN: 搜索命令组
+  en: Search command groups
+serial.assistant.commands:
+  zh-CN: 命令列表
+  en: Commands
+serial.assistant.command_sort:
+  zh-CN: 排序
+  en: Order
+serial.assistant.command_actions:
+  zh-CN: 操作
+  en: Actions
+serial.assistant.command_index:
+  zh-CN: 序号
+  en: No.
+serial.assistant.command_delay:
+  zh-CN: 延时 (ms)
+  en: Delay (ms)
+serial.assistant.command_content:
+  zh-CN: 命令内容
+  en: Command content
+serial.assistant.add_command_button:
+  zh-CN: 添加命令…
+  en: Add command…
+serial.assistant.insert_command_button:
+  zh-CN: 插入命令…
+  en: Insert command…
+serial.assistant.insert_command:
+  zh-CN: 插入命令
+  en: Insert command
+serial.assistant.edit_command_button:
+  zh-CN: 编辑命令…
+  en: Edit command…
+serial.assistant.edit_command:
+  zh-CN: 编辑命令
+  en: Edit command
+serial.assistant.command_missing:
+  zh-CN: 这条命令已不存在，请重新选择。
+  en: This command no longer exists. Select another command.
+serial.assistant.commands_tab:
+  zh-CN: 命令组
+  en: Command groups
+serial.assistant.load_draft:
+  zh-CN: 载入发送框
+  en: Load into send box
+serial.assistant.loaded_draft:
+  zh-CN: 已载入命令，尚未发送。
+  en: Command loaded. Nothing has been sent.
+serial.assistant.duplicate:
+  zh-CN: 复制命令
+  en: Duplicate command
+serial.assistant.move_down:
+  zh-CN: 下移
+  en: Move down
+serial.assistant.send_keys:
+  zh-CN: Enter 发送 · Shift+Enter 换行
+  en: Enter to send · Shift+Enter for a new line
+serial.assistant.follow:
+  zh-CN: 自动滚动
+  en: Auto-scroll
+serial.assistant.timestamps:
+  zh-CN: 时间戳
+  en: Timestamps
+serial.assistant.filter:
+  zh-CN: 过滤日志
+  en: Filter log
+serial.assistant.save_log:
+  zh-CN: 保存日志…
+  en: Save log…
+serial.assistant.no_log:
+  zh-CN: 没有可保存的日志。
+  en: No log lines to save.
+serial.assistant.no_groups:
+  zh-CN: 暂无命令组
+  en: No command groups
+serial.assistant.back_to_console:
+  zh-CN: 返回收发
+  en: Back to console
+serial.assistant.message_placeholder:
+  zh-CN: 输入命令，按 Enter 发送
+  en: Enter a command, then press Enter to send
 serial.assistant.previous:
   zh-CN: 上一页
   en: Previous
@@ -15,15 +138,12 @@ serial.assistant.next:
 serial.assistant.page:
   zh-CN: "%{page} / %{total}"
   en: "%{page} / %{total}"
-serial.assistant.scope:
-  zh-CN: 默认关闭。按主机保存布局和命令组，继续使用已建立的串口连接，不重新占用端口。关闭助手会停止命令组发送。
-  en: Off by default. Remembers the layout and command groups per host, reusing the existing serial connection. Turning off stops group execution.
 serial.assistant.persist_failed:
   zh-CN: "无法保存串口助手设置：%{error}"
   en: "Couldn’t save serial assistant settings: %{error}"
 serial.assistant.limits:
-  zh-CN: 每台主机最多 32 个命令组，每组 128 条命令；名称最多 128 字节、内容最多 4 KiB，命令内容合计最多 256 KiB。
-  en: Each host supports 32 groups with 128 commands each. Names are limited to 128 bytes, content to 4 KiB per command and 256 KiB total.
+  zh-CN: 每个串口最多 32 个命令组，每组 128 条命令；名称最多 128 字节、内容最多 4 KiB，命令内容合计最多 256 KiB。
+  en: Each port supports 32 groups with 128 commands each. Names are limited to 128 bytes, content to 4 KiB per command and 256 KiB total.
 serial.assistant.name_required:
   zh-CN: 请输入名称。
   en: Enter a name.
@@ -64,8 +184,14 @@ serial.assistant.group_name:
   zh-CN: 命令组名称
   en: Group name
 serial.assistant.create_group:
-  zh-CN: 新建组
+  zh-CN: 新建分组
   en: New group
+serial.assistant.create_group_button:
+  zh-CN: 新建分组…
+  en: New group…
+serial.assistant.rename_group_button:
+  zh-CN: 重命名组…
+  en: Rename group…
 serial.assistant.rename_group:
   zh-CN: 重命名组
   en: Rename group
@@ -76,8 +202,8 @@ serial.assistant.undo:
   zh-CN: 撤销删除
   en: Undo delete
 serial.assistant.empty:
-  zh-CN: 输入组名新建命令组，再将下方发送内容保存为命令。
-  en: Enter a group name to create a group, then save the message below as a command.
+  zh-CN: 暂无命令。点「添加命令」新建第一条。
+  en: No commands. Choose Add command to create one.
 serial.assistant.include:
   zh-CN: 运行
   en: Include
@@ -109,8 +235,8 @@ serial.assistant.save_command:
   zh-CN: 保存命令
   en: Save command
 serial.assistant.add_command:
-  zh-CN: 添加到命令组
-  en: Add to group
+  zh-CN: 添加命令
+  en: Add command
 serial.assistant.saved_hint:
   zh-CN: 每条命令独立保存 HEX、换行、CRC 和等待时间。运行整组仅发送一次；断开、重连、切换标签或关闭工具时自动停止。命令内容会明文保存，请勿保存密码。
   en: Each command saves its HEX, line ending, CRC and delay. A group runs once and stops on disconnect, reconnect, tab change or closing the tool. Content is stored as plain text; do not save passwords.

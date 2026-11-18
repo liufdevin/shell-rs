@@ -1,6 +1,8 @@
 //! 串口: the serial ports of this computer, for serial hosts. Which ports
 //! there are, for the host form, and the terminal transport that opens one.
 
+mod assistant_panel;
+mod command_editor;
 mod diagnostics;
 mod file_picker;
 pub mod files;
@@ -13,6 +15,9 @@ mod transport;
 #[cfg(windows)]
 mod windows;
 
+pub use assistant_panel::SerialAssistantTabCommand;
+pub(crate) use assistant_panel::{SerialAssistantPanel, SerialAssistantPanelEvent};
+pub(crate) use command_editor::{SerialCommandEditorEvent, SerialCommandEditorPanel};
 pub use diagnostics::SerialDiagnostics;
 
 pub use message::SerialLineEnding;

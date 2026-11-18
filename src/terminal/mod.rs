@@ -107,3 +107,21 @@ pub use transport::{
     TerminalTransportEvent, TerminalTransportFactory,
 };
 pub use zmodem::{ZmodemDirection, ZmodemReply};
+pub(crate) fn encode_serial_tool(
+    encoding: crate::host::TerminalEncoding,
+    text: &str,
+    hex: bool,
+) -> Result<Vec<u8>, gpui_kit::SharedString> {
+    if text.len() > serial_tools::MESSAGE_LIMIT {
+        return Err(crate::i18n::t!("serial.tool.invalid_data"));
+    }
+    let bytes = if hex {
+        session_io::decode_hex(text)?
+    } else {
+        encoding::encode_input(encoding, text.as_bytes().to_vec())?
+    };
+    if bytes.is_empty() || bytes.len() > serial_tools::MESSAGE_LIMIT {
+        return Err(crate::i18n::t!("serial.tool.invalid_data"));
+    }
+    Ok(bytes)
+}

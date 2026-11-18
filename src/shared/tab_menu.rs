@@ -6,7 +6,8 @@ use gpui_kit::*;
 
 use crate::app::{
     CenterTab, CloseEditor, CloseExplorer, CloseFlashing, CloseLocalTerminal, CloseScope,
-    CloseSettings, CloseTabs, CloseTerminal, DetachTab,
+    CloseSerialAssistant, CloseSerialCommandEditor, CloseSettings, CloseTabs, CloseTerminal,
+    DetachTab,
 };
 use crate::i18n::t;
 
@@ -34,7 +35,10 @@ pub fn close_tab_items(
         |scope: CloseScope| position.is_none_or(|(len, ix)| scope.targets(len, ix).is_empty());
     let batch = |scope| Box::new(CloseTabs { tab, scope });
 
-    let menu = if matches!(tab, CenterTab::Flashing) {
+    let menu = if matches!(
+        tab,
+        CenterTab::Flashing | CenterTab::SerialAssistant | CenterTab::SerialCommandEditor
+    ) {
         menu
     } else {
         menu.menu(t!("shared.tab_menu.detach"), Box::new(DetachTab(tab)))
@@ -66,6 +70,8 @@ fn close_action(tab: CenterTab) -> Box<dyn Action> {
         CenterTab::LocalTerminal(id) => Box::new(CloseLocalTerminal(id)),
         CenterTab::Settings => Box::new(CloseSettings),
         CenterTab::Flashing => Box::new(CloseFlashing),
+        CenterTab::SerialAssistant => Box::new(CloseSerialAssistant),
+        CenterTab::SerialCommandEditor => Box::new(CloseSerialCommandEditor),
         CenterTab::Editor(id) => Box::new(CloseEditor(id)),
     }
 }
