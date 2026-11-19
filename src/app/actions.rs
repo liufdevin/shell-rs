@@ -347,6 +347,8 @@ id_actions! {
     SendSerialHex(RemoteTerminalId);
     ToggleSerialReceiveHex(RemoteTerminalId);
     ToggleSerialSendHex(RemoteTerminalId);
+    ManageSerialDebug(RemoteTerminalId);
+    GrantSerialDebug((RemoteTerminalId, String, bool));
     SetSerialBackspace(SerialBackspaceChoice);
     AutoSerialFiles(RemoteTerminalId);
     UploadSerialFile(RemoteTerminalId);

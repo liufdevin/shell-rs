@@ -31,6 +31,16 @@ pub enum RemoteRequest {
         command: String,
     },
     Devices,
+    SerialTabs,
+    SerialLogs {
+        tab: String,
+        after: Option<u64>,
+        wait_ms: u32,
+    },
+    SerialExec {
+        tab: String,
+        command: String,
+    },
     OpenDevice {
         device: String,
         columns: u16,
@@ -60,6 +70,12 @@ pub struct Response {
     pub devices: Vec<SharedDevice>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub wake_interfaces: Vec<crate::WakeInterface>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub serial_tabs: Vec<crate::SerialDebugTab>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub serial_log: Option<crate::SerialDebugLog>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub serial_result: Option<crate::SerialDebugResult>,
 }
 
 pub struct Network {
@@ -117,6 +133,7 @@ impl Network {
         tcp_port: u16,
         discovery_port: u16,
     ) -> Result<Self> {
+        ensure!(!core.client_only, "client_only");
         ensure!(core.has_password(), "pairing_password_required");
         ensure!(!core.is_running(), "LAN cooperation already running");
         let address = address.into();
@@ -240,6 +257,7 @@ impl Network {
 impl Drop for Network {
     fn drop(&mut self) {
         self.core.running.store(false, Ordering::Release);
+        self.core.revoke_serial_tabs(None);
         self.core.sleep.reset();
         self.core.invalidate_device_access();
         self.stop.store(true, Ordering::Release);
@@ -540,6 +558,23 @@ async fn serve(
     ensure!(!core.is_blocked(address), "blocked_by_device");
     ensure!(core.is_active(), "LAN cooperation unavailable or locked");
     match request {
+        RemoteRequest::SerialTabs
+        | RemoteRequest::SerialLogs { .. }
+        | RemoteRequest::SerialExec { .. } => {
+            ensure!(core.authorized(&peer, None, false), "device_not_authorized");
+            let _usage = core.keep_awake()?;
+            let response = serial_response(&core, &peer, address, request, &cancel).await?;
+            let bytes = serde_json::to_vec(&response)?;
+            ensure!(bytes.len() <= MAX_OUTPUT, "output_limit_reached");
+            handle
+                .data(channel, bytes)
+                .await
+                .map_err(|_| anyhow::anyhow!("disconnected"))?;
+            handle
+                .exit_status_request(channel, 0)
+                .await
+                .map_err(|_| anyhow::anyhow!("disconnected"))?;
+        }
         RemoteRequest::WakeInfo => {
             ensure!(core.authorized(&peer, None, false), "device_not_authorized");
             let response = Response {
@@ -711,6 +746,72 @@ async fn serve(
         }
     }
     Ok(())
+}
+
+async fn serial_response(
+    core: &Core,
+    peer: &str,
+    address: IpAddr,
+    request: RemoteRequest,
+    cancel: &Arc<AtomicBool>,
+) -> Result<Response> {
+    let check_access = || -> Result<()> {
+        ensure!(!cancel.load(Ordering::Acquire), "serial_debug_disconnected");
+        ensure!(
+            !core.is_blocked(address) && core.authorized(peer, None, false),
+            "serial_debug_not_authorized"
+        );
+        Ok(())
+    };
+    let mut response = Response::default();
+    match request {
+        RemoteRequest::SerialTabs => response.serial_tabs = core.serial_tabs(peer),
+        RemoteRequest::SerialLogs {
+            tab,
+            after,
+            wait_ms,
+        } => {
+            let share = core.serial_tab(peer, &tab)?;
+            let deadline = Instant::now()
+                + Duration::from_millis(wait_ms.into()).min(crate::serial_debug::DEBUG_WAIT_LIMIT);
+            loop {
+                check_access()?;
+                let log = share.logs(after)?;
+                if !log.text.is_empty() || Instant::now() >= deadline {
+                    response.serial_log = Some(log);
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        }
+        RemoteRequest::SerialExec { tab, command } => {
+            ensure!(
+                !command.trim().is_empty()
+                    && command.len() <= crate::DEBUG_COMMAND_LIMIT
+                    && !command.chars().any(char::is_control),
+                "invalid_serial_debug_command"
+            );
+            let share = core.serial_tab(peer, &tab)?;
+            let mut answer = share.execute(command, cancel.clone())?;
+            let deadline = Instant::now() + Duration::from_secs(25);
+            loop {
+                check_access()?;
+                ensure!(share.is_active(), "serial_debug_not_authorized");
+                ensure!(Instant::now() < deadline, "serial_debug_timed_out");
+                tokio::select! {
+                    result = &mut answer => {
+                        check_access()?;
+                        ensure!(share.is_active(), "serial_debug_not_authorized");
+                        response.serial_result = Some(result?.map_err(anyhow::Error::msg)?);
+                        break;
+                    }
+                    _ = tokio::time::sleep(Duration::from_millis(50)) => {}
+                }
+            }
+        }
+        _ => bail!("invalid_device_request"),
+    }
+    Ok(response)
 }
 
 #[derive(Clone, Default)]

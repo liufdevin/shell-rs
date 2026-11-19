@@ -235,6 +235,7 @@ impl TelnetTransport {
                     }
                     Some(
                         TerminalTransportCommand::SerialTransfer(_)
+                        | TerminalTransportCommand::ShareSerialDebug(_)
                         | TerminalTransportCommand::SetSerialBaud { .. }
                         | TerminalTransportCommand::SerialWriteChecked { .. }
                         | TerminalTransportCommand::Monitor(_)

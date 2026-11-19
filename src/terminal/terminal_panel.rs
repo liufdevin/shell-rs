@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, WindowExt as _,
@@ -16,9 +17,9 @@ use gpui_kit::*;
 
 use crate::app::{
     CatalogIcon, CenterTab, ClearTerminalLog, CloseTerminal, CopyHostAddress, CopyHostId,
-    DeleteTerminalLog, DisconnectTerminal, DuplicateTerminal, EditHost, OpenExplorer,
-    ReconnectTerminal, RenameTerminal, SendBreak, SendSerialHex, SerialBackspaceChoice,
-    SetSerialBackspace, ToggleSerialReceiveHex, ToggleSerialSendHex,
+    DeleteTerminalLog, DisconnectTerminal, DuplicateTerminal, EditHost, ManageSerialDebug,
+    OpenExplorer, ReconnectTerminal, RenameTerminal, SendBreak, SendSerialHex,
+    SerialBackspaceChoice, SetSerialBackspace, ToggleSerialReceiveHex, ToggleSerialSendHex,
 };
 use crate::connection::{ConnectionPrompt, ConnectionPromptReply};
 use crate::host::{ConnectionState, Host, HostConnection, HostId, HostOs, HostStore, ProtocolKind};
@@ -86,6 +87,7 @@ pub struct TerminalPanel {
     recording_path: Option<PathBuf>,
     recording_opening: bool,
     recording_task: Option<Task<()>>,
+    serial_debug: Option<(Arc<shellrs_lan::SerialDebugShare>, String)>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -332,6 +334,7 @@ impl TerminalPanel {
             recording_path: None,
             recording_opening: false,
             recording_task: None,
+            serial_debug: None,
             _subscriptions: subscriptions,
         }
     }
@@ -430,6 +433,7 @@ impl TerminalPanel {
 
     /// Connect again as the tab first did.
     pub fn reconnect(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.revoke_serial_debug(cx);
         let factory = self.transports.factory_for(&self.connection);
         self.terminal.update(cx, |terminal, cx| {
             terminal.restart_with_factory(factory, cx)
@@ -441,6 +445,7 @@ impl TerminalPanel {
     }
 
     pub fn disconnect(&mut self, cx: &mut Context<Self>) {
+        self.revoke_serial_debug(cx);
         self.terminal.update(cx, |terminal, cx| {
             terminal.stop(&t!("terminal.notice.disconnected"), cx)
         });
@@ -464,9 +469,76 @@ impl TerminalPanel {
         if self.host.kind() != ProtocolKind::Serial {
             return;
         }
+        if modes.receive_hex || modes.send_hex {
+            self.revoke_serial_debug(cx);
+        }
         self.terminal
             .update(cx, |terminal, cx| terminal.set_serial_modes(modes, cx));
         cx.notify();
+    }
+
+    pub(crate) fn is_serial_debug_shared(&self) -> bool {
+        self.serial_debug
+            .as_ref()
+            .is_some_and(|(share, _)| share.is_active())
+    }
+
+    pub(crate) fn revoke_serial_debug(&mut self, cx: &mut Context<Self>) {
+        if let Some((share, _)) = self.serial_debug.take() {
+            share.revoke();
+            cx.notify();
+        }
+    }
+
+    pub(crate) fn is_serial_debug_available(&self, cx: &App) -> bool {
+        let modes = self.serial_modes(cx);
+        self.host.is_serial()
+            && self.lifecycle(cx) == TerminalLifecycle::Running
+            && !modes.receive_hex
+            && !modes.send_hex
+    }
+
+    pub(crate) fn grant_serial_debug(
+        &mut self,
+        core: &shellrs_lan::Core,
+        peer: &shellrs_lan::Grant,
+        execute: bool,
+        cx: &mut Context<Self>,
+    ) -> anyhow::Result<()> {
+        anyhow::ensure!(self.is_serial_debug_available(cx) && !self.is_serial_debug_shared());
+        anyhow::ensure!(!execute || !self.shell_only());
+        let share = core.share_serial_tab(&peer.id, self.tab_title(cx).to_string(), execute)?;
+        let sender = self
+            .terminal
+            .read(cx)
+            .channels(cx)
+            .command_sender()
+            .ok_or_else(|| anyhow::anyhow!("serial_debug_disconnected"))?;
+        sender
+            .send(super::TerminalTransportCommand::ShareSerialDebug(
+                share.clone(),
+            ))
+            .map_err(|_| anyhow::anyhow!("serial_debug_disconnected"))?;
+        self.serial_debug = Some((share.clone(), peer.name.clone()));
+        cx.spawn(async move |panel, cx| {
+            while share.is_active() {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(150))
+                    .await;
+            }
+            let _ = panel.update(cx, |panel, cx| {
+                if panel
+                    .serial_debug
+                    .as_ref()
+                    .is_some_and(|(current, _)| Arc::ptr_eq(current, &share))
+                {
+                    panel.revoke_serial_debug(cx);
+                }
+            });
+        })
+        .detach();
+        cx.notify();
+        Ok(())
     }
 
     pub fn start_recording(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -761,6 +833,7 @@ impl BasePanel for TerminalPanel {
         if crate::shared::is_panel_transfer(cx.entity_id(), cx) {
             return;
         }
+        self.revoke_serial_debug(cx);
         self.recording_task = None;
         self.terminal
             .update(cx, |terminal, cx| terminal.shutdown(cx));
@@ -1079,6 +1152,56 @@ impl Render for TerminalPanel {
             .id(("terminal-pane", id.0))
             .test_support()
             .size_full()
+            .when(serial && self.is_serial_debug_available(cx), |view| {
+                let status = self
+                    .serial_debug
+                    .as_ref()
+                    .filter(|(share, _)| share.is_active())
+                    .map(|(share, name)| {
+                        t!(
+                            if share.is_execution_allowed() {
+                                "lan.serial_debug.controlling"
+                            } else {
+                                "lan.serial_debug.observing"
+                            },
+                            name = name.clone()
+                        )
+                    });
+                view.child(
+                    h_flex()
+                        .justify_between()
+                        .gap_2()
+                        .px_2()
+                        .py_1()
+                        .text_sm()
+                        .child(
+                            div()
+                                .truncate()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(
+                                    status
+                                        .clone()
+                                        .unwrap_or_else(|| t!("lan.serial_debug.private")),
+                                ),
+                        )
+                        .child(
+                            Button::new(("serial-debug", id.0))
+                                .xsmall()
+                                .outline()
+                                .label(if status.is_some() {
+                                    t!("lan.serial_debug.revoke")
+                                } else {
+                                    t!("lan.serial_debug.share")
+                                })
+                                .on_click({
+                                    let dispatch = dispatch.clone();
+                                    move |_, window, cx| {
+                                        dispatch.dispatch_action(&ManageSerialDebug(id), window, cx)
+                                    }
+                                }),
+                        ),
+                )
+            })
             .child(div().flex_1().min_h_0().child(self.terminal.clone()))
             .when(recording, |view| {
                 view.child(

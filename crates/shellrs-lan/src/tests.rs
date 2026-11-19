@@ -304,6 +304,112 @@ fn running(core: &Arc<Core>) -> Network {
     core.set_password("correct horse battery").unwrap();
     Network::start(core.clone(), std::net::Ipv4Addr::LOCALHOST, 0, 0).unwrap()
 }
+
+#[test]
+fn serial_debug_uses_headless_pairing_and_enforces_per_tab_revocation() {
+    let (_directory, owner, _, _) = fixture("Desktop");
+    let network = running(&owner);
+    let client_directory = tempfile::tempdir().unwrap();
+    let client = Core::load_client(client_directory.path(), "Server").unwrap();
+    let target = client.inspect(network.tcp_address).unwrap();
+    client.request_pair(&target).unwrap();
+    let pending = owner.pending().into_iter().next().unwrap();
+    assert_eq!(pending.code, target.pairing_code(client.id()));
+    owner
+        .approve(&pending.id, pending.token, BTreeSet::new(), false)
+        .unwrap();
+    client.complete_pair(target).unwrap();
+    let client = Core::load_client(client_directory.path(), "Server").unwrap();
+    let request = |request| {
+        client.request(owner.id(), request, &AtomicBool::new(false), &mut |_, _| {
+            Ok(())
+        })
+    };
+    assert!(
+        request(RemoteRequest::SerialTabs)
+            .unwrap()
+            .serial_tabs
+            .is_empty()
+    );
+
+    let observation = owner
+        .share_serial_tab(client.id(), "COM3".into(), false)
+        .unwrap();
+    let tab = request(RemoteRequest::SerialTabs)
+        .unwrap()
+        .serial_tabs
+        .remove(0);
+    assert_eq!(tab.label, "COM3");
+    assert!(!tab.execute);
+    observation.append("Booting Linux\r\n");
+    let first = request(RemoteRequest::SerialLogs {
+        tab: tab.id.clone(),
+        after: None,
+        wait_ms: 0,
+    })
+    .unwrap()
+    .serial_log
+    .unwrap();
+    assert_eq!(first.text, "Booting Linux\r\n");
+    let result = request(RemoteRequest::SerialExec {
+        tab: tab.id.clone(),
+        command: "uname".into(),
+    });
+    assert_eq!(result.unwrap_err().to_string(), "serial_debug_read_only");
+    std::thread::scope(|scope| {
+        let waiter = scope.spawn(|| {
+            request(RemoteRequest::SerialLogs {
+                tab: tab.id.clone(),
+                after: Some(first.cursor),
+                wait_ms: 2000,
+            })
+        });
+        observation.append("驱动已加载\r\n");
+        let next = waiter.join().unwrap().unwrap().serial_log.unwrap();
+        assert_eq!(next.text, "驱动已加载\r\n");
+    });
+    observation.revoke();
+    assert_eq!(
+        request(RemoteRequest::SerialLogs {
+            tab: tab.id,
+            after: None,
+            wait_ms: 0
+        })
+        .unwrap_err()
+        .to_string(),
+        "serial_debug_not_authorized"
+    );
+
+    let execution = owner
+        .share_serial_tab(client.id(), "COM3".into(), true)
+        .unwrap();
+    let tab = request(RemoteRequest::SerialTabs)
+        .unwrap()
+        .serial_tabs
+        .remove(0);
+    std::thread::scope(|scope| {
+        let waiter = scope.spawn(|| {
+            request(RemoteRequest::SerialExec {
+                tab: tab.id.clone(),
+                command: "uname".into(),
+            })
+        });
+        let mut pending = None;
+        assert!(eventually(|| {
+            pending = execution.take_command();
+            pending.is_some()
+        }));
+        let command = pending.unwrap();
+        assert!(command.is_authorized());
+        assert_eq!(command.command(), "uname");
+        command.finish(7, "Linux".into(), false);
+        let result = waiter.join().unwrap().unwrap().serial_result.unwrap();
+        assert_eq!(result.exit_code, 7);
+        assert_eq!(result.output, "Linux");
+    });
+    owner.revoke(client.id()).unwrap();
+    assert!(!execution.is_active());
+}
 fn eventually(mut condition: impl FnMut() -> bool) -> bool {
     let deadline = Instant::now() + Duration::from_secs(5);
     while Instant::now() < deadline {

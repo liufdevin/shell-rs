@@ -393,3 +393,39 @@ lan.accept_exec:
 lan.block_on_reject:
   zh-CN: 拒绝并拉黑此 IP，不再显示此 IP 的请求
   en: Block this IP when rejecting and stop showing its requests
+lan.serial_debug.private:
+  zh-CN: 串口未共享
+  en: Serial tab is private
+lan.serial_debug.share:
+  zh-CN: 共享串口调试…
+  en: Share Serial Debugging…
+lan.serial_debug.revoke:
+  zh-CN: 撤销共享
+  en: Revoke Sharing
+lan.serial_debug.observing:
+  zh-CN: "%{name} 可查看串口输出"
+  en: "%{name} can view serial output"
+lan.serial_debug.controlling:
+  zh-CN: "%{name} 可查看输出和执行命令"
+  en: "%{name} can view output and run commands"
+lan.serial_debug.enable_lan:
+  zh-CN: 请先在设置中启用局域网协作。
+  en: Enable LAN cooperation in Settings first.
+lan.serial_debug.unavailable:
+  zh-CN: 无法共享。请检查串口连接、HEX 收发设置和对方的配对状态。
+  en: Could not share the tab. Check the serial connection, HEX modes and peer pairing.
+lan.serial_debug.title:
+  zh-CN: "共享串口调试 · %{name}"
+  en: "Share Serial Debugging · %{name}"
+lan.serial_debug.no_peers:
+  zh-CN: 暂无已授权的设备。请先在局域网协作中完成配对。
+  en: No authorized devices. Pair a device via LAN cooperation first.
+lan.serial_debug.description:
+  zh-CN: 选择一台已配对的设备。共享从现在开始采集输出，关闭连接或撤销共享时结束。
+  en: Choose a paired device. Sharing captures output from now until the connection closes or you revoke access.
+lan.serial_debug.read:
+  zh-CN: 仅查看输出
+  en: View Output
+lan.serial_debug.execute:
+  zh-CN: 查看并允许执行
+  en: View and Allow Commands

@@ -37,6 +37,9 @@ pub(crate) struct Shell {
     last_output: Instant,
     last_input: Option<Instant>,
     running: Option<Running>,
+    debug: Option<DebugRun>,
+    alternate_screen: bool,
+    mode_tail: Vec<u8>,
     waiting: VecDeque<Waiting>,
     hide_prompt: bool,
     suppress_until_prompt: bool,
@@ -56,6 +59,9 @@ impl Shell {
             last_output: Instant::now(),
             last_input: None,
             running: None,
+            debug: None,
+            alternate_screen: false,
+            mode_tail: Vec::new(),
             waiting: VecDeque::new(),
             hide_prompt: false,
             suppress_until_prompt: false,
@@ -68,6 +74,18 @@ impl Shell {
     }
 
     pub(crate) fn input(&mut self, bytes: &[u8]) -> bool {
+        if self.debug.is_some() {
+            if bytes == b"\x03" {
+                self.debug
+                    .take()
+                    .unwrap()
+                    .request
+                    .fail("serial_debug_interrupted");
+                self.ready = false;
+            } else {
+                return false;
+            }
+        }
         if !bytes.is_empty() {
             self.last_input = Some(Instant::now());
             self.cancel_waiting();
@@ -100,13 +118,110 @@ impl Shell {
     }
 
     pub(crate) fn busy(&self) -> bool {
-        self.running.is_some()
+        self.running.is_some() || self.debug_busy()
+    }
+
+    pub(crate) fn debug_busy(&self) -> bool {
+        self.debug.is_some()
+    }
+
+    pub(crate) fn may_write_debug_command(&mut self) -> bool {
+        if self
+            .debug
+            .as_ref()
+            .is_some_and(|run| run.request.is_authorized())
+        {
+            return true;
+        }
+        self.debug.take();
+        false
+    }
+
+    pub(crate) fn debug_decoder(&self) -> TerminalDecoder {
+        TerminalDecoder::new(self.encoding)
+    }
+
+    pub(crate) fn invalidate_debug_prompt(&mut self) {
+        self.ready = false;
+        self.prompt.clear();
+    }
+
+    pub(crate) fn debug_execute(
+        &mut self,
+        request: shellrs_lan::SerialDebugCommand,
+    ) -> Option<Vec<u8>> {
+        if !self.enabled {
+            request.fail("serial_debug_shell_required");
+            return None;
+        }
+        if !request.is_authorized() {
+            request.fail("serial_debug_not_authorized");
+            return None;
+        }
+        if !self.is_debug_ready() {
+            request.fail("serial_debug_busy");
+            return None;
+        }
+        let nonce = uuid::Uuid::new_v4().simple().to_string();
+        let quoted = request.command().replace('\'', "'\\''");
+        let script = format!(
+            "( _shelllf_debug='{quoted}'; printf '[ShellLF] $ %s\\n' \"$_shelllf_debug\"; printf '\\036{nonce}B\\037'; eval \"$_shelllf_debug\" ) </dev/null 2>&1; printf '\\036{nonce}:%s\\037' \"$?\"\r"
+        );
+        let Ok(script) = crate::terminal::encode_input(self.encoding, script.into_bytes()) else {
+            request.fail("invalid_serial_debug_command");
+            return None;
+        };
+        if script.len() >= 1000 {
+            request.fail("invalid_serial_debug_command");
+            return None;
+        }
+        self.prompt.clear();
+        self.ready = false;
+        self.hide_prompt = false;
+        self.suppress_until_prompt = false;
+        self.debug = Some(DebugRun {
+            request,
+            start: Some(format!("\x1e{nonce}B\x1f").into_bytes()),
+            marker: format!("\x1e{nonce}:").into_bytes(),
+            buffered: Vec::new(),
+            output: Vec::new(),
+            truncated: false,
+            since: Instant::now(),
+        });
+        Some(script)
+    }
+
+    fn is_debug_ready(&self) -> bool {
+        self.enabled
+            && !self.busy()
+            && self.waiting.is_empty()
+            && self.ready
+            && !self.edited
+            && !self.alternate_screen
+            && self.last_output.elapsed() >= QUIET
+    }
+
+    fn observe_screen_mode(&mut self, bytes: &[u8]) {
+        static MODES: LazyLock<regex::bytes::Regex> =
+            LazyLock::new(|| regex::bytes::Regex::new(r"\x1b\[\?(?:47|1047|1049)([hl])").unwrap());
+        self.mode_tail.extend_from_slice(bytes);
+        for found in MODES.captures_iter(&self.mode_tail) {
+            self.alternate_screen = &found[1] == b"h";
+        }
+        let tail = self.mode_tail.iter().rposition(|byte| *byte == 0x1b);
+        let partial = tail.filter(|start| self.mode_tail.len() - start < 8);
+        match partial {
+            Some(start) => {
+                self.mode_tail.drain(..start);
+            }
+            None => self.mode_tail.clear(),
+        }
     }
 
     pub(crate) fn transfer(&mut self, request: ExecRequest) -> Option<Vec<u8>> {
         self.cancel_waiting();
         if !self.enabled
-            || self.running.is_some()
+            || self.busy()
             || !self.ready
             || self.edited
             || self.last_output.elapsed() < QUIET
@@ -148,7 +263,7 @@ impl Shell {
                 .send(Err(t!("serial.shell.command_large").to_string()));
             return None;
         }
-        if self.running.is_some()
+        if self.busy()
             || !self.ready
             || self.last_output.elapsed() < QUIET
             || !self.waiting.is_empty()
@@ -164,7 +279,7 @@ impl Shell {
 
     pub(crate) fn monitor(&mut self, request: ExecRequest) -> Option<Vec<Vec<u8>>> {
         if !self.enabled
-            || self.running.is_some()
+            || self.busy()
             || !self.ready
             || self.edited
             || !self.waiting.is_empty()
@@ -186,11 +301,7 @@ impl Shell {
     }
 
     pub(crate) fn poll(&mut self) -> Option<Vec<Vec<u8>>> {
-        if self.running.is_some()
-            || !self.ready
-            || self.edited
-            || self.last_output.elapsed() < QUIET
-        {
+        if self.busy() || !self.ready || self.edited || self.last_output.elapsed() < QUIET {
             return None;
         }
         let waiting = self.waiting.pop_front()?;
@@ -243,6 +354,24 @@ impl Shell {
             return bytes.to_vec();
         }
         self.last_output = Instant::now();
+        self.observe_screen_mode(bytes);
+        if let Some(debug) = &mut self.debug {
+            let (mut visible, finished) = debug.feed(bytes);
+            if let Some((code, tail)) = finished {
+                let debug = self.debug.take().unwrap();
+                let decoded = self.debug_decoder().decode(&debug.output, true);
+                if debug.request.is_authorized() {
+                    debug.request.finish(
+                        code,
+                        String::from_utf8_lossy(&decoded).into_owned(),
+                        debug.truncated,
+                    );
+                }
+                self.observe_prompt(&tail);
+                visible.extend(tail);
+            }
+            return visible;
+        }
         if let Some(running) = &mut self.running {
             running.output.extend_from_slice(bytes);
             if running.output.len() > LIMIT {
@@ -314,6 +443,20 @@ impl Shell {
     }
 
     pub(crate) fn tick(&mut self) {
+        if self
+            .debug
+            .as_ref()
+            .is_some_and(|debug| debug.since.elapsed() >= TIMEOUT)
+        {
+            self.debug
+                .take()
+                .unwrap()
+                .request
+                .fail("serial_debug_timed_out");
+            self.ready = false;
+            self.edited = true;
+            self.prompt.clear();
+        }
         while self
             .waiting
             .front()
@@ -358,6 +501,74 @@ impl Shell {
     }
 }
 
+struct DebugRun {
+    request: shellrs_lan::SerialDebugCommand,
+    start: Option<Vec<u8>>,
+    marker: Vec<u8>,
+    buffered: Vec<u8>,
+    output: Vec<u8>,
+    truncated: bool,
+    since: Instant,
+}
+
+impl DebugRun {
+    fn feed(&mut self, bytes: &[u8]) -> (Vec<u8>, Option<(i32, Vec<u8>)>) {
+        self.buffered.extend_from_slice(bytes);
+        let mut visible = Vec::new();
+        if let Some(start) = &self.start {
+            if let Some(index) = position(&self.buffered, start) {
+                visible.extend(self.buffered.drain(..index));
+                self.buffered.drain(..start.len());
+                self.start = None;
+            } else if position(&self.buffered, &self.marker).is_none() {
+                let keep = marker_suffix(&self.buffered, start)
+                    .max(marker_suffix(&self.buffered, &self.marker));
+                visible.extend(self.buffered.drain(..self.buffered.len() - keep));
+                return (visible, None);
+            }
+        }
+        if let Some(start) = position(&self.buffered, &self.marker) {
+            let suffix = &self.buffered[start + self.marker.len()..];
+            if let Some(end) = suffix.iter().take(4).position(|byte| *byte == 0x1f)
+                && let Ok(code) = std::str::from_utf8(&suffix[..end])
+                    .unwrap_or_default()
+                    .parse::<u8>()
+            {
+                let tail = suffix[end + 1..].to_vec();
+                let output: Vec<_> = self.buffered.drain(..start).collect();
+                self.capture(&output);
+                visible.extend(output);
+                return (visible, Some((i32::from(code), tail)));
+            }
+            if suffix.len() < 4 && suffix.iter().all(u8::is_ascii_digit) {
+                let output: Vec<_> = self.buffered.drain(..start).collect();
+                self.capture(&output);
+                visible.extend(output);
+                return (visible, None);
+            }
+        }
+        let keep = marker_suffix(&self.buffered, &self.marker);
+        let output: Vec<_> = self.buffered.drain(..self.buffered.len() - keep).collect();
+        self.capture(&output);
+        visible.extend(output);
+        (visible, None)
+    }
+
+    fn capture(&mut self, visible: &[u8]) {
+        let capacity = (64 * 1024usize).saturating_sub(self.output.len());
+        self.truncated |= visible.len() > capacity;
+        self.output
+            .extend_from_slice(&visible[..visible.len().min(capacity)]);
+    }
+}
+
+fn marker_suffix(bytes: &[u8], marker: &[u8]) -> usize {
+    (1..marker.len())
+        .rev()
+        .find(|length| bytes.ends_with(&marker[..*length]))
+        .unwrap_or(0)
+}
+
 fn position(bytes: &[u8], needle: &[u8]) -> Option<usize> {
     bytes
         .windows(needle.len())
@@ -374,6 +585,26 @@ mod tests {
         shell.output(b"root@board:~# ");
         shell.last_output -= QUIET;
         shell
+    }
+
+    #[test]
+    fn serial_debug_requires_a_quiet_unedited_shell_outside_the_alternate_screen() {
+        let mut shell = shell();
+        assert!(shell.is_debug_ready());
+        shell.input(b"dmesg");
+        assert!(!shell.is_debug_ready());
+        shell.input(b"\r");
+        shell.output(b"\r\nDriver initialized\r\n");
+        shell.last_output -= QUIET;
+        assert!(!shell.is_debug_ready());
+        shell.output(b"\x1b[?104");
+        shell.output(b"9h\r\nroot@board:~# ");
+        shell.last_output -= QUIET;
+        assert!(!shell.is_debug_ready());
+        shell.output(b"\x1b[?1049l\r\nroot@board:~# ");
+        assert!(!shell.is_debug_ready());
+        shell.last_output -= QUIET;
+        assert!(shell.is_debug_ready());
     }
 
     #[test]

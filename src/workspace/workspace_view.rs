@@ -4466,6 +4466,126 @@ impl Render for Workspace {
 }
 
 impl Workspace {
+    fn on_manage_serial_debug(
+        &mut self,
+        action: &crate::app::ManageSerialDebug,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use gpui_kit::component::{
+            button::Button,
+            dialog::{DialogClose, DialogFooter},
+            scroll::ScrollableElement as _,
+        };
+        let id = action.0;
+        let Some(panel) = self.remote_terminal(id) else {
+            return;
+        };
+        if panel.read(cx).is_serial_debug_shared() {
+            panel.update(cx, |panel, cx| panel.revoke_serial_debug(cx));
+            return;
+        }
+        let Some(core) = self.lan.read(cx).core().filter(|core| core.is_active()) else {
+            window.push_notification(Notification::error(t!("lan.serial_debug.enable_lan")), cx);
+            return;
+        };
+        if !panel.read(cx).is_serial_debug_available(cx)
+            || self
+                .lan_serial_transports
+                .contains_key(&panel.read(cx).host_id())
+        {
+            window.push_notification(Notification::error(t!("lan.serial_debug.unavailable")), cx);
+            return;
+        }
+        let grants = core.grants();
+        let execution = !panel.read(cx).shell_only();
+        let title = panel.read(cx).host().name.clone();
+        let dispatch = self.focus_handle.clone();
+        window.open_dialog(cx, move |dialog, _, _| {
+            let mut list = gpui_kit::component::v_flex()
+                .gap_2()
+                .max_h_64()
+                .overflow_y_scrollbar();
+            for grant in &grants {
+                let button = |execute, label| {
+                    let dispatch = dispatch.clone();
+                    let peer = grant.id.clone();
+                    let key = format!("serial-debug-{execute}-{peer}");
+                    Button::new(key)
+                        .label(label)
+                        .on_click(move |_, window, cx| {
+                            dispatch.dispatch_action(
+                                &crate::app::GrantSerialDebug((id, peer.clone(), execute)),
+                                window,
+                                cx,
+                            );
+                            window.close_dialog(cx);
+                        })
+                };
+                list = list.child(
+                    gpui_kit::component::h_flex()
+                        .gap_2()
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .child(grant.name.clone()),
+                        )
+                        .child(button(false, t!("lan.serial_debug.read")))
+                        .when(execution, |row| {
+                            row.child(button(true, t!("lan.serial_debug.execute")))
+                        }),
+                );
+            }
+            dialog
+                .title(t!("lan.serial_debug.title", name = title.clone()))
+                .child(
+                    gpui_kit::component::v_flex()
+                        .gap_3()
+                        .child(t!(if grants.is_empty() {
+                            "lan.serial_debug.no_peers"
+                        } else {
+                            "lan.serial_debug.description"
+                        }))
+                        .child(list),
+                )
+                .footer(
+                    DialogFooter::new().child(
+                        DialogClose::new().trigger(|button| button.label(t!("common.close"))),
+                    ),
+                )
+        });
+    }
+
+    fn on_grant_serial_debug(
+        &mut self,
+        action: &crate::app::GrantSerialDebug,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let (id, peer, execute) = &action.0;
+        let result = (|| {
+            let panel = self.remote_terminal(*id)?;
+            if self
+                .lan_serial_transports
+                .contains_key(&panel.read(cx).host_id())
+            {
+                return None;
+            }
+            let core = self.lan.read(cx).core()?;
+            let grant = core.grants().into_iter().find(|grant| &grant.id == peer)?;
+            panel
+                .update(cx, |panel, cx| {
+                    panel.grant_serial_debug(&core, &grant, *execute, cx)
+                })
+                .ok()
+        })();
+        if result.is_none() {
+            window.push_notification(Notification::error(t!("lan.serial_debug.unavailable")), cx);
+        }
+    }
+
     fn on_lan_action(
         &mut self,
         action: &crate::app::LanAction,
@@ -4751,6 +4871,8 @@ impl Workspace {
             .on_action(cx.listener(Self::on_close_detached_tab))
             .on_action(cx.listener(Self::on_new_host))
             .on_action(cx.listener(Self::on_lan_action))
+            .on_action(cx.listener(Self::on_manage_serial_debug))
+            .on_action(cx.listener(Self::on_grant_serial_debug))
             .on_action(cx.listener(Self::on_utility_action))
             .on_action(cx.listener(Self::on_new_temporary_connection))
             .on_action(cx.listener(Self::on_quick_connect))

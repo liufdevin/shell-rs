@@ -186,6 +186,7 @@ impl SshTerminalTransport {
                     | Some(TerminalTransportCommand::SetSerialBaud { .. })
                     | Some(TerminalTransportCommand::SerialWriteChecked { .. })
                     | Some(TerminalTransportCommand::SerialTransfer(_))
+                    | Some(TerminalTransportCommand::ShareSerialDebug(_))
                     | Some(TerminalTransportCommand::SendBreak) => {}
                 },
                 () = async { side.as_mut().expect("guarded").await }, if side.is_some() => {

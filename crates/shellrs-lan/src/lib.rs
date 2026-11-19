@@ -38,6 +38,11 @@ pub use devices::{
 };
 pub use discovery::discover;
 pub use transport::{Network, RemoteRequest, Response};
+mod serial_debug;
+pub use serial_debug::{
+    DEBUG_COMMAND_LIMIT, SerialDebugCommand, SerialDebugLog, SerialDebugResult, SerialDebugShare,
+    SerialDebugTab,
+};
 pub use wake::WakeInterface;
 
 pub const TCP_PORT: u16 = 45838;
@@ -177,6 +182,8 @@ pub struct Core {
     state: Mutex<State>,
     revision: AtomicU64,
     running: AtomicBool,
+    client_only: bool,
+    serial_debug: Mutex<Vec<std::sync::Weak<SerialDebugShare>>>,
     locked: AtomicBool,
     executor: Arc<dyn Executor>,
     command_slots: Arc<tokio::sync::Semaphore>,
@@ -193,6 +200,24 @@ pub struct Core {
 
 impl Core {
     pub fn load(directory: &Path, name: &str, executor: Arc<dyn Executor>) -> Result<Arc<Self>> {
+        Self::load_with_mode(directory, name, executor, false)
+    }
+
+    pub fn load_client(directory: &Path, name: &str) -> Result<Arc<Self>> {
+        Self::load_with_mode(
+            directory,
+            name,
+            Arc::new(serial_debug::ClientExecutor),
+            true,
+        )
+    }
+
+    fn load_with_mode(
+        directory: &Path,
+        name: &str,
+        executor: Arc<dyn Executor>,
+        client_only: bool,
+    ) -> Result<Arc<Self>> {
         std::fs::create_dir_all(directory)?;
         let metadata = std::fs::symlink_metadata(directory)?;
         ensure!(
@@ -271,6 +296,8 @@ impl Core {
             }),
             revision: AtomicU64::new(0),
             running: AtomicBool::new(false),
+            client_only,
+            serial_debug: Mutex::default(),
             locked: AtomicBool::new(false),
             executor,
             command_slots: Arc::new(tokio::sync::Semaphore::new(4)),
@@ -360,6 +387,7 @@ impl Core {
         state.configuration = configuration;
         state.pending.clear();
         state.failed_passwords.clear();
+        self.revoke_serial_tabs(None);
         self.invalidate_device_access();
         Ok(())
     }
@@ -392,6 +420,7 @@ impl Core {
     pub fn set_locked(&self, locked: bool) {
         self.locked.store(locked, Ordering::Release);
         if locked {
+            self.revoke_serial_tabs(None);
             self.invalidate_device_access();
             self.sleep.reset();
         } else if self.is_running() {
@@ -399,7 +428,7 @@ impl Core {
         }
     }
     pub fn is_active(&self) -> bool {
-        self.is_running() && !self.locked.load(Ordering::Acquire)
+        (self.is_running() || self.client_only) && !self.locked.load(Ordering::Acquire)
     }
     pub fn hosts(&self) -> Vec<SharedHost> {
         self.executor.hosts()
@@ -523,6 +552,7 @@ impl Core {
             state
                 .pending
                 .retain(|_, pending| pending.address.ip() != address);
+            self.revoke_serial_tabs(None);
         } else {
             state.pending.remove(id);
         }
@@ -540,6 +570,7 @@ impl Core {
         configuration.device_grants.remove(id);
         self.persist(&configuration)?;
         state.configuration = configuration;
+        self.revoke_serial_tabs(Some(id));
         self.invalidate_disallowed_devices(&state.configuration);
         Ok(())
     }

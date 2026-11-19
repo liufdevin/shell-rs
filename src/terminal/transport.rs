@@ -34,6 +34,7 @@ pub enum TerminalTransportCommand {
     Exec(ExecRequest),
     Monitor(ExecRequest),
     SerialTransfer(ExecRequest),
+    ShareSerialDebug(Arc<shellrs_lan::SerialDebugShare>),
     /// Open an SFTP channel beside the shell, for the right sidebar's
     /// 文件. Dropped like `Exec` by a transport without a connection.
     OpenSftp(SftpChannelRequest),
@@ -136,6 +137,7 @@ impl std::fmt::Debug for TerminalTransportCommand {
                 .field(&request.command.len())
                 .finish(),
             Self::SerialTransfer(_) => formatter.write_str("SerialTransfer"),
+            Self::ShareSerialDebug(_) => formatter.write_str("ShareSerialDebug"),
             Self::Monitor(_) => formatter.write_str("Monitor"),
             Self::OpenSftp(_) => formatter.write_str("OpenSftp"),
             Self::SendBreak => formatter.write_str("SendBreak"),

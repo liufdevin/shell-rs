@@ -14,6 +14,7 @@ mod manage;
 #[cfg(windows)]
 mod pipe_windows;
 mod protocol;
+mod serial_debug;
 mod server;
 #[cfg(test)]
 mod tests;
@@ -289,6 +290,11 @@ enum LanCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Pair headlessly and use a serial tab shared by a LAN peer.
+    Debug {
+        #[command(subcommand)]
+        command: serial_debug::Command,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -361,9 +367,14 @@ pub fn main(args: Vec<OsString>) -> i32 {
         exec_json: false,
         stderr_is_terminal,
     };
-    let code = match request(cli.command, &mut console) {
-        Ok(request) => client::run(&crate::app::cli_socket_path(), request, &mut console),
-        Err(code) => code,
+    let code = match cli.command {
+        Command::Lan {
+            command: LanCommand::Debug { command },
+        } => serial_debug::run(command, &mut console),
+        command => match request(command, &mut console) {
+            Ok(request) => client::run(&crate::app::cli_socket_path(), request, &mut console),
+            Err(code) => code,
+        },
     };
     let _ = stdout.finish();
     let _ = stderr.finish();
@@ -380,6 +391,9 @@ fn request(command: Command, console: &mut Console) -> Result<Request, i32> {
         }
         Command::Lan { command } => {
             let request = match command {
+                LanCommand::Debug { .. } => {
+                    unreachable!("headless LAN commands are dispatched before IPC")
+                }
                 LanCommand::Peers => shellrs_lan::ClientRequest::Peers,
                 LanCommand::Hosts { peer } => shellrs_lan::ClientRequest::Hosts { peer },
                 LanCommand::Exec {

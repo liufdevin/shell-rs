@@ -7984,6 +7984,7 @@ dependencies = [
  "serde_yaml_ng",
  "serial2",
  "sha2 0.10.9",
+ "shellrs-cli",
  "shellrs-hosts",
  "shellrs-lan",
  "shellrs-ssh",
@@ -8006,6 +8007,19 @@ dependencies = [
  "zeroize",
  "zip",
  "zmodem2",
+]
+
+[[package]]
+name = "shellrs-cli"
+version = "0.1.22"
+dependencies = [
+ "anyhow",
+ "clap",
+ "dirs 6.0.0",
+ "serde",
+ "serde_json",
+ "shellrs-lan",
+ "tempfile",
 ]
 
 [[package]]

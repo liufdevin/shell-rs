@@ -152,6 +152,27 @@ shelllf-cli lan exec 'SHA256:对方设备指纹' '共享主机ID' 'uname -a' --j
 
 设备 ID 取自 `lan peers`，共享主机 ID 取自 `lan hosts`；不要把 B 的主机 ID 用在 A 的普通 `exec` 命令中。发现、配对、密码和授权管理在 GUI 中完成，CLI 不提供绕过确认或修改对方授权的接口。
 
+### 从无桌面服务器调试电脑上的串口标签
+
+服务器可用运行 Codex 的普通用户一条命令安装：`bash shelllf-cli-0.1.22-linux-x86_64.run`。安装包包含无界面 CLI 和服务器专用技能，不需要 sudo 或 Rust；重启终端和 Codex 后使用。安装目录、源码构建方式和完整说明见 [Ubuntu 服务器安装包](../crates/shellrs-cli/README.zh.md)。也可单独安装新版 `shelllf-cli`，把 [服务器技能文件](../crates/shellrs-cli/SKILL.md) 放入 `~/.codex/skills/shelllf-cli/SKILL.md`。电脑运行新版 ShellLF，并在设置中开启局域网协作。`lan debug` 直接使用现有加密配对协议，服务器端只运行 CLI。其配对身份单独保存在服务器的应用数据目录 `lan-cli/` 中。
+
+```sh
+shelllf-cli lan debug inspect 192.168.1.20
+shelllf-cli lan debug pair 192.168.1.20 --fingerprint '<inspect 返回的 peer>'
+```
+
+在电脑的配对弹窗核对服务器输出中的配对码，再批准。服务器之后可以通过 `shelllf-cli lan debug peers` 找回配对记录。在电脑上打开本机 COM3 的终端标签，选择「共享串口调试…」，指定服务器并选择「仅查看输出」或「查看并允许执行」。执行需要启用串口主机的「Linux Shell 模式」，并登录到可识别的空闲提示符。共享需关闭 HEX 收发。
+
+```sh
+shelllf-cli lan debug tabs '<peer>'
+shelllf-cli lan debug logs '<peer>' '<tab>' --follow
+shelllf-cli lan debug exec '<peer>' '<tab>' 'dmesg | tail -n 40'
+```
+
+日志从授权开始暂存在内存中。`logs` 返回文本和游标，可用 `--after <cursor> --wait-ms 10000` 分批等待新增输出。`--follow` 持续输出 JSON 行，`gap` 表示部分旧内容已滚出缓冲区。诊断命令在现有标签执行，标签显示命令及输出。CLI 返回退出码和合并输出，较长的输出会标记 `truncated`。串口忙时 CLI 拒绝发送命令。执行期间，本地可按 Ctrl+C 取消诊断，其他键盘输入暂不发送。
+
+在标签点击「撤销共享」会停止远端读取并拒绝新命令。已写入设备的命令可能继续运行，可在本地按 Ctrl+C。关闭或断开标签、重新连接、锁定 ShellLF、关闭局域网协作或撤销服务器配对，都会结束本次共享。再次分享会生成新的标签 ID。
+
 ## 数据与协议边界
 
 `<data_dir>/lan/identity` 保存本机 Ed25519 设备身份，`lan/access.json` 保存 Argon2id 带盐密码校验值、公钥固定信息、共享主机 ID、授权和 IP 黑名单。配对密码原文不落盘、不写数据库，不用于设备登录。Windows 对 LAN 目录设置当前所有者和 SYSTEM 的访问权限；Unix 目录权限为 0700，生成的身份文件为 0600。无法安全创建或读取身份时不会开放网络服务。协作数据目录要求支持这些权限。

@@ -32,6 +32,7 @@ members = [
     "crates/shellrs-hosts",
     "crates/shellrs-mobile",
     "crates/shellrs-lan",
+    "crates/shellrs-cli",
 ]
 default-members = [".", "crates/shellrs-sync", "crates/shellrs-ssh", "crates/shellrs-hosts", "crates/shellrs-lan"]
 resolver = "3"
@@ -115,6 +116,7 @@ shellrs-ssh = { path = "crates/shellrs-ssh" }
 # so the mobile apps can link it too.
 shellrs-hosts = { path = "crates/shellrs-hosts" }
 shellrs-lan = { path = "crates/shellrs-lan" }
+shellrs-cli = { path = "crates/shellrs-cli" }
 trash = "5"
 # Online update: the signed manifest, its versions and the downloads. The
 # default features keep rustls with the OS trust store and the system proxy

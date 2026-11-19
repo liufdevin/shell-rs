@@ -352,6 +352,8 @@ fn serve_shell(
     let mut lines = VecDeque::new();
     let mut next_line = Instant::now();
     let mut pending_input = Vec::new();
+    let mut debug = SerialDebugCapture::default();
+    let mut poll_debug = false;
     let result = (|| -> Result<()> {
         while !stop.load(Ordering::Acquire) {
             if Instant::now() >= next_diagnostics {
@@ -373,6 +375,7 @@ fn serve_shell(
                 match event {
                     SerialRead::Output(bytes) => {
                         let visible = shell.output(&bytes);
+                        debug.append(&visible);
                         if !visible.is_empty()
                             && !send_event(events, TerminalTransportEvent::Output(visible))
                         {
@@ -413,7 +416,19 @@ fn serve_shell(
                         (line.len() as u64 * 12000 / u64::from(baud.max(1))).max(100),
                     );
             }
+            if poll_debug
+                && let Some((share, _)) = &debug.0
+                && let Some(request) = share.take_command()
+                && let Some(script) = shell.debug_execute(request)
+                && shell.may_write_debug_command()
+            {
+                port.write_all(&script)?;
+            }
+            poll_debug = false;
             match commands.recv_timeout(Duration::from_millis(20)) {
+                Ok(TerminalTransportCommand::ShareSerialDebug(share)) => {
+                    debug = SerialDebugCapture(Some((share, shell.debug_decoder())));
+                }
                 Ok(TerminalTransportCommand::SetSerialBaud {
                     baud: requested,
                     reply,
@@ -445,6 +460,7 @@ fn serve_shell(
                     let _ = reply.send(result.map_err(|error| error.to_string()));
                 }
                 Ok(TerminalTransportCommand::WriteData(bytes)) => {
+                    shell.invalidate_debug_prompt();
                     port.write_all(&bytes)?;
                 }
                 Ok(TerminalTransportCommand::SerialWriteChecked { bytes, reply }) => {
@@ -457,11 +473,14 @@ fn serve_shell(
                     let _ = reply.send(result.map_err(|error| error.to_string()));
                 }
                 Ok(TerminalTransportCommand::Write(bytes)) => {
+                    let debug_running = shell.debug_busy();
                     if bytes.contains(&3) {
                         pending_input.clear();
                     }
                     if !shell.input(&bytes) {
-                        pending_input.extend_from_slice(&bytes);
+                        if !debug_running {
+                            pending_input.extend_from_slice(&bytes);
+                        }
                         continue;
                     }
                     if let Err(error) = port.write_all(&bytes)
@@ -492,12 +511,18 @@ fn serve_shell(
                         port.write_all(&command)?;
                     }
                 }
-                Ok(TerminalTransportCommand::SendBreak) => send_break(&port),
+                Ok(TerminalTransportCommand::SendBreak) => {
+                    shell.invalidate_debug_prompt();
+                    send_break(&port);
+                }
                 Ok(TerminalTransportCommand::Shutdown)
                 | Err(mpsc::RecvTimeoutError::Disconnected) => {
                     stop.store(true, Ordering::Release);
                 }
-                Ok(_) | Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    poll_debug = true;
+                }
+                Ok(_) => {}
             }
         }
         Ok(())
@@ -510,6 +535,34 @@ fn serve_shell(
         first_received_ms=?snapshot.first_received_ms, "Serial connection statistics");
     send_event(events, TerminalTransportEvent::SerialDiagnostics(snapshot));
     result
+}
+
+#[derive(Default)]
+struct SerialDebugCapture(
+    Option<(
+        Arc<shellrs_lan::SerialDebugShare>,
+        crate::terminal::TerminalDecoder,
+    )>,
+);
+
+impl SerialDebugCapture {
+    fn append(&mut self, bytes: &[u8]) {
+        if let Some((share, decoder)) = &mut self.0
+            && share.is_active()
+            && !bytes.is_empty()
+        {
+            let decoded = decoder.decode(bytes, false);
+            share.append(&String::from_utf8_lossy(&decoded));
+        }
+    }
+}
+
+impl Drop for SerialDebugCapture {
+    fn drop(&mut self) {
+        if let Some((share, _)) = &self.0 {
+            share.revoke();
+        }
+    }
 }
 
 /// Hand what comes in to the terminal until `stop`, or until the port goes

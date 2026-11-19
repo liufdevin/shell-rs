@@ -1,0 +1,49 @@
+name: cli-package
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "crates/shellrs-cli/**"
+      - "crates/shellrs-lan/**"
+      - "packaging/linux/cli-*.sh"
+      - "packaging/linux/test-cli-bundle.sh"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - ".github/workflows/cli-package.yml"
+
+jobs:
+  ubuntu-cli:
+    runs-on: ubuntu-latest
+    container: ubuntu:20.04
+    timeout-minutes: 45
+    env:
+      DEBIAN_FRONTEND: noninteractive
+    steps:
+      - name: Build tools
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends ca-certificates curl git build-essential cmake pkg-config
+      - uses: actions/checkout@v4
+      - name: Rust
+        run: |
+          curl -fsSL https://sh.rustup.rs -o /tmp/rustup-init.sh
+          sh /tmp/rustup-init.sh -y --profile minimal --default-toolchain none
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: headless-ubuntu-20.04
+      - run: cargo test --locked -p shellrs-cli -p shellrs-lan
+      - run: cargo build --release --locked -p shellrs-cli --bin shelllf-cli
+      - run: sh packaging/linux/cli-bundle.sh target/release/shelllf-cli dist
+      - name: Install as a normal user
+        run: |
+          useradd --create-home cli-test
+          chmod o+rx "$GITHUB_WORKSPACE"
+          runuser -u cli-test -- sh packaging/linux/test-cli-bundle.sh dist/*.run
+      - uses: actions/upload-artifact@v4
+        with:
+          name: shelllf-cli-linux-x86_64
+          path: dist/*

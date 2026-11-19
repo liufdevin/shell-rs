@@ -126,6 +126,74 @@ impl Executor for NoCommands {
 }
 
 #[gpui_kit::test]
+async fn serial_debug_can_be_granted_and_revoked_from_the_existing_tab(cx: &mut TestAppContext) {
+    let desktop_directory = tempfile::tempdir().unwrap();
+    let server_directory = tempfile::tempdir().unwrap();
+    let desktop = Core::load(desktop_directory.path(), "Desktop", Arc::new(NoCommands)).unwrap();
+    let server = Core::load_client(server_directory.path(), "Server").unwrap();
+    desktop.set_password("strong pairing password").unwrap();
+    let network = Network::start(desktop.clone(), Ipv4Addr::LOCALHOST, 0, 0).unwrap();
+    let target = server.inspect(network.tcp_address).unwrap();
+    server
+        .pair_password(target, "strong pairing password")
+        .unwrap();
+
+    let mut hosts = HostStore::empty();
+    let host = hosts.insert_unnotified(HostDraft::serial(
+        "COM3",
+        "TEST-COM",
+        Default::default(),
+        None,
+    ));
+    let serial = Arc::new(FakeTerminalFactory::default());
+    let (handle, workspace) = open_workspace_with_terminals(
+        cx,
+        hosts,
+        Arc::new(FakeTerminalFactory::default()),
+        Arc::new(FixedSerialTerminalTransportProvider::new(serial.clone())),
+    );
+    cx.update(|cx| {
+        let service = workspace.read(cx).lan().clone();
+        service.update(cx, |service, cx| service.attach_core(desktop.clone(), cx));
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.click("host-search", cx);
+        window.dispatch_action(Box::new(shellrs::app::ConnectHost(host)), cx);
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(5), |window, _| {
+        window.try_find(("serial-debug", 1_u64)).is_some()
+    })
+    .await;
+    in_frame(cx, handle, |window, cx| {
+        window.click(("serial-debug", 1_u64), cx)
+    });
+    let grant = format!("serial-debug-false-{}", server.id());
+    in_frame(cx, handle, |window, cx| window.click(grant.clone(), cx));
+
+    let tabs = || {
+        server
+            .request(
+                desktop.id(),
+                shellrs_lan::RemoteRequest::SerialTabs,
+                &AtomicBool::new(false),
+                &mut |_, _| Ok(()),
+            )
+            .unwrap()
+            .serial_tabs
+    };
+    let shared = tabs();
+    assert_eq!(shared.len(), 1);
+    assert_eq!(shared[0].label, "COM3");
+    assert!(!shared[0].execute);
+    assert_eq!(serial.starts.load(Ordering::SeqCst), 1);
+    in_frame(cx, handle, |window, cx| {
+        window.click(("serial-debug", 1_u64), cx)
+    });
+    assert!(tabs().is_empty());
+    assert_eq!(serial.starts.load(Ordering::SeqCst), 1);
+}
+
+#[gpui_kit::test]
 async fn shared_ssh_opens_interactive_tabs_and_reconnects_only_through_the_paired_computer(
     cx: &mut TestAppContext,
 ) {
