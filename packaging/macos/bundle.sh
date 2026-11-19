@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Put a built `shellrs` binary into ShellLF.app.
+# Put a built `ShellLF` binary into ShellLF.app.
 #
 #   packaging/macos/bundle.sh <binary> <version> <build-number> <out-dir>
 #

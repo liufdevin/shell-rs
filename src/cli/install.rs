@@ -171,7 +171,7 @@ fn windows_locations(
     })
 }
 
-/// The console program beside `shellrs.exe` on Windows.
+/// The console program beside `ShellLF.exe` on Windows.
 const WINDOWS_CLI: &str = "shelllf-cli.exe";
 
 /// The file the `shelllf-cli` command runs. Inside an AppImage the executable
@@ -437,7 +437,7 @@ mod tests {
 
     #[test]
     fn a_portable_copy_keeps_the_command_in_its_own_bin() {
-        let exe = Path::new("/Users/me/AppData/Local/Programs/ShellRS/shellrs.exe");
+        let exe = Path::new("/Users/me/AppData/Local/Programs/ShellRS/ShellLF.exe");
         let local = PathBuf::from("/Users/me/AppData/Local");
         assert_eq!(
             windows_locations(None, Some(local.clone()), exe),
@@ -449,7 +449,7 @@ mod tests {
         assert_eq!(windows_locations(None, None, exe), None);
         let root = Path::new("/Volumes/USB/ShellRS");
         assert_eq!(
-            windows_locations(Some(root), Some(local), &root.join("shellrs.exe")),
+            windows_locations(Some(root), Some(local), &root.join("ShellLF.exe")),
             Some((
                 root.join("bin").join("shelllf-cli.exe"),
                 root.join("shelllf-cli.exe"),
@@ -459,14 +459,14 @@ mod tests {
 
     #[test]
     fn inside_an_appimage_the_command_links_to_the_appimage() {
-        let mounted = PathBuf::from("/tmp/.mount_ShellRabc/usr/bin/shellrs");
+        let mounted = PathBuf::from("/tmp/.mount_ShellRabc/usr/bin/ShellLF");
         let appimage = PathBuf::from("/home/me/Apps/ShellRS-x86_64.AppImage");
         assert_eq!(program(mounted.clone(), Some(appimage.clone())), appimage);
         assert_eq!(program(mounted.clone(), None), mounted);
     }
 
     fn paths(root: &Path) -> IntegrationPaths {
-        let exe = root.join("app").join("shellrs");
+        let exe = root.join("app").join("ShellLF");
         fs::create_dir_all(exe.parent().unwrap()).unwrap();
         fs::write(&exe, "binary").unwrap();
         IntegrationPaths {

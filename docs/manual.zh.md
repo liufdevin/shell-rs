@@ -395,7 +395,7 @@ Windows 下，「终端 › 本地终端 › Cmder 目录」留空自动检测�
   - macOS：链接到 `/usr/local/bin/shelllf-cli`，目录不可写时弹系统授权框。
   - Linux：链接到 `~/.local/bin/shelllf-cli`。
   - macOS、Linux 上「移除」只删除指向 shelllf-cli 的链接，同名的其他文件不会被改动。
-  - Windows：图形程序没有控制台，命令是单独的控制台程序 `shelllf-cli.exe`（与 `shellrs.exe` 放在一起）。「安装」把它复制成 `%LOCALAPPDATA%\ShellRS\bin\shelllf-cli.exe`，并把这个文件夹加入当前用户的 PATH（不需要管理员），重新打开的终端和 Agent 才能找到它。ShellRS 升级后启动时会自动更新这份副本；更新不了时显示「更新」。副本正被使用时也能更新。「移除」删掉副本并把文件夹移出 PATH。便携版复制到便携版文件夹里的 `bin\shelllf-cli.exe`，加入 PATH 的是这个 `bin`，命令连的是这份便携版；移动文件夹或盘符变了以后再安装一次。安装版和便携版都装了时，PATH 里靠前的那个生效。
+  - Windows：图形程序没有控制台，命令是单独的控制台程序 `shelllf-cli.exe`（与 `ShellLF.exe` 放在一起）。「安装」把它复制成 `%LOCALAPPDATA%\ShellRS\bin\shelllf-cli.exe`，并把这个文件夹加入当前用户的 PATH（不需要管理员），重新打开的终端和 Agent 才能找到它。ShellRS 升级后启动时会自动更新这份副本；更新不了时显示「更新」。副本正被使用时也能更新。「移除」删掉副本并把文件夹移出 PATH。便携版复制到便携版文件夹里的 `bin\shelllf-cli.exe`，加入 PATH 的是这个 `bin`，命令连的是这份便携版；移动文件夹或盘符变了以后再安装一次。安装版和便携版都装了时，PATH 里靠前的那个生效。
 - **Agent Skills**：把教 Agent 使用 `shelllf-cli` 的 skill 写到通用目录（`~/.agents/skills`）或 Codex、Claude Code、OpenCode、WorkBuddy 各自的 skills 目录；内容和当前版本不同时显示「更新」。「复制 skills」把 skill 全文复制到剪贴板。
 
 命令（`shelllf-cli --help` 查看完整说明）：
@@ -455,7 +455,7 @@ ShellRS /sessionname=标签名 sftp://用户[:密码]@地址[:端口]
 - 链接里的密码只留在内存里，不进钥匙串，重新连接时照样用它；没带密码时，服务器要密码就弹框问。第一次连到某台堡垒机要信任它的主机密钥，记在 ShellRS 自己的 `known_hosts` 里，下次不再问。
 - ShellRS 已经在运行时，链接交给正在运行的那个打开，窗口调到前面，不会再起一个 ShellRS。链接有问题（不是 `ssh://` 或 `sftp://`、没有用户名或地址、端口不对）时，ShellRS 弹通知说明原因。
 - 堡垒机要调用的程序：
-  - Windows：安装目录里的 `shellrs.exe`（默认 `%LOCALAPPDATA%\Programs\ShellRS\shellrs.exe`），便携版是便携版文件夹里的 `shellrs.exe`。不要用 PATH 里的 `shelllf-cli.exe`（包括便携版 `bin` 里的那个）：那是外部 CLI 的副本。
+  - Windows：安装目录里的 `ShellLF.exe`（默认 `%LOCALAPPDATA%\Programs\ShellRS\ShellLF.exe`），便携版是便携版文件夹里的 `ShellLF.exe`。不要用 PATH 里的 `shelllf-cli.exe`（包括便携版 `bin` 里的那个）：那是外部 CLI 的副本。
   - macOS：`/Applications/ShellLF.app/Contents/MacOS/shellrs`。不要用 `open -a ShellLF --args …`：ShellLF 已在运行时，系统会把参数丢掉。
   - Linux：AppImage 本身。
 - 外部 CLI 的 `shelllf-cli hosts list` 也列出外部连接（JSON 里 `"temporary": true`，表格的分组一栏写「（未保存）」），标签开着时 Agent 可以用它的 ID 执行命令、传输文件，这期间 ID 不变，可以一直用。标签关掉后 ID 失效；堡垒机再拉起一次（即使是同一台资产）是新的外部连接，ID 也是新的。和保存的主机一样，每条命令都用链接里的用户名和密码重新登录一次；堡垒机给的若是只能用一次的令牌，这次登录会被拒绝，这时改用 `shelllf-cli exec --terminal`，在外部连接已打开的终端里执行命令（见「外部 CLI」）。
@@ -875,12 +875,12 @@ ShellRS 启动 30 秒后检查一次有没有新版本，之后每 6 小时检�
 
 ### Windows 便携版
 
-便携版是一个 zip（`ShellRS-<版本>-windows-x86_64-portable.zip`），里面是 `shellrs.exe`、`shelllf-cli.exe` 和一个空的 `data` 文件夹，解压后运行 `shellrs.exe` 即可，不用安装。`shellrs.exe` 旁边有 `data` 文件夹的就是便携版：主机、凭据、设置、`known_hosts`、粘贴和生成的私钥、窗口位置和更新的下载都在 `data` 里，不写 `%APPDATA%`。「应用」页当前版本的悬停提示里写着「便携版」。
+便携版是一个 zip（`ShellRS-<版本>-windows-x86_64-portable.zip`），里面是 `ShellLF.exe`、`shelllf-cli.exe` 和一个空的 `data` 文件夹，解压后运行 `ShellLF.exe` 即可，不用安装。`ShellLF.exe` 旁边有 `data` 文件夹的就是便携版：主机、凭据、设置、`known_hosts`、粘贴和生成的私钥、窗口位置和更新的下载都在 `data` 里，不写 `%APPDATA%`。「应用」页当前版本的悬停提示里写着「便携版」。
 
-- 先解压再运行：在 zip 里直接打开 `shellrs.exe` 时旁边没有 `data`，会当成普通的一份，数据写进 `%APPDATA%\shellrs`。
+- 先解压再运行：在 zip 里直接打开 `ShellLF.exe` 时旁边没有 `data`，会当成普通的一份，数据写进 `%APPDATA%\shellrs`。
 - 放在自己能写入的文件夹里，比如 `D:\Tools\ShellRS` 或 U 盘；不要放进 `Program Files`，也不要放进 OneDrive 这类会同步的文件夹。文件夹不能写入时不能自动更新，「前往下载页」给的是便携版的 zip。
-- 不要改 `shellrs.exe` 的名字（更新换的是这个名字的文件），也不要删掉 `data`（没有它就不再是便携版）。在安装版的目录里建 `data` 不会让它变成便携版（卸载会删掉整个安装目录）。
-- 自动更新和安装版一样在后台下载、校验；「重启并安装」或退出时换掉 `shellrs.exe` 和 `shelllf-cli.exe`，`data` 和 `bin` 不动。换下来的旧文件改名成 `.shellrs.exe.old-…` 这样的隐藏名字，新版本启动后删掉。
+- 不要改 `ShellLF.exe` 的名字（更新换的是这个名字的文件），也不要删掉 `data`（没有它就不再是便携版）。在安装版的目录里建 `data` 不会让它变成便携版（卸载会删掉整个安装目录）。
+- 自动更新和安装版一样在后台下载、校验；「重启并安装」或退出时换掉 `ShellLF.exe` 和 `shelllf-cli.exe`，`data` 和 `bin` 不动。换下来的旧文件改名成 `.ShellLF.exe.old-…` 这样的隐藏名字，新版本启动后删掉。
 - 同一个便携版文件夹同一时间只给一个 Windows 账户用。它和安装版可以同时运行，各用各的数据，任务栏上也是两个按钮。
 - **从安装版搬过来**：退出两边的 ShellRS，把 `%APPDATA%\shellrs` 里的文件拷进便携版的 `data`。粘贴和生成的私钥自动改指向 `data\keys` 里的那份；在同一台电脑上，保存的密码照样能用。
 - **留在这台电脑上的**：

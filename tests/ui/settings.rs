@@ -782,12 +782,12 @@ fn without_a_home_to_install_into_the_external_cli_offers_nothing(cx: &mut TestA
 fn agent_skills_install_where_each_agent_looks_and_come_off_again(cx: &mut TestAppContext) {
     let (handle, workspace) = open_workspace(cx);
     let root = tempfile::tempdir().unwrap();
-    let exe = root.path().join("app").join("shellrs");
+    let exe = root.path().join("app").join("ShellLF");
     std::fs::create_dir_all(exe.parent().unwrap()).unwrap();
     std::fs::write(&exe, "binary").unwrap();
     let paths = IntegrationPaths {
         home: root.path().join("home"),
-        bin_link: root.path().join("bin").join("shellrs"),
+        bin_link: root.path().join("bin").join("shelllf-cli"),
         exe,
         user_path: None,
     };

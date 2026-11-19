@@ -11,7 +11,7 @@
 # run.
 set -e
 program="$1"
-if [ -n "$SHELLRS_SIGN_IDENTITY" ] && [ "$(basename "$program")" = shellrs ]; then
+if [ -n "$SHELLRS_SIGN_IDENTITY" ] && [ "$(basename "$program")" = ShellLF ]; then
     # Signed already, unless the build since replaced it.
     if ! codesign -dv "$program" 2>&1 | grep -qxF "Authority=$SHELLRS_SIGN_IDENTITY" \
         || ! codesign --verify "$program" 2>/dev/null; then

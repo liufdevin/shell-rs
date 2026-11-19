@@ -6,7 +6,7 @@ use std::sync::OnceLock;
 /// Overrides the data directory. Set by tests and handy during development.
 const DATA_DIR_ENV: &str = "SHELLRS_DATA_DIR";
 
-/// The folder beside `shellrs.exe` that makes a Windows copy portable: its
+/// The folder beside `ShellLF.exe` that makes a Windows copy portable: its
 /// data lives there instead of in the user's profile.
 pub const PORTABLE_DATA: &str = "data";
 
@@ -15,10 +15,8 @@ pub const PORTABLE_DATA: &str = "data";
 pub const PORTABLE_BIN: &str = "bin";
 
 /// The program a portable copy is started as.
-const PROGRAM: &str = "shellrs.exe";
-/// The branded name this build is distributed under. Both names open the
-/// portable folder, so a copy renamed for display keeps its data beside it.
-const BRANDED_PROGRAM: &str = "ShellLF.exe";
+const PROGRAM: &str = "ShellLF.exe";
+const LEGACY_PROGRAM: &str = "shellrs.exe";
 
 /// What the Windows setup program leaves beside the copy it installed. Its
 /// uninstaller deletes the whole folder, so a `data` folder there must not
@@ -119,7 +117,7 @@ pub fn cli_endpoint(dir: &Path) -> PathBuf {
 }
 
 /// The folder a portable copy of ShellRS runs from, on Windows: the one
-/// holding `shellrs.exe` and a `data` folder. Looked up once; `None` for an
+/// holding `ShellLF.exe` and a `data` folder. Looked up once; `None` for an
 /// installed copy and on every other system.
 pub fn portable_root() -> Option<&'static Path> {
     static ROOT: OnceLock<Option<PathBuf>> = OnceLock::new();
@@ -148,7 +146,7 @@ pub(crate) fn portable_root_of(exe: &Path) -> Option<PathBuf> {
         .then(|| folder.parent())
         .flatten()
         .filter(|above| {
-            [PROGRAM, BRANDED_PROGRAM]
+            [PROGRAM, LEGACY_PROGRAM]
                 .iter()
                 .any(|program| above.join(program).is_file())
         });
@@ -183,25 +181,30 @@ mod tests {
     #[test]
     fn a_data_folder_beside_the_program_makes_it_portable() {
         let root = tempfile::tempdir().unwrap();
-        let exe = root.path().join("shellrs.exe");
+        let exe = root.path().join("ShellLF.exe");
         fs::write(&exe, "").unwrap();
         assert_eq!(portable_root_of(&exe), None);
         fs::create_dir(root.path().join(PORTABLE_DATA)).unwrap();
         assert_eq!(portable_root_of(&exe).as_deref(), Some(root.path()));
-        let branded = root.path().join("ShellLF.exe");
-        fs::write(&branded, "").unwrap();
-        fs::remove_file(&exe).unwrap();
-        assert_eq!(portable_root_of(&branded).as_deref(), Some(root.path()));
         // Its console program finds the same folder.
         let cli = root.path().join("shelllf-cli.exe");
         assert_eq!(portable_root_of(&cli).as_deref(), Some(root.path()));
     }
 
     #[test]
+    fn a_legacy_program_name_keeps_its_portable_data() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir(root.path().join(PORTABLE_DATA)).unwrap();
+        let exe = root.path().join("shellrs.exe");
+        fs::write(&exe, "").unwrap();
+        assert_eq!(portable_root_of(&exe).as_deref(), Some(root.path()));
+    }
+
+    #[test]
     fn a_file_named_data_is_not_a_data_folder() {
         let root = tempfile::tempdir().unwrap();
         fs::write(root.path().join(PORTABLE_DATA), "").unwrap();
-        assert_eq!(portable_root_of(&root.path().join("shellrs.exe")), None);
+        assert_eq!(portable_root_of(&root.path().join("ShellLF.exe")), None);
     }
 
     #[test]
@@ -209,7 +212,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         fs::create_dir(root.path().join(PORTABLE_DATA)).unwrap();
         fs::write(root.path().join(SETUP_UNINSTALLER), "").unwrap();
-        assert_eq!(portable_root_of(&root.path().join("shellrs.exe")), None);
+        assert_eq!(portable_root_of(&root.path().join("ShellLF.exe")), None);
     }
 
     #[test]
@@ -221,7 +224,7 @@ mod tests {
         let command = bin.join("shelllf-cli.exe");
         // Only beside the program it belongs to.
         assert_eq!(portable_root_of(&command), None);
-        fs::write(root.path().join("shellrs.exe"), "").unwrap();
+        fs::write(root.path().join("ShellLF.exe"), "").unwrap();
         assert_eq!(portable_root_of(&command).as_deref(), Some(root.path()));
         // Any other folder above is not looked at.
         let other = root.path().join("tools");

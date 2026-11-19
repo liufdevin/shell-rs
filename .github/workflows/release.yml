@@ -111,10 +111,10 @@ jobs:
       - name: Build the architecture-specific app
         run: |
           export SHELLRS_BUILD_DATE=$(date -u +%Y-%m-%d)
-          cargo build --release --locked --bin shellrs --target "$ARCH-apple-darwin"
+          cargo build --release --locked --bin ShellLF --target "$ARCH-apple-darwin"
           mkdir -p dist build
-          lipo "target/$ARCH-apple-darwin/release/shellrs" -verify_arch "${ARCH/aarch64/arm64}"
-          packaging/macos/bundle.sh "target/$ARCH-apple-darwin/release/shellrs" "$VERSION" "$GITHUB_RUN_NUMBER" build
+          lipo "target/$ARCH-apple-darwin/release/ShellLF" -verify_arch "${ARCH/aarch64/arm64}"
+          packaging/macos/bundle.sh "target/$ARCH-apple-darwin/release/ShellLF" "$VERSION" "$GITHUB_RUN_NUMBER" build
       - name: Sign
         env:
           CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE_P12 }}
@@ -224,16 +224,16 @@ jobs:
           # Compress-Archive would drop it.
           $folder = Join-Path $env:RUNNER_TEMP "portable"
           New-Item -ItemType Directory -Force -Path (Join-Path $folder "data") | Out-Null
-          Copy-Item "target\release\shellrs.exe", "target\release\shelllf-cli.exe" $folder
+          Copy-Item "target\release\ShellLF.exe", "target\release\shelllf-cli.exe" $folder
           $zip = "$env:GITHUB_WORKSPACE\dist\ShellRS-$env:VERSION-windows-x86_64-portable.zip"
           Push-Location $folder
-          7z a -tzip -mx=9 $zip shellrs.exe shelllf-cli.exe data
+          7z a -tzip -mx=9 $zip ShellLF.exe shelllf-cli.exe data
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Pop-Location
           # The first path listed is the archive itself.
           $entries = 7z l -slt $zip | Select-String '^Path = ' |
             ForEach-Object { $_.Line.Substring(7) } | Select-Object -Skip 1
-          if (Compare-Object @($entries) @('data', 'shelllf-cli.exe', 'shellrs.exe')) {
+          if (Compare-Object @($entries) @('data', 'shelllf-cli.exe', 'ShellLF.exe')) {
             Write-Error "The portable zip holds: $($entries -join ', ')"
             exit 1
           }
@@ -276,10 +276,10 @@ jobs:
       - name: Build
         run: |
           export SHELLRS_BUILD_DATE=$(date -u +%Y-%m-%d)
-          cargo build --release --locked --bin shellrs
+          cargo build --release --locked --bin ShellLF
       - name: Needs glibc 2.31 at most
         run: |
-          needed=$(objdump -T target/release/shellrs | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1)
+          needed=$(objdump -T target/release/ShellLF | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1)
           echo "The binary needs $needed"
           test "$(printf '%s\n' "$needed" GLIBC_2.31 | sort -V | tail -1)" = GLIBC_2.31
       - name: AppImage
@@ -290,7 +290,7 @@ jobs:
           # No FUSE on the runner: let the tool unpack itself.
           export APPIMAGE_EXTRACT_AND_RUN=1
           APPIMAGETOOL="$RUNNER_TEMP/appimagetool" \
-            packaging/linux/appimage.sh target/release/shellrs "$VERSION" dist
+            packaging/linux/appimage.sh target/release/ShellLF "$VERSION" dist
       - uses: actions/upload-artifact@v4
         with:
           name: linux

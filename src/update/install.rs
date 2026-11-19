@@ -32,7 +32,7 @@ pub enum InstallKind {
     WindowsSetup {
         exe: PathBuf,
     },
-    /// A portable copy on Windows: the folder holding `shellrs.exe` and its
+    /// A portable copy on Windows: the folder holding `ShellLF.exe` and its
     /// `data`, in a place the user can write to.
     WindowsPortable {
         root: PathBuf,
@@ -423,7 +423,7 @@ mod tests {
 
     #[test]
     fn a_mac_build_outside_a_bundle_cannot_replace_itself() {
-        let exe = Path::new("/src/shellr/target/debug/shellrs");
+        let exe = Path::new("/src/shellr/target/debug/ShellLF");
         assert_eq!(
             detect(&Surroundings {
                 bundle: Some(Path::new("/src/shellr/target/debug")),
@@ -435,7 +435,7 @@ mod tests {
 
     #[test]
     fn only_a_copy_the_setup_program_installed_updates_on_windows() {
-        let exe = Path::new(r"C:\Users\me\AppData\Local\Programs\ShellRS\shellrs.exe");
+        let exe = Path::new(r"C:\Users\me\AppData\Local\Programs\ShellRS\ShellLF.exe");
         assert_eq!(
             detect(&Surroundings {
                 exists: &|path| path.ends_with("unins000.exe"),
@@ -452,7 +452,7 @@ mod tests {
     #[test]
     fn a_portable_folder_updates_itself_on_windows() {
         let root = Path::new(r"D:\Tools\ShellRS");
-        let exe = Path::new(r"D:\Tools\ShellRS\shellrs.exe");
+        let exe = Path::new(r"D:\Tools\ShellRS\ShellLF.exe");
         let portable = Surroundings {
             portable: Some(root),
             ..at("windows", exe)

@@ -130,7 +130,7 @@ Download from [shellrs.com/download](https://shellrs.com/download), which offers
 | macOS 11+ (Apple Silicon) | `ShellRS-<version>-macos-aarch64.dmg` | Signed and notarized. Open the DMG and drag ShellRS into Applications |
 | macOS 11+ (Intel) | `ShellRS-<version>-macos-x86_64.dmg` | Signed and notarized. Open the DMG and drag ShellRS into Applications |
 | Windows x64 | `ShellRS-<version>-windows-x86_64-setup.exe` | Installs per user, no administrator rights needed. The installer is not signed yet; if SmartScreen stops it, choose "More info › Run anyway" |
-| Windows x64 (portable) | `ShellRS-<version>-windows-x86_64-portable.zip` | Unzip into a folder you can write to and run `shellrs.exe`; its data stays in the `data` folder beside it. See [Windows portable](docs/manual.md#windows-portable) |
+| Windows x64 (portable) | `ShellRS-<version>-windows-x86_64-portable.zip` | Unzip into a folder you can write to and run `ShellLF.exe`; its data stays in the `data` folder beside it. See [Windows portable](docs/manual.md#windows-portable) |
 | Linux x64 | `ShellRS-<version>-linux-x86_64.AppImage` | `chmod +x` and run. Needs glibc 2.31 or newer (Ubuntu 20.04, Debian 11 and later) |
 
 Every package comes with a minisign signature (`.minisig`), and each release has a `SHA256SUMS` file.

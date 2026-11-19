@@ -98,8 +98,8 @@ update.unsupported.not_bundled:
   zh-CN: ShellLF 不是从应用程序包运行的，无法自动更新
   en: ShellLF isn’t running from an app bundle, so it can’t update itself
 update.unsupported.not_installed:
-  zh-CN: 这份 ShellLF 不是用安装程序安装的，也不是便携版（shellrs.exe 旁边没有 data 文件夹），无法自动更新
-  en: This copy of ShellLF wasn’t installed by the setup program and isn’t portable (there’s no data folder next to shellrs.exe), so it can’t update itself
+  zh-CN: 这份 ShellLF 不是用安装程序安装的，也不是便携版（ShellLF.exe 旁边没有 data 文件夹），无法自动更新
+  en: This copy of ShellLF wasn’t installed by the setup program and isn’t portable (there’s no data folder next to ShellLF.exe), so it can’t update itself
 update.unsupported.not_appimage:
   zh-CN: 这份 ShellLF 不是 AppImage，请用安装它的方式更新
   en: This copy of ShellLF isn’t an AppImage. Update it the way you installed it

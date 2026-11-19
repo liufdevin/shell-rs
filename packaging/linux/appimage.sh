@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Put a built `shellrs` binary into an AppImage.
+# Put a built `ShellLF` binary into an AppImage.
 #
 #   packaging/linux/appimage.sh <binary> <version> <out-dir>
 #

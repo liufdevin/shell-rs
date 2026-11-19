@@ -112,7 +112,7 @@ mod tests {
     #[test]
     fn the_windows_waiter_runs_the_installer_then_relaunches() {
         let setup = Path::new(r"C:\Users\me\AppData\Local\shellrs\updates\0.2.0\setup.exe");
-        let app = Path::new(r"C:\Users\me\AppData\Local\Programs\ShellRS\shellrs.exe");
+        let app = Path::new(r"C:\Users\me\AppData\Local\Programs\ShellRS\ShellLF.exe");
         let launch = waiter(4242, setup, app, true);
         // A string compare: on the Mac running the tests, backslashes are
         // not separators.
@@ -152,7 +152,7 @@ mod tests {
 
     #[test]
     fn a_missing_setup_is_not_handed_over() {
-        let installer = SetupInstaller::new(PathBuf::from(r"C:\ShellRS\shellrs.exe"));
+        let installer = SetupInstaller::new(PathBuf::from(r"C:\ShellRS\ShellLF.exe"));
         let staged = Staged {
             version: semver::Version::new(0, 2, 0),
             path: PathBuf::from("/nowhere/setup.exe"),

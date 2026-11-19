@@ -84,7 +84,8 @@ fn lines_between<T>(
     first: i32,
     last: i32,
 ) -> impl Iterator<Item = SearchLine> + '_ {
-    let mut next = first;
+    let mut next = first.max(term.topmost_line().0);
+    let last = last.min(term.bottommost_line().0);
     std::iter::from_fn(move || {
         if next > last {
             return None;
@@ -97,11 +98,12 @@ fn lines_between<T>(
         loop {
             let row = &term.grid()[Line(next)];
             let wraps = row[term.last_column()].flags.contains(Flags::WRAPLINE);
-            let end = if wraps {
+            let end = (if wraps {
                 term.columns()
             } else {
                 row.line_length().0
-            };
+            })
+            .min(term.columns());
             for column in 0..end {
                 let cell = &row[Column(column)];
                 if cell
@@ -302,14 +304,17 @@ impl TerminalSearch {
             self.history_size = history_size;
             return;
         };
-        let shift = history_size as i32 - self.history_size as i32;
+        let shift = i32::try_from(history_size)
+            .unwrap_or(i32::MAX)
+            .saturating_sub(i32::try_from(self.history_size).unwrap_or(i32::MAX));
         self.history_size = history_size;
         let moved = shifted(&focused, shift);
         let still_there = moved.start().line >= term.topmost_line()
+            && moved.end().line <= term.bottommost_line()
             && lines_between(
                 term,
-                term.line_search_left(*moved.start()).line.0,
-                term.line_search_right(*moved.end()).line.0,
+                safe_line_search_left(term, *moved.start()).line.0,
+                safe_line_search_right(term, *moved.end()).line.0,
             )
             .any(|line| line.matches(regex).contains(&moved));
         if still_there {
@@ -392,9 +397,11 @@ fn all_matches<'a, T>(term: &'a Term<T>, regex: &'a Regex) -> impl Iterator<Item
 /// wrapped across the top edge, so a match that starts above it still shows.
 fn visible_text_matches<T>(term: &Term<T>, regex: &Regex) -> Vec<Match> {
     let top = viewport_top(term);
-    let start = term.line_search_left(top);
-    let start = start.line.max(top.line - MAX_WRAPPED_LINES);
-    let end = term.line_search_right(viewport_bottom(term));
+    let start = safe_line_search_left(term, top);
+    let start = start
+        .line
+        .max(Line(top.line.0.saturating_sub(MAX_WRAPPED_LINES)));
+    let end = safe_line_search_right(term, viewport_bottom(term));
     lines_between(term, start.0, end.line.0)
         .flat_map(|line| line.matches(regex))
         .collect()
@@ -402,29 +409,74 @@ fn visible_text_matches<T>(term: &Term<T>, regex: &Regex) -> Vec<Match> {
 
 pub fn visible_matches<T>(term: &Term<T>, regex: &mut RegexSearch) -> Vec<Match> {
     let top = viewport_top(term);
-    let start = term.line_search_left(top);
-    let start = Point::new(start.line.max(top.line - MAX_WRAPPED_LINES), Column(0));
-    let end = term.line_search_right(viewport_bottom(term));
+    let start = safe_line_search_left(term, top);
+    let start = Point::new(
+        start
+            .line
+            .max(Line(top.line.0.saturating_sub(MAX_WRAPPED_LINES))),
+        Column(0),
+    );
+    let end = safe_line_search_right(term, viewport_bottom(term));
     RegexIter::new(start, end, Direction::Right, term, regex).collect()
 }
 
 fn viewport_top<T>(term: &Term<T>) -> Point {
-    Point::new(Line(-(term.grid().display_offset() as i32)), Column(0))
+    let offset = i32::try_from(term.grid().display_offset()).unwrap_or(i32::MAX);
+    Point::new(
+        Line((-offset).clamp(term.topmost_line().0, term.bottommost_line().0)),
+        Column(0),
+    )
 }
 
 fn viewport_bottom<T>(term: &Term<T>) -> Point {
     let top = viewport_top(term);
+    let rows = i32::try_from(term.screen_lines().saturating_sub(1)).unwrap_or(i32::MAX);
     Point::new(
-        top.line + (term.screen_lines() as i32 - 1),
+        Line(
+            top.line
+                .0
+                .saturating_add(rows)
+                .min(term.bottommost_line().0),
+        ),
         term.last_column(),
     )
+}
+
+pub(super) fn safe_line_search_left<T>(term: &Term<T>, point: Point) -> Point {
+    let mut line = point
+        .line
+        .0
+        .clamp(term.topmost_line().0, term.bottommost_line().0);
+    while line > term.topmost_line().0
+        && term.grid()[Line(line - 1)][term.last_column()]
+            .flags
+            .contains(Flags::WRAPLINE)
+    {
+        line -= 1;
+    }
+    Point::new(Line(line), Column(0))
+}
+
+pub(super) fn safe_line_search_right<T>(term: &Term<T>, point: Point) -> Point {
+    let mut line = point
+        .line
+        .0
+        .clamp(term.topmost_line().0, term.bottommost_line().0);
+    while line < term.bottommost_line().0
+        && term.grid()[Line(line)][term.last_column()]
+            .flags
+            .contains(Flags::WRAPLINE)
+    {
+        line += 1;
+    }
+    Point::new(Line(line), term.last_column())
 }
 
 fn shifted(found: &Match, lines: i32) -> Match {
     let mut start = *found.start();
     let mut end = *found.end();
-    start.line -= lines;
-    end.line -= lines;
+    start.line = Line(start.line.0.saturating_sub(lines));
+    end.line = Line(end.line.0.saturating_sub(lines));
     start..=end
 }
 

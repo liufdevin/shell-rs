@@ -150,7 +150,7 @@ fn the_command_in_a_portable_bin_finds_the_portable_app() {
     let root = dunce::canonicalize(folder.path()).unwrap();
     std::fs::create_dir(root.join("data")).unwrap();
     std::fs::create_dir(root.join("bin")).unwrap();
-    std::fs::write(root.join("shellrs.exe"), "").unwrap();
+    std::fs::write(root.join("ShellLF.exe"), "").unwrap();
     let command = root.join("bin").join("shelllf-cli.exe");
     std::fs::copy(env!("CARGO_BIN_EXE_shelllf-cli"), &command).unwrap();
     let server = CliServer::start(
@@ -275,7 +275,7 @@ fn the_command_finds_the_app_through_its_data_directory() {
 /// once. One that does not is killed rather than left running as a second
 /// app with a window of its own.
 fn open_shellrs(data_dir: &Path, args: &[&str]) -> Option<i32> {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_shellrs"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_ShellLF"))
         .args(args)
         .env("SHELLRS_DATA_DIR", data_dir)
         .stdin(Stdio::null())

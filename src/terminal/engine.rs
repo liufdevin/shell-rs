@@ -40,7 +40,7 @@ use super::notices::{NoticeScanner, ProgramNotice, TerminalNotice};
 use super::run::{BusyReason, RunFailure, RunHandle};
 use super::search::{
     MatchMarker, SearchDirection, SearchMark, SearchOptions, SearchPosition, TerminalSearch,
-    visible_matches,
+    safe_line_search_left, visible_matches,
 };
 use super::session_io::{
     BackspaceKey, Recording, SerialDataModes, SessionIo, TerminalConnectionSettings,
@@ -2734,7 +2734,7 @@ fn clear_keeping_cursor_line(term: &mut AlacrittyTerm) -> bool {
     let cursor = term.grid().cursor.point;
     // The prompt may have wrapped onto the cursor's row; keep it whole. A part
     // already pushed into the scrollback goes with the scrollback.
-    let start = term.line_search_left(cursor).line.max(Line(0));
+    let start = safe_line_search_left(term, cursor).line.max(Line(0));
     let lines = start.0 as usize;
     if lines > 0 {
         let screen = Line(0)..Line(term.screen_lines() as i32);
@@ -3385,6 +3385,30 @@ mod tests {
         assert_eq!(position(&search), (Some(3), 3));
         search.step(SearchDirection::Down, &mut term);
         assert_eq!(position(&search), (Some(1), 3));
+    }
+
+    #[test]
+    fn visible_search_clamps_extreme_points_to_the_grid() {
+        let mut term = test_term(10, 3);
+        for _ in 0..8 {
+            feed(&mut term, b"abcdefghijklmno\r\n");
+        }
+
+        let topmost = term.topmost_line();
+        let bottommost = term.bottommost_line();
+        for point in [Line(i32::MIN), Line(i32::MAX)] {
+            let point = Point::new(point, Column(0));
+            let left = safe_line_search_left(&term, point).line;
+            let right = super::super::search::safe_line_search_right(&term, point).line;
+            assert!((topmost..=bottommost).contains(&left));
+            assert!((topmost..=bottommost).contains(&right));
+        }
+
+        let mut regex = RegexSearch::new("abc").unwrap();
+        term.scroll_display(Scroll::Top);
+        assert!(!visible_matches(&term, &mut regex).is_empty());
+        term.scroll_display(Scroll::Bottom);
+        let _ = visible_matches(&term, &mut regex);
     }
 
     #[test]

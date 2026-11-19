@@ -40,7 +40,7 @@ OutputBaseFilename=ShellRS-{#AppVersion}-windows-x86_64-setup
 Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern
-UninstallDisplayIcon={app}\shellrs.exe
+UninstallDisplayIcon={app}\ShellLF.exe
 UninstallDisplayName=ShellLF
 ; A running ShellRS is closed through the Restart Manager rather than
 ; making the setup fail on files in use.
@@ -67,12 +67,13 @@ Name: "chinesesimplified"; MessagesFile: "Languages\ChineseSimplified.isl"
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 
 [Files]
-Source: "{#BuildDir}\shellrs.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#BuildDir}\ShellLF.exe"; DestDir: "{app}"; Flags: ignoreversion
 ; The `shellrs` command: 设置 › 外部 CLI copies it onto the PATH.
 Source: "{#BuildDir}\shelllf-cli.exe"; DestDir: "{app}"; Flags: ignoreversion
 
 [InstallDelete]
 Type: files; Name: "{app}\shellrs-cli.exe"
+Type: files; Name: "{app}\shellrs.exe"
 Type: files; Name: "{autoprograms}\ShellRS.lnk"
 Type: files; Name: "{autodesktop}\ShellRS.lnk"
 
@@ -80,13 +81,13 @@ Type: files; Name: "{autodesktop}\ShellRS.lnk"
 ; The AppUserModelID ShellRS gives itself (`set_app_identity`, for its
 ; notifications): the same here keeps a pinned shortcut and the running
 ; window one taskbar button.
-Name: "{autoprograms}\ShellLF"; Filename: "{app}\shellrs.exe"; AppUserModelID: "com.shellrs.ShellRS"
-Name: "{autodesktop}\ShellLF"; Filename: "{app}\shellrs.exe"; AppUserModelID: "com.shellrs.ShellRS"; Tasks: desktopicon
+Name: "{autoprograms}\ShellLF"; Filename: "{app}\ShellLF.exe"; AppUserModelID: "com.shellrs.ShellRS"
+Name: "{autodesktop}\ShellLF"; Filename: "{app}\ShellLF.exe"; AppUserModelID: "com.shellrs.ShellRS"; Tasks: desktopicon
 
 [Run]
 ; Interactive installs only: an update is restarted by ShellRS's own helper,
 ; which waits for this setup to finish.
-Filename: "{app}\shellrs.exe"; Description: "{cm:LaunchProgram,ShellLF}"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\ShellLF.exe"; Description: "{cm:LaunchProgram,ShellLF}"; Flags: nowait postinstall skipifsilent
 
 [UninstallDelete]
 ; Files a later version added, which this uninstaller does not list.

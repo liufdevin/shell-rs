@@ -187,7 +187,7 @@ const SHELLRS_LIGHT: TerminalTheme = TerminalTheme {
     cursor: 0x171717,
     selection: 0xcce2fe,
     ansi: [
-        0x171717, 0xdc2626, 0x15803d, 0xa16207, 0x2563eb, 0xc026d3, 0x0e7490, 0xa3a3a3, 0x737373,
+        0x171717, 0xdc2626, 0x15803d, 0xa16207, 0x2563eb, 0xc026d3, 0x0e7490, 0xa3a3a3, 0x000000,
         0xef4444, 0x16a34a, 0xd97706, 0x3b82f6, 0xd946ef, 0x0891b2, 0xd4d4d4,
     ],
 };
@@ -205,7 +205,7 @@ const SHELLRS_DARK: TerminalTheme = TerminalTheme {
     cursor: 0xe0e0e4,
     selection: 0x1e2c56,
     ansi: [
-        0x3b3b3d, 0xf87171, 0x4ade80, 0xfacc15, 0x60a5fa, 0xe879f9, 0x22d3ee, 0xd4d4d4, 0x737373,
+        0x3b3b3d, 0xf87171, 0x4ade80, 0xfacc15, 0x60a5fa, 0xe879f9, 0x22d3ee, 0xd4d4d4, 0xffffff,
         0xfca5a5, 0x86efac, 0xfde047, 0x93c5fd, 0xf0abfc, 0x67e8f9, 0xfafafa,
     ],
 };
@@ -610,6 +610,15 @@ mod tests {
             // zsh's suggestions and many prompts' quiet parts are bright
             // black.
             assert!(contrast(theme.ansi[8], theme.background) >= 3.);
+        }
+    }
+
+    #[test]
+    fn shelllf_bright_black_contrasts_with_each_background() {
+        for (mode, expected) in [(ThemeMode::Light, 0x000000), (ThemeMode::Dark, 0xffffff)] {
+            let theme = TerminalTheme::default_for(mode);
+            assert_eq!(theme.indexed_rgb(8), expected);
+            assert!(contrast(expected, theme.background) >= 4.5);
         }
     }
 

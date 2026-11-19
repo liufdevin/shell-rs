@@ -1,4 +1,4 @@
-//! Windows, portable: a folder holding `shellrs.exe`, its console program
+//! Windows, portable: a folder holding `ShellLF.exe`, its console program
 //! and the `data` folder, updated from the release's zip.
 //!
 //! The zip is unpacked where it was downloaded, inside `data` and so on the
@@ -26,7 +26,8 @@ use crate::app::{PORTABLE_BIN, PORTABLE_DATA};
 use crate::i18n::t;
 
 /// The program a portable copy is started as.
-const PROGRAM: &str = "shellrs.exe";
+const PROGRAM: &str = "ShellLF.exe";
+const LEGACY_PROGRAM: &str = "shellrs.exe";
 
 /// Far more than a release unpacks to: a package claiming more is not one.
 const UNPACKED_LIMIT: u64 = 1 << 30;
@@ -87,6 +88,9 @@ impl Installer for PortableInstaller {
 
     /// Delete what the last update moved aside.
     fn clean_up(&self, _: &Version) {
+        if self.root.join(PROGRAM).is_file() {
+            let _ = fs::remove_file(self.root.join(LEGACY_PROGRAM));
+        }
         for entry in fs::read_dir(&self.root).into_iter().flatten().flatten() {
             if !is_set_aside(&entry.file_name().to_string_lossy()) {
                 continue;
@@ -108,7 +112,7 @@ fn left_out(name: &str) -> bool {
         || name.eq_ignore_ascii_case(PORTABLE_BIN)
 }
 
-/// `.shellrs.exe.old-<id>`: a file of the previous version.
+/// `.ShellLF.exe.old-<id>`: a file of the previous version.
 fn set_aside_name(name: &str) -> String {
     format!(".{name}.old-{}", uuid::Uuid::new_v4().simple())
 }
@@ -300,12 +304,12 @@ mod tests {
     /// on the PATH, and where its download of 0.2.0 goes.
     fn portable() -> (tempfile::TempDir, PathBuf) {
         let root = tempfile::tempdir().unwrap();
-        fs::write(root.path().join("shellrs.exe"), "old").unwrap();
+        fs::write(root.path().join("ShellLF.exe"), "old").unwrap();
         fs::write(root.path().join("shelllf-cli.exe"), "old cli").unwrap();
         fs::create_dir_all(root.path().join("data/updates/0.2.0")).unwrap();
         fs::write(root.path().join("data/shellrs.db"), "hosts").unwrap();
         fs::create_dir(root.path().join("bin")).unwrap();
-        fs::write(root.path().join("bin/shellrs.exe"), "command").unwrap();
+        fs::write(root.path().join("bin/shelllf-cli.exe"), "command").unwrap();
         let download = root
             .path()
             .join("data/updates/0.2.0/ShellRS-0.2.0-windows-x86_64-portable.zip");
@@ -332,27 +336,27 @@ mod tests {
         package(
             &download,
             &[
-                ("shellrs.exe", Some("new")),
+                ("ShellLF.exe", Some("new")),
                 ("shelllf-cli.exe", Some("new cli")),
                 ("data/", None),
                 ("Data/shellrs.db", Some("empty")),
-                ("bin/shellrs.exe", Some("other")),
+                ("bin/shelllf-cli.exe", Some("other")),
                 (".hidden", Some("no")),
             ],
         );
         let installer = PortableInstaller::new(root.path().to_path_buf());
         let staged = installer.stage(&download, &release()).unwrap();
-        assert_eq!(names(&staged.path), ["shelllf-cli.exe", "shellrs.exe"]);
-        assert_eq!(read(root.path().join("shellrs.exe")), "old");
+        assert_eq!(names(&staged.path), ["ShellLF.exe", "shelllf-cli.exe"]);
+        assert_eq!(read(root.path().join("ShellLF.exe")), "old");
 
         assert_eq!(
             installer.apply(&staged, true),
-            Ok(Relaunch::Restart(root.path().join("shellrs.exe")))
+            Ok(Relaunch::Restart(root.path().join("ShellLF.exe")))
         );
-        assert_eq!(read(root.path().join("shellrs.exe")), "new");
+        assert_eq!(read(root.path().join("ShellLF.exe")), "new");
         assert_eq!(read(root.path().join("shelllf-cli.exe")), "new cli");
         assert_eq!(read(root.path().join("data/shellrs.db")), "hosts");
-        assert_eq!(read(root.path().join("bin/shellrs.exe")), "command");
+        assert_eq!(read(root.path().join("bin/shelllf-cli.exe")), "command");
         assert!(!staged.path.exists());
         let aside: Vec<_> = names(root.path())
             .into_iter()
@@ -362,24 +366,24 @@ mod tests {
         assert!(
             aside
                 .iter()
-                .any(|name| name.starts_with(".shellrs.exe.old-"))
+                .any(|name| name.starts_with(".ShellLF.exe.old-"))
         );
 
         installer.clean_up(&Version::new(0, 2, 0));
         assert_eq!(
             names(root.path()),
-            ["bin", "data", "shelllf-cli.exe", "shellrs.exe"]
+            ["ShellLF.exe", "bin", "data", "shelllf-cli.exe"]
         );
     }
 
     #[test]
     fn installing_on_quit_does_not_restart() {
         let (root, download) = portable();
-        package(&download, &[("shellrs.exe", Some("new"))]);
+        package(&download, &[("ShellLF.exe", Some("new"))]);
         let installer = PortableInstaller::new(root.path().to_path_buf());
         let staged = installer.stage(&download, &release()).unwrap();
         assert_eq!(installer.apply(&staged, false), Ok(Relaunch::Nothing));
-        assert_eq!(read(root.path().join("shellrs.exe")), "new");
+        assert_eq!(read(root.path().join("ShellLF.exe")), "new");
         // A file only the old version had stays.
         assert_eq!(read(root.path().join("shelllf-cli.exe")), "old cli");
     }
@@ -404,14 +408,14 @@ mod tests {
     #[test]
     fn unsafe_names_are_refused() {
         for name in [
-            "../shellrs.exe",
-            "tools/../../shellrs.exe",
-            "shellrs.exe:stream",
+            "../ShellLF.exe",
+            "tools/../../ShellLF.exe",
+            "ShellLF.exe:stream",
         ] {
             let (root, download) = portable();
             package(
                 &download,
-                &[("shellrs.exe", Some("new")), (name, Some("x"))],
+                &[("ShellLF.exe", Some("new")), (name, Some("x"))],
             );
             let installer = PortableInstaller::new(root.path().to_path_buf());
             assert!(
@@ -421,7 +425,7 @@ mod tests {
                 ),
                 "{name}"
             );
-            assert!(!root.path().parent().unwrap().join("shellrs.exe").exists());
+            assert!(!root.path().parent().unwrap().join("ShellLF.exe").exists());
         }
     }
 
@@ -432,7 +436,7 @@ mod tests {
             &download,
             &[
                 ("shelllf-cli.exe", Some("new cli")),
-                ("shellrs.exe", Some("new")),
+                ("ShellLF.exe", Some("new")),
                 ("zzz.dll", Some("new dll")),
             ],
         );
@@ -450,31 +454,40 @@ mod tests {
             swap(root.path(), &staged.path, &failing),
             Err(UpdateError::Install(_))
         ));
-        assert_eq!(read(root.path().join("shellrs.exe")), "old");
+        assert_eq!(read(root.path().join("ShellLF.exe")), "old");
         assert_eq!(read(root.path().join("shelllf-cli.exe")), "old cli");
         assert_eq!(
             names(root.path()),
-            ["bin", "data", "shelllf-cli.exe", "shellrs.exe"]
+            ["ShellLF.exe", "bin", "data", "shelllf-cli.exe"]
         );
         // Still staged, for the next try.
         assert_eq!(
             names(&staged.path),
-            ["shelllf-cli.exe", "shellrs.exe", "zzz.dll"]
+            ["ShellLF.exe", "shelllf-cli.exe", "zzz.dll"]
         );
-        assert_eq!(read(staged.path.join("shellrs.exe")), "new");
+        assert_eq!(read(staged.path.join("ShellLF.exe")), "new");
     }
 
     #[test]
     fn the_clean_up_removes_only_what_an_update_set_aside() {
         let (root, _) = portable();
-        fs::write(root.path().join(set_aside_name("shellrs.exe")), "old").unwrap();
+        fs::write(root.path().join(set_aside_name("ShellLF.exe")), "old").unwrap();
         fs::create_dir(root.path().join(set_aside_name("locales"))).unwrap();
         fs::write(root.path().join(".keep"), "mine").unwrap();
         PortableInstaller::new(root.path().to_path_buf()).clean_up(&Version::new(0, 2, 0));
         assert_eq!(
             names(root.path()),
-            [".keep", "bin", "data", "shelllf-cli.exe", "shellrs.exe"]
+            [".keep", "ShellLF.exe", "bin", "data", "shelllf-cli.exe"]
         );
+    }
+
+    #[test]
+    fn the_clean_up_removes_the_legacy_app_name() {
+        let (root, _) = portable();
+        fs::write(root.path().join(LEGACY_PROGRAM), "legacy").unwrap();
+        PortableInstaller::new(root.path().to_path_buf()).clean_up(&Version::new(0, 2, 0));
+        assert!(!root.path().join(LEGACY_PROGRAM).exists());
+        assert!(root.path().join(PROGRAM).is_file());
     }
 
     /// What the whole design rests on: Windows lets a running program be
@@ -484,7 +497,7 @@ mod tests {
     fn a_running_program_is_moved_aside_and_replaced() {
         let (root, _) = portable();
         let system = std::env::var_os("SystemRoot").unwrap_or_else(|| r"C:\Windows".into());
-        let program = root.path().join("shellrs.exe");
+        let program = root.path().join("ShellLF.exe");
         // `sort` waits for its input to end, which here it never does.
         fs::copy(Path::new(&system).join(r"System32\sort.exe"), &program).unwrap();
         let mut running = {
@@ -499,7 +512,7 @@ mod tests {
         assert!(running.try_wait().unwrap().is_none(), "the program runs");
         let staged = root.path().join("data/updates/0.2.0/unpacked");
         fs::create_dir_all(&staged).unwrap();
-        fs::write(staged.join("shellrs.exe"), "new").unwrap();
+        fs::write(staged.join("ShellLF.exe"), "new").unwrap();
         let installer = PortableInstaller::new(root.path().to_path_buf());
         let applied = installer.apply(
             &Staged {
@@ -510,7 +523,7 @@ mod tests {
         );
         let aside = names(root.path())
             .into_iter()
-            .find(|name| name.starts_with(".shellrs.exe.old-"))
+            .find(|name| name.starts_with(".ShellLF.exe.old-"))
             .map(|name| root.path().join(name));
         // Deleting the running program is what Windows refuses.
         let deleted = aside.as_ref().map(fs::remove_file);
