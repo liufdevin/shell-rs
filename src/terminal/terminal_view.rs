@@ -3654,8 +3654,10 @@ impl TerminalPalette {
     ) -> (Hsla, Hsla) {
         let bold = flags.contains(Flags::BOLD);
         let bold_black = bold && foreground == Color::Named(NamedColor::Black);
-        let background = if bold_black
-            && background == Color::Named(NamedColor::Black)
+        // Full-screen tools such as htop fill their meters with SGR 40. The
+        // theme's black is meant for text, so using it behind a block leaves
+        // a slab that does not match the terminal.
+        let background = if background == Color::Named(NamedColor::Black)
             && !flags.contains(Flags::INVERSE)
             && overrides[NamedColor::Black as usize].is_none()
         {
@@ -4093,7 +4095,8 @@ mod tests {
         let mut term = Term::new(Config::default(), &size, VoidListener);
         Processor::<StdSyncHandler>::new().advance(
             &mut term,
-            b"\x1b[1;30;40m 12.3%\x1b[0m]\x1b[1;30m7\x1b[0;32;40mX\x1b[30;40mY",
+            b"\x1b[1;30;40m 12.3%\x1b[0m]\x1b[1;30m7\x1b[0;32;40mX\x1b[30;40mY\
+              \x1b[0;37;40m 5.3%",
         );
         let colors = std::array::from_fn(|index| term.colors()[index]);
         let row = &term.grid()[Line(0)];
@@ -4123,8 +4126,13 @@ mod tests {
                 assert_eq!(cell_colors(column), (foreground, theme.background()));
             }
             assert_ne!(theme.indexed(8), theme.background());
-            assert_eq!(cell_colors(8), (theme.indexed(2), theme.indexed(0)));
-            assert_eq!(cell_colors(9), (theme.indexed(0), theme.indexed(0)));
+            assert_eq!(cell_colors(8), (theme.indexed(2), theme.background()));
+            assert_eq!(cell_colors(9), (theme.indexed(0), theme.background()));
+            for (column, character) in " 5.3%".chars().enumerate() {
+                let column = column + 10;
+                assert_eq!(row[Column(column)].c, character);
+                assert_eq!(cell_colors(column), (theme.indexed(7), theme.background()));
+            }
         }
     }
 
