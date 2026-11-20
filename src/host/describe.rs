@@ -115,6 +115,7 @@ impl ErrorMessage for SnippetDraftError {
         match self {
             SnippetDraftError::Name => t!("host.snippet_draft.name"),
             SnippetDraftError::Command => t!("host.snippet_draft.command"),
+            SnippetDraftError::Steps => t!("snippets.group.invalid"),
         }
     }
 }

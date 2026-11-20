@@ -9,6 +9,7 @@ use crate::app::{
     DeleteSnippet, DeleteSnippetCategory, EditSnippet, InsertSnippet, NewSnippet,
     NewSnippetCategory, NewSnippetIn, RenameSnippetCategory, ToggleSnippetCategory,
 };
+use crate::app::{RunSnippet, StopCommandGroup};
 use crate::i18n::{t, tn};
 use crate::shared::confirm_delete;
 use crate::snippets::{CategoryDialog, SnippetDialog, open_category_dialog, open_snippet_dialog};
@@ -16,6 +17,86 @@ use crate::snippets::{CategoryDialog, SnippetDialog, open_category_dialog, open_
 use super::workspace_view::Workspace;
 
 impl Workspace {
+    pub(super) fn on_add_snippet_step(
+        &mut self,
+        _: &crate::app::AddSnippetStep,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(form) = self.snippet_form.as_ref().and_then(WeakEntity::upgrade) {
+            form.update(cx, |form, cx| form.add_step(window, cx));
+        }
+    }
+
+    pub(super) fn on_move_snippet_step(
+        &mut self,
+        action: &crate::app::MoveSnippetStep,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(form) = self.snippet_form.as_ref().and_then(WeakEntity::upgrade) {
+            form.update(cx, |form, cx| form.move_step(action.0.0, action.0.1, cx));
+        }
+    }
+
+    pub(super) fn on_remove_snippet_step(
+        &mut self,
+        action: &crate::app::RemoveSnippetStep,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(form) = self.snippet_form.as_ref().and_then(WeakEntity::upgrade) {
+            form.update(cx, |form, cx| form.remove_step(action.0, cx));
+        }
+    }
+    pub(super) fn on_run_snippet(
+        &mut self,
+        action: &RunSnippet,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(snippet) = self.store.read(cx).snippet(action.0).cloned() else {
+            return;
+        };
+        let Some(steps) = snippet.steps.clone() else {
+            self.on_enter_command(
+                &crate::app::EnterCommand {
+                    command: snippet.command,
+                    run: true,
+                },
+                window,
+                cx,
+            );
+            return;
+        };
+        let Some(terminal) = self.tool_terminal(cx) else {
+            return;
+        };
+        let Some(view) = terminal.view.upgrade() else {
+            return;
+        };
+        if let Err(error) = view.update(cx, |view, cx| {
+            view.start_command_group(snippet.name.to_string(), steps, cx)
+        }) {
+            use gpui_kit::component::{WindowExt as _, notification::Notification};
+            window.push_notification(Notification::error(error), cx);
+        }
+    }
+
+    pub(super) fn on_stop_command_group(
+        &mut self,
+        _: &StopCommandGroup,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(view) = self
+            .tool_terminal(cx)
+            .and_then(|terminal| terminal.view.upgrade())
+        {
+            view.update(cx, |view, cx| view.stop_command_group(cx));
+        }
+    }
+
     pub(super) fn on_insert_snippet(
         &mut self,
         action: &InsertSnippet,
@@ -26,13 +107,13 @@ impl Workspace {
         let Some(shortcut) = settings.snippet_shortcuts.get(&action.0) else {
             return;
         };
-        let Some(command) = self
+        let Some(snippet) = self
             .store
             .read(cx)
             .snippets()
             .iter()
             .find(|snippet| snippet.sync_id.as_str() == action.0)
-            .map(|snippet| snippet.command.clone())
+            .cloned()
         else {
             return;
         };
@@ -50,7 +131,11 @@ impl Workspace {
             return;
         };
         if let Err(error) = view.update(cx, |view, cx| {
-            view.enter_command(&command, shortcut.runs(), false, cx)
+            if let Some(steps) = &snippet.steps {
+                view.start_command_group(snippet.name.to_string(), steps.clone(), cx)
+            } else {
+                view.enter_command(&snippet.command, shortcut.runs(), false, cx)
+            }
         }) {
             use gpui_kit::component::{WindowExt as _, notification::Notification};
             let message = if shortcut.runs() {
@@ -68,12 +153,16 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        open_snippet_dialog(
-            SnippetDialog::New(None),
-            self.store.clone(),
-            self.settings().clone(),
-            window,
-            cx,
+        self.snippet_form = Some(
+            open_snippet_dialog(
+                SnippetDialog::New(None),
+                self.store.clone(),
+                self.settings().clone(),
+                self.focus_handle.clone(),
+                window,
+                cx,
+            )
+            .downgrade(),
         );
     }
 
@@ -83,12 +172,16 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        open_snippet_dialog(
-            SnippetDialog::New(Some(action.0)),
-            self.store.clone(),
-            self.settings().clone(),
-            window,
-            cx,
+        self.snippet_form = Some(
+            open_snippet_dialog(
+                SnippetDialog::New(Some(action.0)),
+                self.store.clone(),
+                self.settings().clone(),
+                self.focus_handle.clone(),
+                window,
+                cx,
+            )
+            .downgrade(),
         );
     }
 
@@ -99,12 +192,16 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         if self.store.read(cx).snippet(action.0).is_some() {
-            open_snippet_dialog(
-                SnippetDialog::Edit(action.0),
-                self.store.clone(),
-                self.settings().clone(),
-                window,
-                cx,
+            self.snippet_form = Some(
+                open_snippet_dialog(
+                    SnippetDialog::Edit(action.0),
+                    self.store.clone(),
+                    self.settings().clone(),
+                    self.focus_handle.clone(),
+                    window,
+                    cx,
+                )
+                .downgrade(),
             );
         }
     }

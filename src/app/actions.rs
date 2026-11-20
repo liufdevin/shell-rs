@@ -125,6 +125,8 @@ gpui_kit::actions!(
         DetachTmux,
         /// Open the new-snippet dialog, for a snippet of no category.
         NewSnippet,
+        StopCommandGroup,
+        AddSnippetStep,
         /// Open the new-category dialog of 命令片段.
         NewSnippetCategory,
         /// Open the new-group dialog of 项目.
@@ -439,6 +441,9 @@ id_actions! {
     NewSnippetIn(SnippetCategoryId);
     /// Open the edit-snippet dialog.
     EditSnippet(SnippetId);
+    RunSnippet(SnippetId);
+    MoveSnippetStep((u64, bool));
+    RemoveSnippetStep(u64);
     InsertSnippet(String);
     DetachTab(CenterTab);
     /// Choose another open terminal and how to split it beside this tab.

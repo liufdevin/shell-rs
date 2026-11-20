@@ -345,6 +345,7 @@ pub struct TerminalView {
     /// the selection ends. The steps run while it is set.
     edge_scroll: Option<(i32, Column, Side)>,
     edge_scroll_task: Option<Task<()>>,
+    command_group_task: Option<Task<()>>,
     scroll_accumulator: ScrollAccumulator,
     context_menu: Option<(Entity<PopupMenu>, gpui_kit::Point<Pixels>)>,
     context_menu_subscription: Option<Subscription>,
@@ -737,6 +738,7 @@ impl TerminalView {
             selecting: false,
             edge_scroll: None,
             edge_scroll_task: None,
+            command_group_task: None,
             scroll_accumulator: ScrollAccumulator::default(),
             context_menu: None,
             context_menu_subscription: None,
@@ -889,6 +891,52 @@ impl TerminalView {
 
     pub(crate) fn serial_tool_encoding(&self, cx: &App) -> crate::host::TerminalEncoding {
         self.engine.read(cx).serial_tool_encoding()
+    }
+
+    pub(crate) fn command_group_status(&self, cx: &App) -> super::CommandGroupStatus {
+        self.engine.read(cx).command_group_status()
+    }
+
+    pub(crate) fn start_command_group(
+        &mut self,
+        name: String,
+        steps: Vec<crate::host::SnippetStep>,
+        cx: &mut Context<Self>,
+    ) -> Result<(), SharedString> {
+        self.engine.read(cx).start_command_group(name, steps)?;
+        let generation = self.generation(cx);
+        self.command_group_task = Some(cx.spawn(async move |this, cx| {
+            let mut previous = super::CommandGroupStatus::Idle;
+            loop {
+                cx.background_executor()
+                    .timer(Duration::from_millis(50))
+                    .await;
+                let Ok(Some(status)) = this.update(cx, |view, cx| {
+                    if view.generation(cx) != generation {
+                        return None;
+                    }
+                    let status = view.engine.read(cx).poll_command_group();
+                    if status != previous {
+                        cx.notify();
+                    }
+                    Some(status)
+                }) else {
+                    break;
+                };
+                if !status.is_active() {
+                    break;
+                }
+                previous = status;
+            }
+        }));
+        cx.notify();
+        Ok(())
+    }
+
+    pub(crate) fn stop_command_group(&mut self, cx: &mut Context<Self>) {
+        self.engine.read(cx).stop_command_group();
+        self.command_group_task = None;
+        cx.notify();
     }
 
     pub(crate) fn serial_tool_snapshot(&self, cx: &App) -> super::serial_tools::SerialToolSnapshot {

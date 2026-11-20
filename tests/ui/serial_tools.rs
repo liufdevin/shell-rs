@@ -137,12 +137,171 @@ impl TerminalTransport for SerialToolTransport {
                     self.writes.lock().unwrap().push(bytes);
                     let _ = reply.send(Ok(()));
                 }
+                TerminalTransportCommand::CommandGroupWrite {
+                    id,
+                    bytes,
+                    cancelled,
+                } => {
+                    let success = !cancelled.load(Ordering::Acquire);
+                    if success {
+                        self.writes.lock().unwrap().push(bytes.to_vec());
+                    }
+                    events.send_blocking(TerminalTransportEvent::CommandGroupWritten {
+                        id,
+                        success,
+                    })?;
+                }
                 TerminalTransportCommand::Shutdown => break,
                 _ => {}
             }
         }
         Ok(())
     }
+}
+
+#[gpui_kit::test]
+async fn snippet_command_groups_are_edited_and_sent_in_order(cx: &mut TestAppContext) {
+    let mut store = HostStore::empty();
+    let host = store.insert_unnotified(HostDraft::serial(
+        "console",
+        "TEST-NOT-A-PORT",
+        SerialSettings::default(),
+        None,
+    ));
+    let factory = Arc::new(SerialToolFactory::default());
+    let (handle, workspace) = open_workspace_with_terminals(
+        cx,
+        store,
+        Arc::new(FakeTerminalFactory::default()),
+        Arc::new(FixedSerialTerminalTransportProvider::new(factory.clone())),
+    );
+    connect(cx, handle, host, "console").await;
+    in_frame(cx, handle, |window, cx| window.click("tool-snippets", cx));
+    in_frame(cx, handle, |window, cx| window.click("snippets-new", cx));
+    in_frame(cx, handle, |window, cx| {
+        window.input("开发板命令组", cx);
+        window.within("snippet-type").click("input", cx);
+    });
+    for key in ["down", "enter"] {
+        in_frame(cx, handle, |window, cx| window.press(key, cx));
+    }
+    in_frame(cx, handle, |window, cx| {
+        assert_eq!(window.find("snippet-type").value(), Some("命令组"));
+        window.click(("snippet-step-content", 1_u64), cx);
+        window.input("operator", cx);
+        window
+            .within(("snippet-step-wait", 1_u64))
+            .click("input", cx);
+    });
+    for key in ["down", "down", "enter"] {
+        in_frame(cx, handle, |window, cx| window.press(key, cx));
+    }
+    in_frame(cx, handle, |window, cx| {
+        window.click(("snippet-step-prompt", 1_u64), cx);
+        window.input("User ID:", cx);
+        window.click("snippet-add-step", cx);
+    });
+    in_frame(cx, handle, |window, cx| {
+        let position = window.find("snippet-type").bounds().center();
+        window.dispatch_event(
+            gpui_kit::ScrollWheelEvent {
+                position,
+                delta: gpui_kit::ScrollDelta::Pixels(point(px(0.), px(-400.))),
+                modifiers: gpui_kit::Modifiers::default(),
+                touch_phase: gpui_kit::TouchPhase::Moved,
+            }
+            .to_platform_input(),
+            cx,
+        );
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.click(("snippet-step-content", 2_u64), cx);
+        window.input("next-command", cx);
+        window.click(("snippet-step-enter", 2_u64), cx);
+        window
+            .within(("snippet-step-wait", 2_u64))
+            .click("input", cx);
+    });
+    for key in ["down", "enter"] {
+        in_frame(cx, handle, |window, cx| window.press(key, cx));
+    }
+    in_frame(cx, handle, |window, cx| {
+        let position = window.find(("snippet-step-wait", 2_u64)).bounds().center();
+        window.dispatch_event(
+            gpui_kit::ScrollWheelEvent {
+                position,
+                delta: gpui_kit::ScrollDelta::Pixels(point(px(0.), px(-200.))),
+                modifiers: gpui_kit::Modifiers::default(),
+                touch_phase: gpui_kit::TouchPhase::Moved,
+            }
+            .to_platform_input(),
+            cx,
+        );
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.click(("snippet-step-seconds", 2_u64), cx);
+        window.press("secondary-a", cx);
+        window.input("0.2", cx);
+        window.click("commit", cx);
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window.try_find(("snippet-run", 1_u64)).is_some()
+    })
+    .await;
+    workspace.read_with(cx, |workspace, cx| {
+        let steps = workspace.store().read(cx).snippets()[0]
+            .steps
+            .as_ref()
+            .unwrap();
+        assert_eq!(steps.len(), 2);
+        assert!(!steps[1].enter);
+    });
+    in_frame(cx, handle, |window, cx| {
+        assert!(window.try_find("serial-login-open").is_none());
+        window.click(("snippet-run", 1_u64), cx);
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window
+            .try_find("command-group-status")
+            .is_some_and(|status| status.label().is_some_and(|text| text.contains("User ID:")))
+    })
+    .await;
+    assert!(factory.writes.lock().unwrap().is_empty());
+    factory.output(b"User ");
+    factory.output(b"ID: ");
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window
+            .try_find("command-group-status")
+            .is_some_and(|status| status.label().is_some_and(|text| text.contains("0.2")))
+    })
+    .await;
+    assert_eq!(
+        factory.writes.lock().unwrap().as_slice(),
+        [b"operator\r".to_vec()]
+    );
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window
+            .try_find("command-group-status")
+            .is_some_and(|status| {
+                status
+                    .label()
+                    .is_some_and(|label| label == "全部步骤已发送")
+            })
+    })
+    .await;
+    assert_eq!(
+        factory.writes.lock().unwrap().as_slice(),
+        [b"operator\r".to_vec(), b"next-command".to_vec()]
+    );
+    in_frame(cx, handle, |window, cx| {
+        window.click(("snippet-run", 1_u64), cx)
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.click("command-group-stop", cx)
+    });
+    factory.output(b"\r\nUser ID:");
+    cx.run_until_parked();
+    assert_eq!(factory.writes.lock().unwrap().len(), 2);
 }
 
 #[gpui_kit::test]

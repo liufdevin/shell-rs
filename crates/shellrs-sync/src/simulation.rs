@@ -254,6 +254,7 @@ impl Sim {
                     _ => (SnippetScope::All, None),
                 };
                 let data = RecordData::Snippet(SnippetData {
+                    steps: None,
                     category: self.maybe(&categories),
                     name: id.clone(),
                     command: "uptime".into(),

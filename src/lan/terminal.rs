@@ -74,6 +74,7 @@ impl TerminalTransport for DeviceTerminalFactory {
         let (input, received) = mpsc::sync_channel(32);
         let cancelled = Arc::new(AtomicBool::new(false));
         let worker_cancelled = cancelled.clone();
+        let worker_events = events.clone();
         let core = self.core.clone();
         let peer = self.peer.clone();
         let target = self.target.clone();
@@ -92,7 +93,7 @@ impl TerminalTransport for DeviceTerminalFactory {
                             TerminalTransportEvent::Exited { code, signal }
                         }
                     };
-                    if send_event(&events, event) {
+                    if send_event(&worker_events, event) {
                         Ok(())
                     } else {
                         Err(io::ErrorKind::BrokenPipe.into())
@@ -131,6 +132,18 @@ impl TerminalTransport for DeviceTerminalFactory {
                                 "device_input_backpressure"
                             );
                         }
+                    }
+                    Ok(TerminalTransportCommand::CommandGroupWrite {
+                        id,
+                        bytes,
+                        cancelled,
+                    }) => {
+                        let success = !cancelled.load(Ordering::Acquire)
+                            && input.try_send(DeviceInput::Write(bytes.to_vec())).is_ok();
+                        send_event(
+                            &events,
+                            TerminalTransportEvent::CommandGroupWritten { id, success },
+                        );
                     }
                     Ok(TerminalTransportCommand::Resize(size)) => {
                         let size = DeviceSize::new(

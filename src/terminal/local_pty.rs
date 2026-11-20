@@ -170,6 +170,22 @@ impl TerminalTransport for LocalPtyTransport {
                 resize(size);
             }
             match command {
+                Ok(TerminalTransportCommand::CommandGroupWrite {
+                    id,
+                    bytes,
+                    cancelled,
+                }) => {
+                    let success = !shutting_down
+                        && !cancelled.load(Ordering::Acquire)
+                        && writer
+                            .write_all(&bytes)
+                            .and_then(|_| writer.flush())
+                            .is_ok();
+                    send_event(
+                        &events,
+                        TerminalTransportEvent::CommandGroupWritten { id, success },
+                    );
+                }
                 Ok(
                     TerminalTransportCommand::Write(bytes)
                     | TerminalTransportCommand::WriteData(bytes),
@@ -332,6 +348,7 @@ mod tests {
                 Ok(
                     TerminalTransportEvent::Started
                     | TerminalTransportEvent::SerialDiagnostics(_)
+                    | TerminalTransportEvent::CommandGroupWritten { .. }
                     | TerminalTransportEvent::Failed(_)
                     | TerminalTransportEvent::Prompt(_)
                     | TerminalTransportEvent::HostOsDetected(_)

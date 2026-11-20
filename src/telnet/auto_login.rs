@@ -3,15 +3,13 @@
 //! what the device prints for those prompts and types the host's username
 //! and password, each at most once. Pure, so the rules are tested here.
 
+use crate::terminal::PromptLine;
 use zeroize::Zeroizing;
 
 /// What devices print for a username: Linux's `login:`, Cisco's and
 /// Huawei's `Username:`, and the odd `User Name:`.
 const USER_PROMPTS: [&str; 3] = ["login:", "username:", "user name:"];
 const PASSWORD_PROMPTS: [&str; 1] = ["password:"];
-
-/// Only the end of the line matters: a longer one is cut from the front.
-const LINE_LIMIT: usize = 512;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Stage {
@@ -28,17 +26,6 @@ enum Prompt {
     Password,
 }
 
-/// Where the output is in an escape sequence, which is not text.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Escape {
-    None,
-    Esc,
-    Csi,
-    /// OSC, DCS and the like, up to BEL or ST.
-    String,
-    StringEsc,
-}
-
 pub(crate) struct AutoLogin {
     encoding: crate::host::TerminalEncoding,
     user: String,
@@ -46,8 +33,7 @@ pub(crate) struct AutoLogin {
     user_prompts: Vec<String>,
     password_prompts: Vec<String>,
     /// The line the cursor is on, without escape sequences.
-    line: Vec<u8>,
-    escape: Escape,
+    line: PromptLine,
     stage: Stage,
 }
 
@@ -74,8 +60,7 @@ impl AutoLogin {
             password: password.filter(|password| !password.is_empty()),
             user_prompts: prompts(user_prompt, &USER_PROMPTS),
             password_prompts: prompts(password_prompt, &PASSWORD_PROMPTS),
-            line: Vec::new(),
-            escape: Escape::None,
+            line: PromptLine::default(),
             stage: Stage::User,
         }
     }
@@ -85,48 +70,7 @@ impl AutoLogin {
         if self.stage == Stage::Done {
             return;
         }
-        for &byte in data {
-            match self.escape {
-                Escape::None => match byte {
-                    0x1b => self.escape = Escape::Esc,
-                    b'\r' | b'\n' => self.line.clear(),
-                    0x08 => {
-                        self.line.pop();
-                    }
-                    0x00..=0x1f | 0x7f => {}
-                    _ => self.line.push(byte),
-                },
-                Escape::Esc => {
-                    self.escape = match byte {
-                        b'[' => Escape::Csi,
-                        b']' | b'P' | b'X' | b'^' | b'_' => Escape::String,
-                        // `ESC ( B` and the like: more to come.
-                        0x20..=0x2f => Escape::Esc,
-                        _ => Escape::None,
-                    }
-                }
-                Escape::Csi => {
-                    if (0x40..=0x7e).contains(&byte) {
-                        self.escape = Escape::None;
-                    }
-                }
-                Escape::String => match byte {
-                    0x07 => self.escape = Escape::None,
-                    0x1b => self.escape = Escape::StringEsc,
-                    _ => {}
-                },
-                Escape::StringEsc => {
-                    self.escape = if byte == b'\\' {
-                        Escape::None
-                    } else {
-                        Escape::String
-                    }
-                }
-            }
-        }
-        if self.line.len() > LINE_LIMIT {
-            self.line.drain(..self.line.len() - LINE_LIMIT);
-        }
+        self.line.feed(data);
     }
 
     pub fn with_encoding(mut self, encoding: crate::host::TerminalEncoding) -> Self {
@@ -189,9 +133,7 @@ impl AutoLogin {
         if self.stage == Stage::Done {
             return None;
         }
-        let bytes = crate::terminal::TerminalDecoder::new(self.encoding).decode(&self.line, false);
-        let line = String::from_utf8_lossy(&bytes);
-        let line = line.trim_end().to_lowercase();
+        let line = self.line.normalized(self.encoding);
         let ends =
             |prompts: &[String]| prompts.iter().any(|prompt| line.ends_with(prompt.as_str()));
         if ends(&self.password_prompts) {

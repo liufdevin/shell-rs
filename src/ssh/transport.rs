@@ -151,6 +151,11 @@ impl SshTerminalTransport {
                     Some(TerminalTransportCommand::Write(bytes) | TerminalTransportCommand::WriteData(bytes)) => {
                         write_shell(&channel, bytes).await.map_err(|error| anyhow!(describe_error(&error)))?;
                     }
+                    Some(TerminalTransportCommand::CommandGroupWrite { id, bytes, cancelled }) => {
+                        let success = !cancelled.load(std::sync::atomic::Ordering::Acquire)
+                            && write_shell(&channel, bytes.to_vec()).await.is_ok();
+                        events.send(TerminalTransportEvent::CommandGroupWritten { id, success }).await?;
+                    }
                     Some(TerminalTransportCommand::Resize(size)) => {
                         resize_pty(&channel, pty_size(size))
                             .await
@@ -781,6 +786,7 @@ mod tests {
                 TerminalTransportEvent::Exited { .. } => panic!("unexpected early exit"),
                 TerminalTransportEvent::HostOsDetected(_)
                 | TerminalTransportEvent::SerialDiagnostics(_)
+                | TerminalTransportEvent::CommandGroupWritten { .. }
                 | TerminalTransportEvent::ConnectSsh(_)
                 | TerminalTransportEvent::Latency(_)
                 | TerminalTransportEvent::WorkingDirectory(_)
@@ -900,6 +906,7 @@ mod tests {
                 }
                 TerminalTransportEvent::HostOsDetected(_)
                 | TerminalTransportEvent::SerialDiagnostics(_)
+                | TerminalTransportEvent::CommandGroupWritten { .. }
                 | TerminalTransportEvent::Latency(_)
                 | TerminalTransportEvent::WorkingDirectory(_)
                 | TerminalTransportEvent::Replay(_) => {}

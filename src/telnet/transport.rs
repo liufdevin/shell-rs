@@ -214,6 +214,13 @@ impl TelnetTransport {
                     Some(TerminalTransportCommand::WriteData(bytes)) => {
                         send(&mut writer, &session.send(&bytes)).await?;
                     }
+                    Some(TerminalTransportCommand::CommandGroupWrite { id, bytes, cancelled }) => {
+                        let success = !cancelled.load(std::sync::atomic::Ordering::Acquire)
+                            && !shell.busy() && auto_login.is_none()
+                            && shell.input(&bytes)
+                            && write_input(&mut writer, &mut session, &mut local_line, &events, &bytes).await.is_ok();
+                        events.send(TerminalTransportEvent::CommandGroupWritten { id, success }).await?;
+                    }
                     Some(TerminalTransportCommand::Resize(size)) => {
                         let bytes = session.resize(dimension(size.columns()), dimension(size.rows()));
                         send(&mut writer, &bytes).await?;

@@ -341,6 +341,7 @@ mod tests {
             sort_order: 0,
         });
         let snippet = RecordData::Snippet(SnippetData {
+            steps: None,
             category: None,
             name: "df".into(),
             command: "df".into(),
@@ -366,6 +367,7 @@ mod tests {
     #[test]
     fn a_snippet_of_a_deleted_category_moves_to_the_top() {
         let snippet = RecordData::Snippet(SnippetData {
+            steps: None,
             category: Some("c".into()),
             name: "df".into(),
             command: "df".into(),

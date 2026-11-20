@@ -41,7 +41,7 @@ fn from_sql(id: i64) -> u64 {
 /// command snippets, 15 the serial hosts, 16 the Telnet hosts, 17 each
 /// host's right sidebar, 18 the saved local terminals, 19 their titles, 20
 /// what sync needs, 21 each host's local connection log.
-const SCHEMA_VERSION: i64 = 31;
+const SCHEMA_VERSION: i64 = 32;
 
 /// The whole schema, as a new database gets it.
 ///
@@ -255,6 +255,7 @@ CREATE TABLE snippets (
     run_on_click   INTEGER NOT NULL DEFAULT 0 CHECK (run_on_click IN (0, 1)),
     sync_id        TEXT NOT NULL DEFAULT '',
     edited_ms      INTEGER NOT NULL DEFAULT 0,
+    steps          TEXT,
     CHECK (scope_group_id IS NULL OR scope_host_id IS NULL)
 ) STRICT;
 CREATE INDEX snippets_category_id ON snippets(category_id);
@@ -314,7 +315,7 @@ enum Step {
 ///
 /// A step is history: it says what that version's change was, and stays as
 /// written when `SCHEMA` changes again.
-const STEPS: [(i64, Step); 18] = [
+const STEPS: [(i64, Step); 19] = [
     (
     13,
     // The command snippets.
@@ -435,7 +436,26 @@ COMMIT;",
     (28, Step::Code(add_serial_signals)),
     (29, Step::Sql("BEGIN; UPDATE hosts SET serial_dtr = 1, serial_rts = 1 WHERE protocol = 'serial'; PRAGMA user_version = 30; COMMIT;")),
     (30, Step::Sql("BEGIN; CREATE TABLE IF NOT EXISTS manual_host_order (scope INTEGER PRIMARY KEY, group_id INTEGER UNIQUE REFERENCES groups(id) ON DELETE CASCADE, CHECK (scope = COALESCE(group_id, 0))) STRICT; PRAGMA user_version = 31; COMMIT;")),
+    (31, Step::Code(add_snippet_steps)),
 ];
+
+fn add_snippet_steps(connection: &Connection) -> rusqlite::Result<()> {
+    let columns = connection
+        .prepare("PRAGMA table_info(snippets)")?
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    connection.execute_batch("BEGIN")?;
+    let result = (|| {
+        if !columns.iter().any(|column| column == "steps") {
+            connection.execute_batch("ALTER TABLE snippets ADD COLUMN steps TEXT;")?;
+        }
+        connection.execute_batch("PRAGMA user_version = 32; COMMIT;")
+    })();
+    if result.is_err() {
+        let _ = connection.execute_batch("ROLLBACK");
+    }
+    result
+}
 
 fn add_serial_signals(connection: &Connection) -> rusqlite::Result<()> {
     let columns = connection
@@ -1149,7 +1169,7 @@ impl HostDatabase {
             .connection
             .prepare(
                 "SELECT id, category_id, name, command, scope_group_id, scope_host_id, \
-                 run_on_click, sync_id, edited_ms FROM snippets ORDER BY id",
+                 run_on_click, sync_id, edited_ms, steps FROM snippets ORDER BY id",
             )?
             .query_map([], |row| {
                 let id: i64 = row.get(0)?;
@@ -1165,6 +1185,18 @@ impl HostDatabase {
                     category.map(|id| SnippetCategoryId(from_sql(id))),
                 )
                 .with_run_on_click(run_on_click);
+                if let Some(value) = row.get::<_, Option<String>>(9)? {
+                    let steps = serde_json::from_str(&value).map_err(|error| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            9,
+                            rusqlite::types::Type::Text,
+                            Box::new(error),
+                        )
+                    })?;
+                    draft = draft
+                        .with_steps(steps)
+                        .map_err(|_| rusqlite::Error::InvalidQuery)?;
+                }
                 // The table's CHECK keeps at most one of the two.
                 draft.scope = match (group, host) {
                     (Some(group), _) => SnippetScope::Group(GroupId(from_sql(group))),
@@ -1788,7 +1820,7 @@ impl HostDatabase {
         let (group, host) = scope_columns(snippet.scope);
         self.connection.execute(
             "INSERT INTO snippets (id, category_id, name, command, scope_group_id, scope_host_id, \
-             run_on_click, sync_id, edited_ms) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+             run_on_click, sync_id, edited_ms, steps) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
                 to_sql(snippet.id.0),
                 snippet.category.map(|id| to_sql(id.0)),
@@ -1799,6 +1831,7 @@ impl HostDatabase {
                 snippet.run_on_click,
                 snippet.sync_id.as_str(),
                 to_sql(snippet.edited_ms),
+                snippet.steps.as_ref().map(|steps| serde_json::to_string(steps).expect("snippet steps serialize")),
             ],
         )?;
         Ok(())
@@ -1808,7 +1841,7 @@ impl HostDatabase {
         let (group, host) = scope_columns(snippet.scope);
         self.connection.execute(
             "UPDATE snippets SET category_id = ?2, name = ?3, command = ?4, \
-             scope_group_id = ?5, scope_host_id = ?6, run_on_click = ?7, edited_ms = ?8 \
+             scope_group_id = ?5, scope_host_id = ?6, run_on_click = ?7, edited_ms = ?8, steps = ?9 \
              WHERE id = ?1",
             params![
                 to_sql(snippet.id.0),
@@ -1819,6 +1852,7 @@ impl HostDatabase {
                 host,
                 snippet.run_on_click,
                 to_sql(snippet.edited_ms),
+                snippet.steps.as_ref().map(|steps| serde_json::to_string(steps).expect("snippet steps serialize")),
             ],
         )?;
         Ok(())
@@ -3392,6 +3426,39 @@ INSERT INTO snippets (id, category_id, name, command) VALUES (1, 1, 'ps', 'docke
             .map(|snippet| snippet.name)
             .collect();
         assert_eq!(names, ["所有容器"]);
+    }
+
+    #[test]
+    fn snippet_command_groups_round_trip_and_convert_back_to_commands() {
+        let db = HostDatabase::in_memory().unwrap();
+        let steps = vec![
+            super::super::SnippetStep::new(
+                "first",
+                super::super::SnippetWait::Delay { milliseconds: 1200 },
+                false,
+            ),
+            super::super::SnippetStep::new(
+                "second",
+                super::super::SnippetWait::Prompt {
+                    text: "ready>".into(),
+                    timeout_ms: 30000,
+                },
+                true,
+            ),
+        ];
+        let group = Snippet::new(
+            SnippetId(1),
+            SnippetDraft::new("group", "", None)
+                .with_steps(steps.clone())
+                .unwrap(),
+        );
+        db.insert_snippet(&group).unwrap();
+        assert_eq!(db.load().unwrap().snippets[0].steps, Some(steps));
+        let ordinary = Snippet::new(SnippetId(1), SnippetDraft::new("ordinary", "ls", None));
+        db.update_snippet(&ordinary).unwrap();
+        let loaded = db.load().unwrap();
+        assert!(loaded.snippets[0].steps.is_none());
+        assert_eq!(loaded.snippets[0].command, "ls");
     }
 
     #[test]

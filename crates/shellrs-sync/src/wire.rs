@@ -168,6 +168,54 @@ pub struct SnippetData {
     pub command: String,
     pub scope: SnippetScope,
     pub run_on_click: bool,
+    pub steps: Option<Vec<SnippetStep>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
+pub struct SnippetStep {
+    pub content: String,
+    pub wait: SnippetWait,
+    pub enter: bool,
+}
+
+impl SnippetStep {
+    pub fn new(content: impl Into<String>, wait: SnippetWait, enter: bool) -> Self {
+        Self {
+            content: content.into(),
+            wait,
+            enter,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SnippetWait {
+    Immediate,
+    Delay { milliseconds: u32 },
+    Prompt { text: String, timeout_ms: u32 },
+}
+
+pub fn valid_snippet_steps(steps: &[SnippetStep]) -> bool {
+    !steps.is_empty()
+        && steps.len() <= 128
+        && steps.iter().map(|step| step.content.len()).sum::<usize>() <= 256 * 1024
+        && steps.iter().all(|step| {
+            (step.enter || !step.content.is_empty())
+                && step.content.len() <= 4096
+                && !step.content.contains('\0')
+                && match &step.wait {
+                    SnippetWait::Immediate => true,
+                    SnippetWait::Delay { milliseconds } => *milliseconds <= 600_000,
+                    SnippetWait::Prompt { text, timeout_ms } => {
+                        !text.trim().is_empty()
+                            && text.len() <= 512
+                            && !text.chars().any(char::is_control)
+                            && (100..=600_000).contains(timeout_ms)
+                    }
+                }
+        })
 }
 
 /// Which hosts a snippet is for.
@@ -275,7 +323,21 @@ pub(crate) fn parse(key: &RecordKey, data: &Map) -> Result<RecordData, String> {
         Kind::Snippet => RecordData::Snippet(SnippetData {
             category: r.id("category")?,
             name: r.name("name")?,
-            command: r.name("command")?,
+            command: match data.get("steps") {
+                Some(Value::Array(_)) => r.string("command")?,
+                _ => r.name("command")?,
+            },
+            steps: match data.get("steps") {
+                None | Some(Value::Null) => None,
+                Some(value) => {
+                    let steps: Vec<SnippetStep> = serde_json::from_value(value.clone())
+                        .map_err(|_| "invalid snippet steps")?;
+                    if !valid_snippet_steps(&steps) {
+                        return Err("invalid snippet steps".into());
+                    }
+                    Some(steps)
+                }
+            },
             scope: match r.string("scope")?.as_str() {
                 "all" => {
                     if r.id("scope_id")?.is_some() {
@@ -476,6 +538,7 @@ fn known_fields(kind: &Kind) -> &'static [&'static str] {
             "scope",
             "scope_id",
             "run_on_click",
+            "steps",
         ],
         Kind::SecretPassword | Kind::SecretProxy => &["user", "host", "port", "value"],
         Kind::SecretCredential | Kind::SecretPassphrase | Kind::SecretPrivateKey => &["value"],
@@ -570,14 +633,18 @@ fn fields(data: &RecordData) -> Vec<(&'static str, Value)> {
                 SnippetScope::Group(id) => ("group", Some(id)),
                 SnippetScope::Host(id) => ("host", Some(id)),
             };
-            vec![
+            let mut fields = vec![
                 ("category", json!(snippet.category)),
                 ("name", json!(snippet.name)),
                 ("command", json!(snippet.command)),
                 ("scope", json!(scope)),
                 ("scope_id", json!(scope_id)),
                 ("run_on_click", json!(snippet.run_on_click)),
-            ]
+            ];
+            if let Some(steps) = &snippet.steps {
+                fields.push(("steps", json!(steps)));
+            }
+            fields
         }
         RecordData::Password(endpoint) | RecordData::ProxyPassword(endpoint) => vec![
             ("user", json!(endpoint.user)),
@@ -822,6 +889,7 @@ pub(crate) mod tests {
                     command: "df -h".into(),
                     scope: SnippetScope::Host("h1".into()),
                     run_on_click: true,
+                    steps: None,
                 }),
             ),
             (
@@ -832,6 +900,7 @@ pub(crate) mod tests {
                     command: "uptime".into(),
                     scope: SnippetScope::All,
                     run_on_click: false,
+                    steps: None,
                 }),
             ),
             (
@@ -946,6 +1015,32 @@ pub(crate) mod tests {
         assert_eq!(written["name"], json!("web"));
         assert_eq!(written["color"], json!("red"));
         assert!(!written.contains_key("telnet"));
+    }
+
+    #[test]
+    fn command_groups_round_trip_and_cannot_be_misread_as_plain_commands() {
+        let data = RecordData::Snippet(SnippetData {
+            category: None,
+            name: "group".into(),
+            command: String::new(),
+            scope: SnippetScope::All,
+            run_on_click: true,
+            steps: Some(vec![SnippetStep::new(
+                "next",
+                SnippetWait::Prompt {
+                    text: "ready>".into(),
+                    timeout_ms: 10000,
+                },
+                false,
+            )]),
+        });
+        let key = RecordKey::new(Kind::Snippet, "group1");
+        let mut fields = write_into(&data, None);
+        assert_eq!(parse(&key, &fields).unwrap(), data);
+        fields.remove("steps");
+        assert!(parse(&key, &fields).is_err());
+        fields.insert("steps".into(), json!([]));
+        assert!(parse(&key, &fields).is_err());
     }
 
     #[test]

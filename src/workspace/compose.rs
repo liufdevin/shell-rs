@@ -212,6 +212,15 @@ impl Workspace {
         let Some(snippet) = self.store.read(cx).snippet(action.0).cloned() else {
             return;
         };
+        if snippet.steps.is_some() {
+            if self.broadcast.active() {
+                window
+                    .push_notification(Notification::error(t!("snippets.group.no_broadcast")), cx);
+                return;
+            }
+            self.on_run_snippet(&crate::app::RunSnippet(action.0), window, cx);
+            return;
+        }
         self.send_composed(&snippet.command, snippet.run_on_click, window, cx);
     }
 

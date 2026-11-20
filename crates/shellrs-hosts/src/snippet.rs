@@ -8,6 +8,7 @@ use std::cmp::Ordering;
 use gpui_shared_string::SharedString;
 
 use super::{GroupId, HostId, PublicId};
+pub use shellrs_sync::{SnippetStep, SnippetWait, valid_snippet_steps};
 
 /// Stable identity of a snippet. Never reused within a process.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -33,6 +34,7 @@ pub enum SnippetScope {
 pub enum SnippetDraftError {
     Name,
     Command,
+    Steps,
 }
 
 /// What the snippet form edits.
@@ -41,6 +43,7 @@ pub struct SnippetDraft {
     pub name: SharedString,
     /// What it types into the terminal, one line or several.
     pub command: String,
+    pub steps: Option<Vec<SnippetStep>>,
     /// `None` is 未分类.
     pub category: Option<SnippetCategoryId>,
     pub scope: SnippetScope,
@@ -58,6 +61,7 @@ impl SnippetDraft {
         Self {
             name: name.into(),
             command: command.into(),
+            steps: None,
             category,
             scope: SnippetScope::All,
             run_on_click: false,
@@ -67,6 +71,23 @@ impl SnippetDraft {
     pub fn with_run_on_click(mut self, run_on_click: bool) -> Self {
         self.run_on_click = run_on_click;
         self
+    }
+
+    pub fn with_steps(mut self, steps: Vec<SnippetStep>) -> Result<Self, SnippetDraftError> {
+        if !valid_snippet_steps(&steps) {
+            return Err(SnippetDraftError::Steps);
+        }
+        self.command = steps
+            .iter()
+            .map(|step| step.content.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        if self.command.is_empty() {
+            self.command.push('\n');
+        }
+        self.steps = Some(steps);
+        self.run_on_click = true;
+        Ok(self)
     }
 
     /// The draft as the form's fields give it, tidied, or why it cannot be
@@ -95,6 +116,7 @@ pub struct Snippet {
     pub id: SnippetId,
     pub name: SharedString,
     pub command: String,
+    pub steps: Option<Vec<SnippetStep>>,
     pub category: Option<SnippetCategoryId>,
     pub scope: SnippetScope,
     pub run_on_click: bool,
@@ -110,6 +132,7 @@ impl Snippet {
             id,
             name: draft.name,
             command: draft.command,
+            steps: draft.steps,
             category: draft.category,
             scope: draft.scope,
             run_on_click: draft.run_on_click,
@@ -122,6 +145,7 @@ impl Snippet {
         SnippetDraft {
             name: self.name.clone(),
             command: self.command.clone(),
+            steps: self.steps.clone(),
             category: self.category,
             scope: self.scope,
             run_on_click: self.run_on_click,

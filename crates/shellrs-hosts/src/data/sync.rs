@@ -534,7 +534,12 @@ impl HostData {
                             .map(|category| category.sync_id.to_string())
                     }),
                     name: snippet.name.to_string(),
-                    command: snippet.command.clone(),
+                    command: if snippet.steps.is_some() {
+                        String::new()
+                    } else {
+                        snippet.command.clone()
+                    },
+                    steps: snippet.steps.clone(),
                     scope,
                     run_on_click: snippet.run_on_click,
                 }),
@@ -1197,6 +1202,12 @@ impl HostData {
                 let mut draft =
                     SnippetDraft::new(data.name.as_str(), data.command.clone(), category)
                         .with_run_on_click(data.run_on_click);
+                if let Some(steps) = &data.steps {
+                    let Ok(group) = draft.with_steps(steps.clone()) else {
+                        return;
+                    };
+                    draft = group;
+                }
                 draft.scope = match &data.scope {
                     sync::SnippetScope::All => SnippetScope::All,
                     sync::SnippetScope::Group(id) => match ids.groups.get(id) {

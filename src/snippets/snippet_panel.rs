@@ -17,7 +17,8 @@ use gpui_kit::*;
 use super::model::{SnippetRow, rows};
 use crate::app::{
     CatalogIcon, CopyCommand, DeleteSnippet, DeleteSnippetCategory, EditSnippet, EnterCommand,
-    NewSnippet, NewSnippetCategory, NewSnippetIn, RenameSnippetCategory, ToggleSnippetCategory,
+    NewSnippet, NewSnippetCategory, NewSnippetIn, RenameSnippetCategory, RunSnippet,
+    ToggleSnippetCategory,
 };
 use crate::host::{HostStore, Snippet, SnippetCategoryId, SnippetId};
 use crate::i18n::{UiLocale, t, tn};
@@ -394,6 +395,25 @@ fn build_context_menu(hit: Option<MenuHit>, store: &HostStore, menu: PopupMenu) 
                 return menu;
             };
             let command = snippet.command.clone();
+            if snippet.steps.is_some() {
+                return menu
+                    .menu_with_icon(
+                        t!("tools.run"),
+                        Icon::new(CatalogIcon::Play),
+                        Box::new(RunSnippet(id)),
+                    )
+                    .separator()
+                    .menu_with_icon(
+                        t!("snippets.menu.edit"),
+                        Icon::new(CatalogIcon::Pencil),
+                        Box::new(EditSnippet(id)),
+                    )
+                    .menu_with_icon(
+                        t!("snippets.menu.delete"),
+                        Icon::new(CatalogIcon::Trash),
+                        Box::new(DeleteSnippet(id)),
+                    );
+            }
             menu.menu_with_icon(
                 t!("tools.menu.insert"),
                 Icon::new(CatalogIcon::SquareTerminal),
@@ -518,14 +538,18 @@ fn render_snippet(
     let runs = snippet.run_on_click;
     // A click runs it when the snippet says so, and only types it
     // otherwise.
-    let click = EnterCommand {
-        command: snippet.command.clone(),
-        run: runs,
+    let group = snippet.steps.is_some();
+    let click: Box<dyn Action> = if group && runs {
+        Box::new(RunSnippet(id))
+    } else if group {
+        Box::new(EditSnippet(id))
+    } else {
+        Box::new(EnterCommand {
+            command: snippet.command.clone(),
+            run: runs,
+        })
     };
-    let run = EnterCommand {
-        command: snippet.command.clone(),
-        run: true,
-    };
+    let run = RunSnippet(id);
     let card = SharedString::from(format!("snippet-card:{}", id.0));
     h_flex()
         .id(("snippet", id.0))
@@ -549,7 +573,7 @@ fn render_snippet(
         .cursor_pointer()
         .on_click({
             let dispatch = dispatch.clone();
-            move |_, window, cx| dispatch.dispatch_action(&click, window, cx)
+            move |_, window, cx| dispatch.dispatch_action(&*click, window, cx)
         })
         // A right click puts the menu on this snippet. The menu's commands
         // are dispatched from what is focused, which may be nothing.
@@ -566,17 +590,26 @@ fn render_snippet(
                 .font_weight(FontWeight::MEDIUM)
                 .child(snippet.name.clone()),
         )
+        .when_some(snippet.steps.as_ref(), |row, steps| {
+            row.child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(t!("snippets.group.count", count = steps.len())),
+            )
+        })
         .child(
             div()
                 .flex_shrink_0()
-                .invisible()
-                .group_hover(card, |style| style.visible())
+                .when(!group, |slot| {
+                    slot.invisible().group_hover(card, |style| style.visible())
+                })
                 .child(
                     Button::new(("snippet-run", id.0))
                         .ghost()
                         .small()
                         .map(|button| {
-                            if runs {
+                            if runs && !group {
                                 button
                                     .icon(
                                         Icon::new(CatalogIcon::Zap).text_color(cx.theme().warning),

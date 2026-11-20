@@ -244,6 +244,58 @@ impl TerminalEngine {
     pub(crate) fn serial_tool_encoding(&self) -> TerminalEncoding {
         self.encoding
     }
+
+    pub(super) fn command_group_status(&self) -> super::CommandGroupStatus {
+        self.runtime.command_group.lock().unwrap().status()
+    }
+
+    pub(super) fn start_command_group(
+        &self,
+        name: String,
+        steps: Vec<crate::host::SnippetStep>,
+    ) -> Result<(), SharedString> {
+        let mut group = self.runtime.command_group.lock().unwrap();
+        if !self.lifecycle.accepts_input()
+            || self.runtime.transferring()
+            || lock_run(&self.runtime.run)
+                .as_ref()
+                .is_some_and(RunHandle::is_active)
+            || group.status().is_active()
+            || self.sends_hex()
+            || self.io.displays_hex()
+            || self.mode().contains(TermMode::ALT_SCREEN)
+        {
+            return Err(t!("snippets.group.unavailable"));
+        }
+        group.start(name, steps, self.runtime.encoding, Instant::now())
+    }
+
+    pub(super) fn poll_command_group(&self) -> super::CommandGroupStatus {
+        let available = self.lifecycle.accepts_input()
+            && !self.runtime.transferring()
+            && !lock_run(&self.runtime.run)
+                .as_ref()
+                .is_some_and(RunHandle::is_active)
+            && !self.sends_hex()
+            && !self.io.displays_hex()
+            && !self.mode().contains(TermMode::ALT_SCREEN);
+        let mut group = self.runtime.command_group.lock().unwrap();
+        if available {
+            group.poll(
+                self.runtime.encoding,
+                &self.runtime.commands,
+                Instant::now(),
+            );
+        } else {
+            group.stop(super::CommandGroupStatus::Unavailable);
+        }
+        group.status()
+    }
+
+    pub(super) fn stop_command_group(&self) {
+        self.runtime
+            .stop_command_group(super::CommandGroupStatus::Stopped);
+    }
     pub(crate) fn serial_tool_snapshot(&self) -> super::serial_tools::SerialToolSnapshot {
         self.runtime
             .serial_tool
@@ -1676,6 +1728,7 @@ pub enum TerminalEvent {
 
 struct TerminalRuntime {
     serial_tool: Arc<Mutex<Option<super::serial_tools::SerialToolState>>>,
+    command_group: Arc<Mutex<super::command_group::CommandGroupState>>,
     timestamps: Arc<Mutex<super::timestamps::Timestamps>>,
     encoding: TerminalEncoding,
     events: async_channel::Receiver<TerminalTransportEvent>,
@@ -1769,6 +1822,10 @@ impl TerminalRuntime {
         let timestamps = parser.timestamps.clone();
         let serial_tool: Arc<Mutex<Option<super::serial_tools::SerialToolState>>> = Arc::default();
         let parser_serial_tool = serial_tool.clone();
+        let command_group = Arc::new(Mutex::new(
+            super::command_group::CommandGroupState::default(),
+        ));
+        let parser_command_group = command_group.clone();
         timestamps.lock().unwrap().enabled = io.timestamps_enabled.load(Ordering::Acquire);
         thread::Builder::new()
             .name("shellrs-terminal-parser".into())
@@ -1831,6 +1888,13 @@ impl TerminalRuntime {
                                 .diagnostics = Some(snapshot);
                             parser.proxy.wakeup();
                         }
+                        TerminalTransportEvent::CommandGroupWritten { id, success } => {
+                            parser_command_group.lock().unwrap().written(
+                                id,
+                                success,
+                                Instant::now(),
+                            );
+                        }
                         TerminalTransportEvent::Output(bytes) => {
                             io.record(&bytes);
                             let hex_mode = io.displays_hex();
@@ -1839,6 +1903,10 @@ impl TerminalRuntime {
                                 parser.hex_mode = hex_mode;
                             }
                             if io.displays_hex() {
+                                parser_command_group
+                                    .lock()
+                                    .unwrap()
+                                    .stop(super::CommandGroupStatus::Unavailable);
                                 observe_serial_output(
                                     &io,
                                     &parser_serial_tool,
@@ -1872,6 +1940,18 @@ impl TerminalRuntime {
                             let transferring = parser.transferring.load(Ordering::Acquire);
                             let fed = parser.zmodem.feed(&bytes, Instant::now(), detect);
                             parser.transfer(fed);
+                            {
+                                let suspended = transferring
+                                    || parser.transferring.load(Ordering::Acquire)
+                                    || !detect
+                                    || parser.term.lock().mode().contains(TermMode::ALT_SCREEN);
+                                let mut group = parser_command_group.lock().unwrap();
+                                if suspended {
+                                    group.stop(super::CommandGroupStatus::Unavailable);
+                                } else {
+                                    group.receive(&bytes, Instant::now());
+                                }
+                            }
                             observe_serial_output(
                                 &io,
                                 &parser_serial_tool,
@@ -1902,6 +1982,10 @@ impl TerminalRuntime {
                             parser.proxy.send(TerminalUiEventKind::Prompt(prompt));
                         }
                         TerminalTransportEvent::Exited { code, signal } => {
+                            parser_command_group
+                                .lock()
+                                .unwrap()
+                                .stop(super::CommandGroupStatus::Unavailable);
                             if let Some(state) = parser_serial_tool.lock().unwrap().as_mut() {
                                 state.stop();
                             }
@@ -1935,6 +2019,10 @@ impl TerminalRuntime {
                             break;
                         }
                         TerminalTransportEvent::Failed(error) => {
+                            parser_command_group
+                                .lock()
+                                .unwrap()
+                                .stop(super::CommandGroupStatus::Unavailable);
                             if let Some(state) = parser_serial_tool.lock().unwrap().as_mut() {
                                 state.stop();
                             }
@@ -1957,6 +2045,10 @@ impl TerminalRuntime {
                         }
                     }
                 }
+                parser_command_group
+                    .lock()
+                    .unwrap()
+                    .stop(super::CommandGroupStatus::Unavailable);
                 parser.finish_output();
                 if let Some(run) = lock_run(&parser.run).take() {
                     run.disconnected();
@@ -1977,6 +2069,7 @@ impl TerminalRuntime {
 
         Self {
             serial_tool,
+            command_group,
             timestamps,
             term,
             encoding,
@@ -1995,6 +2088,7 @@ impl TerminalRuntime {
     }
 
     fn write(&self, bytes: Vec<u8>) {
+        self.stop_command_group(super::CommandGroupStatus::Stopped);
         if self.transferring() {
             // Keys would land in the transfer: only Ctrl+C means anything.
             if bytes.contains(&0x03) {
@@ -2009,11 +2103,16 @@ impl TerminalRuntime {
         self.transferring.load(Ordering::Acquire)
     }
 
+    fn stop_command_group(&self, status: super::CommandGroupStatus) {
+        self.command_group.lock().unwrap().stop(status);
+    }
+
     fn resize(&self, size: TerminalSize) {
         let _ = self.commands.send(TerminalTransportCommand::Resize(size));
     }
 
     fn shutdown(&self) {
+        self.stop_command_group(super::CommandGroupStatus::Unavailable);
         *self.serial_tool.lock().unwrap() = None;
         self.events.close();
         let _ = self.commands.send(TerminalTransportCommand::Shutdown);

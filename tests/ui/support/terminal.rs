@@ -267,6 +267,20 @@ impl TerminalTransport for FakeTerminalTransport {
                     self.writes.lock().unwrap().push(bytes);
                     let _ = reply.send(Ok(()));
                 }
+                TerminalTransportCommand::CommandGroupWrite {
+                    id,
+                    bytes,
+                    cancelled,
+                } => {
+                    let success = !cancelled.load(Ordering::Acquire);
+                    if success {
+                        self.writes.lock().unwrap().push(bytes.to_vec());
+                    }
+                    events.send_blocking(TerminalTransportEvent::CommandGroupWritten {
+                        id,
+                        success,
+                    })?;
+                }
                 TerminalTransportCommand::Resize(size) => {
                     self.resizes
                         .lock()

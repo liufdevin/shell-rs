@@ -9,6 +9,8 @@ mod snippet_dialog;
 mod snippet_panel;
 
 pub use snippet_dialog::{
-    CategoryDialog, SnippetDialog, open_category_dialog, open_snippet_dialog,
+    CategoryDialog, SnippetDialog, SnippetForm, open_category_dialog, open_snippet_dialog,
 };
+mod group_controls;
+pub(crate) use group_controls::command_group_controls;
 pub use snippet_panel::SnippetPanel;

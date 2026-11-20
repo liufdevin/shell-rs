@@ -4,6 +4,7 @@ mod background;
 mod box_drawing;
 mod broadcast;
 mod cmder;
+mod command_group;
 mod command_terminal;
 #[cfg(any(windows, test))]
 mod conpty_startup;
@@ -25,6 +26,7 @@ mod log_filter;
 mod model;
 mod mouse;
 mod notices;
+mod prompt_line;
 mod run;
 mod scrollbar;
 mod search;
@@ -41,6 +43,7 @@ mod zmodem;
 pub use background::{BackgroundImage, TerminalBackground};
 pub(crate) use broadcast::BroadcastSelection;
 pub use cmder::Cmder;
+pub(crate) use command_group::CommandGroupStatus;
 pub use command_terminal::{SshCommand, command_terminal_factory};
 pub use directory::ReportedDirectory;
 pub use directory_setup::{
@@ -73,6 +76,7 @@ pub use model::{
     TerminalInteraction, TerminalLifecycle, TerminalSize, TerminalStatus,
 };
 pub use notices::TerminalNotice;
+pub(crate) use prompt_line::PromptLine;
 pub use run::{
     BusyReason, RunContext, RunEvent, RunFailure, RunHandle, RunProgress, RunShell, RunTiming,
     TerminalRun,

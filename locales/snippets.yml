@@ -85,11 +85,11 @@ snippets.shortcut.clear:
   zh-CN: 清除
   en: Clear
 snippets.shortcut.run:
-  zh-CN: 按快捷键时直接执行
-  en: Run immediately on shortcut
+  zh-CN: 按快捷键时执行命令组
+  en: Run group on shortcut
 snippets.shortcut.description:
-  zh-CN: 点击录入组合键，例如 Ctrl+1。仅在终端中生效；关闭直接执行时只输入命令。快捷键保存在当前设备。
-  en: Click to record a shortcut, such as Ctrl+1. It works in terminals only. Turn off immediate execution to insert the command without running it. Shortcuts are saved on this device.
+  zh-CN: 点击录入组合键，例如 Ctrl+1。普通命令可只输入或直接执行；命令组始终从当前步骤顺序执行。快捷键保存在当前设备。
+  en: Click to record a shortcut, such as Ctrl+1. Commands can be inserted or run; command groups always run in order. Shortcuts are saved on this device.
 snippets.shortcut.used:
   zh-CN: "%{keys} 已用于另一个命令片段，请选择其他快捷键。"
   en: "%{keys} is assigned to another snippet. Choose a different shortcut."
@@ -106,8 +106,8 @@ snippets.dialog.run_on_click:
   zh-CN: 点击时自动执行
   en: Run on click
 snippets.dialog.run_on_click_description:
-  zh-CN: 启用后将自动执行命令，否则只将内容填入终端
-  en: A click runs the command; otherwise it’s only typed into the terminal
+  zh-CN: 普通命令启用后点击即执行；命令组点击名称会编辑，点右侧运行按钮执行
+  en: Commands run on click when enabled. Clicking a group name edits it; use its run button to execute.
 
 snippets.category.new_title:
   zh-CN: 新建分类
@@ -127,3 +127,100 @@ snippets.category.name_missing:
 snippets.category.name_taken:
   zh-CN: 已有同名分类
   en: A category with this name already exists
+
+snippets.group.type:
+  zh-CN: 类型
+  en: Type
+snippets.group.single:
+  zh-CN: 普通命令
+  en: Command
+snippets.group.kind:
+  zh-CN: 命令组
+  en: Command group
+snippets.group.description:
+  zh-CN: 按顺序发送，每一步独立设置等待条件。内容会明文保存和同步，请勿填写密码或令牌。
+  en: Send steps in order, each with its own wait condition. Contents are saved and synced as plain text; do not include passwords or tokens.
+snippets.group.step:
+  zh-CN: 第 %{number} 步
+  en: Step %{number}
+snippets.group.content:
+  zh-CN: 内容
+  en: Content
+snippets.group.condition:
+  zh-CN: 发送条件
+  en: Send when
+snippets.group.immediate:
+  zh-CN: 立即发送
+  en: Immediately
+snippets.group.delay:
+  zh-CN: 等待指定时间
+  en: After a delay
+snippets.group.prompt:
+  zh-CN: 等待提示文字
+  en: After receiving text
+snippets.group.seconds:
+  zh-CN: 等待时间（秒）
+  en: Delay (seconds)
+snippets.group.prompt_text:
+  zh-CN: 提示文字
+  en: Text to wait for
+snippets.group.timeout:
+  zh-CN: 超时时间（秒）
+  en: Timeout (seconds)
+snippets.group.enter:
+  zh-CN: 发送后回车
+  en: Send Enter after content
+snippets.group.add:
+  zh-CN: 添加步骤
+  en: Add step
+snippets.group.remove:
+  zh-CN: 移除步骤
+  en: Remove step
+snippets.group.up:
+  zh-CN: 上移
+  en: Move up
+snippets.group.down:
+  zh-CN: 下移
+  en: Move down
+snippets.group.count:
+  zh-CN: "%{count} 步"
+  en: "%{count} steps"
+snippets.group.invalid:
+  zh-CN: 命令组需包含 1–128 步，每步最多 4 KiB；提示文字不能为空且最多 512 字节。
+  en: A command group needs 1–128 steps, each up to 4 KiB. Prompt text must not be empty or exceed 512 bytes.
+snippets.group.invalid_time:
+  zh-CN: 等待时间须为 0–600 秒，超时时间须为 0.1–600 秒。
+  en: Delay must be 0–600 seconds and timeout must be 0.1–600 seconds.
+snippets.group.unavailable:
+  zh-CN: 无法继续发送命令组，请检查连接、终端状态或其他正在运行的命令组。
+  en: The command group cannot continue. Check the connection, terminal state, or another running group.
+snippets.group.run_options:
+  zh-CN: 命令组始终整组执行；快捷键的“直接执行”开关对命令组不起作用。
+  en: Groups always run in full; the shortcut’s immediate-run switch does not restrict them.
+snippets.group.no_broadcast:
+  zh-CN: 命令组需在单个终端中执行，请先关闭命令广播。
+  en: Run command groups in one terminal. Turn off broadcasting first.
+snippets.group.sending:
+  zh-CN: 正在发送
+  en: Sending
+snippets.group.waiting_seconds:
+  zh-CN: "等待 %{seconds} 秒"
+  en: "Waiting %{seconds} seconds"
+snippets.group.waiting_prompt:
+  zh-CN: "等待「%{text}」"
+  en: "Waiting for “%{text}”"
+snippets.group.progress:
+  zh-CN: "%{name} · 第 %{step}/%{total} 步 · %{wait}"
+  en: "%{name} · Step %{step}/%{total} · %{wait}"
+snippets.group.stop:
+  zh-CN: 停止命令组
+  en: Stop command group
+snippets.group.sent:
+  zh-CN: 全部步骤已发送
+  en: All steps sent
+snippets.group.stopped:
+  zh-CN: 命令组已停止
+  en: Command group stopped
+snippets.group.timed_out:
+  zh-CN: "第 %{step} 步等待提示超时，已停止发送。"
+  en: "Step %{step} timed out waiting for text. Sending stopped."

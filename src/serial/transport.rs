@@ -352,6 +352,7 @@ fn serve_shell(
     let mut lines = VecDeque::new();
     let mut next_line = Instant::now();
     let mut pending_input = Vec::new();
+    let mut group_write = None;
     let mut debug = SerialDebugCapture::default();
     let mut poll_debug = false;
     let result = (|| -> Result<()> {
@@ -392,6 +393,23 @@ fn serve_shell(
             }
             if stop.load(Ordering::Acquire) {
                 break;
+            }
+            if let Some(TerminalTransportCommand::CommandGroupWrite {
+                id,
+                bytes,
+                cancelled,
+            }) = group_write.take()
+            {
+                let success = !cancelled.load(Ordering::Acquire)
+                    && !shell.busy()
+                    && pending_input.is_empty()
+                    && shell.input(&bytes)
+                    && !cancelled.load(Ordering::Acquire)
+                    && port.write_all(&bytes).is_ok();
+                send_event(
+                    events,
+                    TerminalTransportEvent::CommandGroupWritten { id, success },
+                );
             }
             shell.tick();
             if !shell.busy() {
@@ -471,6 +489,9 @@ fn serve_shell(
                         port.write_all(&bytes)
                     };
                     let _ = reply.send(result.map_err(|error| error.to_string()));
+                }
+                Ok(command @ TerminalTransportCommand::CommandGroupWrite { .. }) => {
+                    group_write = Some(command)
                 }
                 Ok(TerminalTransportCommand::Write(bytes)) => {
                     let debug_running = shell.debug_busy();

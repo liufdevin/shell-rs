@@ -287,6 +287,7 @@ pub struct Workspace {
     /// The pending write of the window's size and place, see
     /// `window_state.rs`.
     pub(super) window_state_save: Option<Task<()>>,
+    pub(super) snippet_form: Option<WeakEntity<crate::snippets::SnippetForm>>,
     /// Where 导入 reads `~/.ssh/config` and `known_hosts`. Production only:
     /// UI tests hand in a temporary one, so nothing reads the home
     /// directory.
@@ -969,6 +970,7 @@ impl Workspace {
             next_editor_id: 1,
             notice_times: HashMap::new(),
             window_state_save: None,
+            snippet_form: None,
             ssh_dir: None,
             _subscriptions: subscriptions,
         };
@@ -5047,6 +5049,11 @@ impl Workspace {
             .on_action(cx.listener(Self::on_move_terminal_node))
             .on_action(cx.listener(Self::on_toggle_terminal_group))
             .on_action(cx.listener(Self::on_new_snippet))
+            .on_action(cx.listener(Self::on_run_snippet))
+            .on_action(cx.listener(Self::on_stop_command_group))
+            .on_action(cx.listener(Self::on_add_snippet_step))
+            .on_action(cx.listener(Self::on_move_snippet_step))
+            .on_action(cx.listener(Self::on_remove_snippet_step))
             .on_action(cx.listener(Self::on_new_snippet_in))
             .on_action(cx.listener(Self::on_edit_snippet))
             .on_action(cx.listener(Self::on_delete_snippet))

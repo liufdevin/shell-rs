@@ -20,6 +20,11 @@ pub enum TerminalTransportCommand {
         bytes: Vec<u8>,
         reply: mpsc::Sender<Result<(), String>>,
     },
+    CommandGroupWrite {
+        id: u64,
+        bytes: zeroize::Zeroizing<Vec<u8>>,
+        cancelled: Arc<std::sync::atomic::AtomicBool>,
+    },
     SetSerialBaud {
         baud: u32,
         reply: mpsc::Sender<Result<(), String>>,
@@ -114,6 +119,7 @@ impl TerminalChannels {
 impl std::fmt::Debug for TerminalTransportCommand {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::CommandGroupWrite { .. } => formatter.write_str("CommandGroupWrite"),
             Self::SerialWriteChecked { bytes, .. } => formatter
                 .debug_tuple("SerialWriteChecked")
                 .field(&bytes.len())
@@ -152,6 +158,10 @@ pub enum TerminalTransportEvent {
     ConnectSsh(super::SshCommand),
     Started,
     SerialDiagnostics(crate::serial::SerialDiagnostics),
+    CommandGroupWritten {
+        id: u64,
+        success: bool,
+    },
     Output(Vec<u8>),
     Prompt(ConnectionPrompt),
     /// What the transport found running on the host. Sent once per successful

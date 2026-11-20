@@ -122,6 +122,8 @@ References are other records' ids. `null` means none.
 | `forward` | `host`, `name`, `kind` (`local`, `remote`, `dynamic`), `bind_host`, `bind_port`, `target_host` and `target_port` (null exactly when dynamic), `sort_order` |
 | `snippet_category` | `name` (not empty) |
 | `snippet` | `category` (or null), `name`, `command` (not empty), `scope` (`all`, `group`, `host`), `scope_id` (null exactly when `all`), `run_on_click` |
+
+A command-group snippet adds `steps`, an ordered array of 1–128 objects with `content`, `enter`, and `wait`. `wait.kind` is `immediate`, `delay` (with `milliseconds`), or `prompt` (with `text` and `timeout_ms`). Delays are 0–600000 ms; prompt timeouts are 100–600000 ms. Each content is at most 4096 bytes and prompt text is 1–512 bytes without control characters. Group records write an empty `command`; older readers reject that value and preserve the record without applying or executing it. Ordinary snippet records omit `steps` and keep their original representation.
 | `secret.password` | `user` (may be empty), `host` (not empty), `port`, `value`: the password saved for signing in as `user` at `host:port`, shared by every host that does; its id is the first 16 bytes, hex, of SHA-256(`user` ‖ 0x00 ‖ `host` ‖ 0x00 ‖ `port` in decimal) |
 | `secret.proxy` | as `secret.password`, for a proxy |
 | `secret.credential` | `value`: the password of the password credential with this id |
