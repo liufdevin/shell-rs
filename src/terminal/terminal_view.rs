@@ -3652,8 +3652,18 @@ impl TerminalPalette {
         flags: Flags,
         overrides: &[Option<Rgb>; COUNT],
     ) -> (Hsla, Hsla) {
-        let mut foreground = if flags.contains(Flags::BOLD) && self.theme.has_separate_bold_colors()
+        let bold = flags.contains(Flags::BOLD);
+        let bold_black = bold && foreground == Color::Named(NamedColor::Black);
+        let background = if bold_black
+            && background == Color::Named(NamedColor::Black)
+            && !flags.contains(Flags::INVERSE)
+            && overrides[NamedColor::Black as usize].is_none()
         {
+            Color::Named(NamedColor::Background)
+        } else {
+            background
+        };
+        let mut foreground = if bold_black || (bold && self.theme.has_separate_bold_colors()) {
             match foreground {
                 Color::Named(NamedColor::Foreground)
                     if overrides[NamedColor::Foreground as usize].is_none() =>
@@ -4066,6 +4076,55 @@ mod tests {
             "\u{f015}", " \u{301}",
         ] {
             assert_eq!(painted_cell_text(text, Flags::empty()), text);
+        }
+    }
+
+    #[test]
+    fn legacy_bold_black_keeps_meter_values_visible() {
+        use alacritty_terminal::event::VoidListener;
+        use alacritty_terminal::index::{Column, Line};
+        use alacritty_terminal::term::{Config, Term};
+        use alacritty_terminal::vte::ansi::{Processor, StdSyncHandler};
+        use gpui_kit::component::ThemeMode;
+
+        use super::{TerminalPalette, TerminalSize, TerminalTheme};
+
+        let size = TerminalSize::new(20, 2, 8, 16);
+        let mut term = Term::new(Config::default(), &size, VoidListener);
+        Processor::<StdSyncHandler>::new().advance(
+            &mut term,
+            b"\x1b[1;30;40m 12.3%\x1b[0m]\x1b[1;30m7\x1b[0;32;40mX\x1b[30;40mY",
+        );
+        let colors = std::array::from_fn(|index| term.colors()[index]);
+        let row = &term.grid()[Line(0)];
+        for theme in [
+            TerminalTheme::default_for(ThemeMode::Dark),
+            TerminalTheme::default_for(ThemeMode::Light),
+            TerminalTheme::find("everforest-light").unwrap(),
+        ] {
+            let palette = TerminalPalette {
+                foreground: theme.foreground(),
+                background: theme.background(),
+                cursor: theme.cursor(),
+                selection: theme.selection(),
+                theme: theme.clone(),
+            };
+            let cell_colors = |column| {
+                let cell = &row[Column(column)];
+                palette.cell_colors(cell.fg, cell.bg, cell.flags, &colors)
+            };
+            for (column, character) in " 12.3%]7".chars().enumerate() {
+                assert_eq!(row[Column(column)].c, character);
+                let foreground = if character == ']' {
+                    theme.foreground()
+                } else {
+                    theme.indexed(8)
+                };
+                assert_eq!(cell_colors(column), (foreground, theme.background()));
+            }
+            assert_ne!(theme.indexed(8), theme.background());
+            assert_eq!(cell_colors(8), (theme.indexed(2), theme.indexed(0)));
+            assert_eq!(cell_colors(9), (theme.indexed(0), theme.indexed(0)));
         }
     }
 
