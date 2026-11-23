@@ -1590,6 +1590,8 @@ async fn serial_assistant_send_controls_fit_a_narrow_window(cx: &mut TestAppCont
         let panel = window.find("serial-multi-send").bounds();
         assert!(stop.right() <= panel.right());
         assert!(window.find("serial-assistant-edit-groups").visible());
+        assert!(window.find("serial-multi-quick-content").visible());
+        assert!(window.find("serial-multi-quick-add-btn").visible());
     });
     for page in ["serial-page-stm32", "serial-page-stc15"] {
         in_frame(cx, handle, |window, cx| window.click(page, cx));
@@ -2195,4 +2197,139 @@ async fn serial_isp_invalid_images_fail_before_transport_and_errors_allow_retry(
     })
     .await;
     assert_eq!(factory.isp_jobs.lock().unwrap().len(), 2);
+}
+
+#[gpui_kit::test]
+async fn serial_multi_send_quick_add_draft_save_and_inline_hex_work_without_leaving_panel(
+    cx: &mut TestAppContext,
+) {
+    let factory = Arc::new(SerialToolFactory::default());
+    let (handle, workspace) = open_workspace_with_terminals(
+        cx,
+        HostStore::empty(),
+        Arc::new(FakeTerminalFactory::default()),
+        Arc::new(FixedSerialTerminalTransportProvider::new(factory.clone())),
+    );
+    cx.simulate_window_resize(handle.into(), size(px(1280.), px(800.)));
+    open_assistant(cx, handle, &workspace).await;
+    connect_assistant(cx, handle).await;
+    // Opening the full command form from an empty state and cancelling must
+    // not leave an empty default group behind.
+    in_frame(cx, handle, |window, cx| {
+        assert!(window.find("serial-multi-empty-add").visible());
+        window.click("serial-multi-empty-add", cx);
+    });
+    in_frame(cx, handle, |window, cx| {
+        assert!(window.find("serial-assistant-command-name").visible());
+        window.press("escape", cx);
+    });
+    cx.read(|cx| {
+        assert!(
+            workspace
+                .read(cx)
+                .store()
+                .read(cx)
+                .serial_assistant("serial-assistant:COM5")
+                .is_none()
+        );
+    });
+    // Quick-adding a text command auto-creates the default group and inherits
+    // the assistant's active line ending.
+    in_frame(cx, handle, |window, cx| {
+        window.click("serial-assistant-ending-crlf", cx);
+        window.click("serial-multi-quick-content", cx);
+        window.input("AT+GMR", cx);
+        window.click("serial-multi-quick-name", cx);
+        window.input("查询版本", cx);
+        window.press("enter", cx);
+    });
+    // Quick-adding a HEX command defaults to no trailing line ending.
+    in_frame(cx, handle, |window, cx| {
+        assert_eq!(window.find("serial-multi-quick-content").value(), Some(""));
+        window.click("serial-multi-quick-hex", cx);
+        window.click("serial-multi-quick-content", cx);
+        window.input("13 00 FF 88", cx);
+        window.click("serial-multi-quick-name", cx);
+        window.input("十六进制1", cx);
+        window.click("serial-multi-quick-delay", cx);
+        window.press("secondary-a", cx);
+        window.input("200", cx);
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.click("serial-multi-quick-add-btn", cx);
+    });
+    // Saving the bottom draft adds a third command with its ending and CRC.
+    in_frame(cx, handle, |window, cx| {
+        window.click("serial-tool-message", cx);
+        window.input("123456789", cx);
+        window.click("serial-tool-crc", cx);
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.click("serial-tool-save-command", cx);
+    });
+    let saved = cx.read(|cx| {
+        workspace
+            .read(cx)
+            .store()
+            .read(cx)
+            .serial_assistant("serial-assistant:COM5")
+            .unwrap()
+            .clone()
+    });
+    assert_eq!(saved.groups.len(), 1);
+    assert_eq!(saved.groups[0].name, "默认命令组");
+    assert_eq!(saved.groups[0].commands.len(), 3);
+    let first = &saved.groups[0].commands[0];
+    let second = &saved.groups[0].commands[1];
+    let third = &saved.groups[0].commands[2];
+    assert_eq!(first.name, "查询版本");
+    assert_eq!(first.content, "AT+GMR");
+    assert!(!first.hex);
+    assert_eq!(first.ending, shellrs::host::SerialCommandEnding::CrLf);
+    assert_eq!(second.name, "十六进制1");
+    assert!(second.hex);
+    assert_eq!(second.ending, shellrs::host::SerialCommandEnding::None);
+    assert_eq!(second.delay_ms, 200);
+    assert_eq!(third.content, "123456789");
+    assert!(third.crc);
+    // Inline HEX toggle rejects non-hex text and toggles valid hex cleanly.
+    in_frame(cx, handle, |window, cx| {
+        window.click(("serial-multi-hex", first.id), cx);
+    });
+    in_frame(cx, handle, |window, cx| {
+        assert_eq!(
+            window.find(("serial-multi-hex", first.id)).checked(),
+            Some(false)
+        );
+        assert!(window.find("serial-tool-status").visible());
+        window.click(("serial-multi-hex", second.id), cx);
+    });
+    in_frame(cx, handle, |window, cx| {
+        assert_eq!(
+            window.find(("serial-multi-hex", second.id)).checked(),
+            Some(false)
+        );
+        window.click(("serial-multi-hex", second.id), cx);
+    });
+    in_frame(cx, handle, |window, _| {
+        assert_eq!(
+            window.find(("serial-multi-hex", second.id)).checked(),
+            Some(true)
+        );
+    });
+    // Send buttons send each configured row immediately.
+    for (id, expected) in [
+        (first.id, b"AT+GMR\r\n".to_vec()),
+        (second.id, vec![0x13, 0x00, 0xff, 0x88]),
+        (third.id, b"123456789\x37\x4b\r\n".to_vec()),
+    ] {
+        in_frame(cx, handle, |window, cx| {
+            window.click(("serial-multi-send", id), cx);
+        });
+        cx.wait_for(handle.into(), Duration::from_secs(5), |window, _| {
+            window.find("serial-tool-status").label() == Some("命令组发送完成。")
+        })
+        .await;
+        assert_eq!(factory.writes.lock().unwrap().last(), Some(&expected));
+    }
 }

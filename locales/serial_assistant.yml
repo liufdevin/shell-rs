@@ -225,33 +225,60 @@ serial.assistant.delete:
 serial.assistant.multi_send:
   zh-CN: 多条发送
   en: Multi-send
-serial.assistant.tools_title:
-  zh-CN: 串口工具
-  en: Serial tools
-serial.assistant.tools_subtitle:
-  zh-CN: 收发、测试与烧录
-  en: Send, inspect, and flash
 serial.assistant.hide_tools:
   zh-CN: 隐藏右侧工具区
   en: Hide tools
 serial.assistant.show_tools:
   zh-CN: 显示工具
   en: Show tools
-serial.assistant.connection_settings:
-  zh-CN: 串口设置
-  en: Serial settings
-serial.assistant.display_and_log:
-  zh-CN: 显示与日志
-  en: Display and logging
 serial.assistant.send_once:
   zh-CN: 顺序发送
   en: Send in order
 serial.assistant.loop:
   zh-CN: 整组循环
   en: Loop group
+serial.assistant.default_group:
+  zh-CN: 默认命令组
+  en: Default group
+serial.assistant.content_required:
+  zh-CN: 请输入要发送的命令内容。
+  en: Enter command content first.
+serial.assistant.quick_add:
+  zh-CN: 添加
+  en: Add
+serial.assistant.quick_content_placeholder:
+  zh-CN: 输入命令，Enter 快速添加
+  en: Enter command, press Enter to add
+serial.assistant.quick_name_placeholder:
+  zh-CN: 名称/注释（可选）
+  en: Label (optional)
+serial.assistant.save_as_command:
+  zh-CN: 存为命令
+  en: Save cmd
+serial.assistant.save_as_command_hint:
+  zh-CN: 将当前发送内容保存到多条发送命令组
+  en: Save the current draft to the active multi-send group
+serial.assistant.saved_as_command:
+  zh-CN: 已保存到当前命令组。
+  en: Saved to the active command group.
+serial.assistant.col_content:
+  zh-CN: 命令 / 参数
+  en: Command
+serial.assistant.col_send:
+  zh-CN: 点击发送
+  en: Send
+serial.assistant.hex_command:
+  zh-CN: "%{name} 使用 HEX 发送"
+  en: "Send %{name} as HEX"
+serial.assistant.row_actions:
+  zh-CN: 命令操作
+  en: Command actions
+serial.assistant.command_default_name:
+  zh-CN: "命令 %{index}"
+  en: "Command %{index}"
 serial.assistant.multi_empty:
-  zh-CN: 使用上方「编辑命令组」添加命令，再按保存顺序发送。
-  en: Use Edit command groups above to add commands, then send them in their saved order.
+  zh-CN: 在下方输入命令按 Enter 即可添加，或点按钮打开完整表单。
+  en: Type a command below and press Enter to add, or open the full form.
 serial.assistant.multi_empty_title:
   zh-CN: 还没有发送命令
   en: No send commands yet

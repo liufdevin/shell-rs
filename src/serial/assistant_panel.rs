@@ -805,10 +805,12 @@ impl SerialAssistantPanel {
                 Select::new(state)
                     .id(id)
                     .small()
-                    .w(rems(if id == "serial-assistant-baud" {
-                        9.
-                    } else {
-                        6.5
+                    .w(rems(match id {
+                        "serial-assistant-baud" => 8.2,
+                        "serial-assistant-encoding" => 6.0,
+                        "serial-assistant-parity" => 5.2,
+                        "serial-assistant-data-bits" | "serial-assistant-stop-bits" => 4.2,
+                        _ => 6.0,
                     }))
                     .disabled(locked)
                     .accessibility_label(label),
@@ -817,9 +819,10 @@ impl SerialAssistantPanel {
 
     fn parameters(&self, locked: bool, cx: &App) -> impl IntoElement {
         h_flex()
-            .gap_x_3()
-            .gap_y_2()
+            .gap_x_2()
+            .gap_y_1p5()
             .flex_wrap()
+            .items_center()
             .child(
                 h_flex()
                     .gap_1()
@@ -827,7 +830,7 @@ impl SerialAssistantPanel {
                         Select::new(&self.port)
                             .id("serial-assistant-port")
                             .small()
-                            .w(rems(10.))
+                            .w(rems(8.5))
                             .placeholder(if self.port_scan.is_some() {
                                 t!("host.dialog.looking_for_ports")
                             } else {
@@ -1000,18 +1003,11 @@ impl Render for SerialAssistantPanel {
                         ),
                 )
             });
-        let section_label = |label: SharedString| {
-            div()
-                .text_xs()
-                .font_weight(FontWeight::SEMIBOLD)
-                .text_color(cx.theme().muted_foreground)
-                .child(label)
-        };
         let controls = v_flex()
             .flex_shrink_0()
-            .gap_3()
-            .p_3()
-            .rounded_lg()
+            .gap_2()
+            .p_2()
+            .rounded_md()
             .border_1()
             .border_color(cx.theme().border)
             .bg(cx.theme().sidebar)
@@ -1033,6 +1029,13 @@ impl Render for SerialAssistantPanel {
                         .when(!locked, |button| button.primary())
                         .disabled(!locked && (!has_port || self.port_scan.is_some())),
                     )
+                    .child(self.parameters(locked, cx)),
+            )
+            .child(
+                h_flex()
+                    .gap_2()
+                    .flex_wrap()
+                    .items_center()
                     .child(
                         self.button(
                             "serial-assistant-clear",
@@ -1040,6 +1043,7 @@ impl Render for SerialAssistantPanel {
                             SerialAssistantTabCommand::ClearOutput,
                         )
                         .ghost()
+                        .icon(CatalogIcon::Eraser)
                         .disabled(self.terminal.is_none()),
                     )
                     .child(check(
@@ -1054,12 +1058,61 @@ impl Render for SerialAssistantPanel {
                         self.tools.read(cx).assistant_send_hex(),
                         SerialAssistantTabCommand::SendHex,
                     ))
+                    .child(check(
+                        "serial-assistant-follow",
+                        t!("serial.assistant.follow"),
+                        self.follow_output,
+                        SerialAssistantTabCommand::Follow,
+                    ))
+                    .child(check(
+                        "serial-assistant-timestamps",
+                        t!("serial.assistant.timestamps"),
+                        timestamps,
+                        SerialAssistantTabCommand::Timestamps,
+                    ))
+                    .child(
+                        self.button(
+                            "serial-assistant-filter",
+                            t!("serial.assistant.filter"),
+                            SerialAssistantTabCommand::ToggleFilter,
+                        )
+                        .ghost()
+                        .selected(filter_active)
+                        .disabled(self.terminal.is_none()),
+                    )
+                    .child(
+                        self.button(
+                            "serial-assistant-save-log",
+                            t!("serial.assistant.save_log"),
+                            SerialAssistantTabCommand::SaveLog,
+                        )
+                        .ghost()
+                        .icon(CatalogIcon::Download)
+                        .disabled(self.terminal.is_none() || self.log_save.is_some()),
+                    )
+                    .when_some(self.log_status.clone(), |row, (status, error)| {
+                        row.child(
+                            div()
+                                .id("serial-assistant-log-status")
+                                .test_support()
+                                .role(Role::Status)
+                                .aria_label(status.clone())
+                                .text_xs()
+                                .text_color(if error {
+                                    cx.theme().danger
+                                } else {
+                                    cx.theme().muted_foreground
+                                })
+                                .child(status),
+                        )
+                    })
                     .child(
                         h_flex()
                             .id("serial-assistant-connection-status")
                             .test_support()
                             .role(Role::Status)
                             .aria_label(status.clone())
+                            .ml_auto()
                             .gap_1()
                             .items_center()
                             .text_color(status_color)
@@ -1072,7 +1125,6 @@ impl Render for SerialAssistantPanel {
                             .id("serial-wire-count")
                             .test_support()
                             .aria_label(counts.clone())
-                            .ml_auto()
                             .text_xs()
                             .text_color(cx.theme().muted_foreground)
                             .font_family(cx.theme().mono_font_family.clone())
@@ -1092,71 +1144,6 @@ impl Render for SerialAssistantPanel {
                         )
                     }),
             )
-            .child(
-                v_flex()
-                    .gap_1()
-                    .child(section_label(t!("serial.assistant.connection_settings")))
-                    .child(self.parameters(locked, cx)),
-            )
-            .child(div().h_px().w_full().bg(cx.theme().border))
-            .child(
-                v_flex()
-                    .gap_2()
-                    .child(section_label(t!("serial.assistant.display_and_log")))
-                    .child(
-                        h_flex()
-                            .gap_2()
-                            .flex_wrap()
-                            .child(check(
-                                "serial-assistant-follow",
-                                t!("serial.assistant.follow"),
-                                self.follow_output,
-                                SerialAssistantTabCommand::Follow,
-                            ))
-                            .child(check(
-                                "serial-assistant-timestamps",
-                                t!("serial.assistant.timestamps"),
-                                timestamps,
-                                SerialAssistantTabCommand::Timestamps,
-                            ))
-                            .child(
-                                self.button(
-                                    "serial-assistant-filter",
-                                    t!("serial.assistant.filter"),
-                                    SerialAssistantTabCommand::ToggleFilter,
-                                )
-                                .ghost()
-                                .selected(filter_active)
-                                .disabled(self.terminal.is_none()),
-                            )
-                            .child(
-                                self.button(
-                                    "serial-assistant-save-log",
-                                    t!("serial.assistant.save_log"),
-                                    SerialAssistantTabCommand::SaveLog,
-                                )
-                                .ghost()
-                                .icon(CatalogIcon::Download)
-                                .disabled(self.terminal.is_none() || self.log_save.is_some()),
-                            )
-                            .when_some(self.log_status.clone(), |row, (status, error)| {
-                                row.child(
-                                    div()
-                                        .id("serial-assistant-log-status")
-                                        .test_support()
-                                        .role(Role::Status)
-                                        .aria_label(status.clone())
-                                        .text_xs()
-                                        .text_color(if error {
-                                            cx.theme().danger
-                                        } else {
-                                            cx.theme().muted_foreground
-                                        })
-                                        .child(status),
-                                )
-                            }),
-                    ),
-            )
             .when_some(error, |row, error| {
                 row.child(
                     div()
@@ -1173,6 +1160,7 @@ impl Render for SerialAssistantPanel {
             .size_full()
             .min_h_0()
             .min_w_0()
+            .when(self.sidebar_visible, |pane| pane.pr_2())
             .gap_2()
             .child(output)
             .child(
@@ -1184,33 +1172,32 @@ impl Render for SerialAssistantPanel {
             .size_full()
             .min_h_0()
             .min_w_0()
+            .rounded_md()
+            .border_1()
+            .border_color(cx.theme().border)
+            .overflow_hidden()
             .bg(cx.theme().sidebar)
             .child(
                 h_flex()
-                    .p_3()
-                    .gap_2()
+                    .px_2()
+                    .py_1p5()
+                    .gap_1()
                     .items_center()
                     .border_b_1()
                     .border_color(cx.theme().border)
-                    .child(
-                        v_flex()
-                            .flex_1()
-                            .min_w_0()
-                            .gap_1()
-                            .child(
-                                div()
-                                    .text_sm()
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .child(t!("serial.assistant.tools_title")),
-                            )
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .truncate()
-                                    .child(t!("serial.assistant.tools_subtitle")),
-                            ),
-                    )
+                    .children(IspPage::ALL.map(|page| {
+                        self.button(
+                            page.id(),
+                            page.compact_label(),
+                            SerialAssistantTabCommand::Isp(IspCommand::Page(page)),
+                        )
+                        .xsmall()
+                        .ghost()
+                        .flex_1()
+                        .tooltip(page.label())
+                        .selected(self.sidebar == page)
+                        .disabled(self.isp.read(cx).busy())
+                    }))
                     .child(
                         self.button(
                             "serial-assistant-tools-toggle",
@@ -1226,26 +1213,6 @@ impl Render for SerialAssistantPanel {
                         .disabled(self.isp.read(cx).busy()),
                     ),
             )
-            .child(
-                h_flex()
-                    .p_2()
-                    .gap_1()
-                    .border_b_1()
-                    .border_color(cx.theme().border)
-                    .children(IspPage::ALL.map(|page| {
-                        self.button(
-                            page.id(),
-                            page.compact_label(),
-                            SerialAssistantTabCommand::Isp(IspCommand::Page(page)),
-                        )
-                        .xsmall()
-                        .ghost()
-                        .flex_1()
-                        .tooltip(page.label())
-                        .selected(self.sidebar == page)
-                        .disabled(self.isp.read(cx).busy())
-                    })),
-            )
             .child(div().flex_1().min_h_0().min_w_0().child(
                 if self.sidebar == IspPage::MultiSend {
                     self.tools.clone().into_any_element()
@@ -1257,14 +1224,14 @@ impl Render for SerialAssistantPanel {
             .with_state(&self.split)
             .child(
                 resizable_panel()
-                    .size_range((window.rem_size() * 22.)..Pixels::MAX)
+                    .size_range((window.rem_size() * 18.)..Pixels::MAX)
                     .child(main_content),
             );
         let split = if self.sidebar_visible {
             split.child(
                 resizable_panel()
-                    .size(window.rem_size() * 23.)
-                    .size_range((window.rem_size() * 18.)..Pixels::MAX)
+                    .size(window.rem_size() * 24.)
+                    .size_range((window.rem_size() * 17.)..Pixels::MAX)
                     .child(right_content),
             )
         } else {
@@ -1277,8 +1244,8 @@ impl Render for SerialAssistantPanel {
             .size_full()
             .min_h_0()
             .min_w_0()
-            .p_3()
-            .gap_3()
+            .p_2()
+            .gap_2()
             .bg(cx.theme().background)
             .child(div().flex_1().min_h_0().min_w_0().child(split))
             .child(controls)

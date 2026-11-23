@@ -16,12 +16,17 @@ pub enum SerialAssistantCommand {
     RenameGroup,
     DeleteGroup,
     NewCommand,
+    QuickNewCommand,
+    QuickAdd,
+    QuickHex(bool),
+    SaveDraftAsCommand,
     InsertCommand,
     SelectCommand(u64),
     EditCommand(u64),
     DuplicateCommand(u64),
     DeleteCommand(u64),
     ToggleCommand(u64, bool),
+    ToggleHex(u64, bool),
     MoveUp(u64),
     MoveDown(u64),
     Run(Option<u64>),
@@ -35,24 +40,73 @@ pub(super) struct AssistantEditor {
     pub(super) group: Option<u64>,
     command: Option<u64>,
     group_search: Entity<InputState>,
+    pub(super) quick_content: Entity<InputState>,
+    pub(super) quick_name: Entity<InputState>,
+    pub(super) quick_delay: Entity<InputState>,
+    pub(super) quick_hex: bool,
     command_scroll: ScrollHandle,
     _group_search_observer: Subscription,
+    _quick_subscriptions: Vec<Subscription>,
     undo: Option<SerialAssistant>,
     page: usize,
 }
 
 impl AssistantEditor {
-    pub(super) fn new(window: &mut Window, cx: &mut Context<SerialToolsPanel>) -> Self {
+    pub(super) fn new(
+        dispatch: ToolDispatch,
+        window: &mut Window,
+        cx: &mut Context<SerialToolsPanel>,
+    ) -> Self {
         let group_search = cx.new(|cx| {
             InputState::new(window, cx).placeholder(t!("serial.assistant.search_groups"))
         });
         let group_search_observer = cx.observe(&group_search, |_, _, cx| cx.notify());
+        let quick_content = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(t!("serial.assistant.quick_content_placeholder"))
+                .validate(|text, _| text.len() <= 4096)
+        });
+        let quick_name = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(t!("serial.assistant.quick_name_placeholder"))
+                .validate(|text, _| text.len() <= 128)
+        });
+        let quick_delay = cx.new(|cx| {
+            InputState::new(window, cx)
+                .default_value("500")
+                .validate(|text, _| text.len() <= 5 && text.bytes().all(|b| b.is_ascii_digit()))
+        });
+        let mut quick_subscriptions = vec![cx.observe(&quick_content, |_, _, cx| cx.notify())];
+        for input in [&quick_content, &quick_name, &quick_delay] {
+            let dispatch = dispatch.clone();
+            quick_subscriptions.push(cx.subscribe_in(
+                input,
+                window,
+                move |_, _, event: &InputEvent, window, cx| {
+                    if matches!(event, InputEvent::PressEnter { .. }) {
+                        let dispatch = dispatch.clone();
+                        window.defer(cx, move |window, cx| {
+                            dispatch.send(
+                                SerialToolCommand::Assistant(SerialAssistantCommand::QuickAdd),
+                                window,
+                                cx,
+                            );
+                        });
+                    }
+                },
+            ));
+        }
         Self {
             group: None,
             command: None,
             group_search,
+            quick_content,
+            quick_name,
+            quick_delay,
+            quick_hex: false,
             command_scroll: ScrollHandle::new(),
             _group_search_observer: group_search_observer,
+            _quick_subscriptions: quick_subscriptions,
             undo: None,
             page: 0,
         }
@@ -208,6 +262,29 @@ fn required_name(name: &str) -> Result<String, SharedString> {
     }
 }
 
+fn derive_command_name(content: &str, index: usize) -> String {
+    let first_line = content
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or("");
+    if first_line.is_empty() {
+        return t!("serial.assistant.command_default_name", index = index).to_string();
+    }
+    let mut short = String::new();
+    for character in first_line.chars().take(24) {
+        if short.len() + character.len_utf8() > 64 {
+            break;
+        }
+        short.push(character);
+    }
+    if short.is_empty() {
+        t!("serial.assistant.command_default_name", index = index).to_string()
+    } else {
+        short
+    }
+}
+
 fn dialog_result(result: Result<(), SharedString>, window: &mut Window, cx: &mut App) -> bool {
     if let Err(error) = result {
         window.push_notification(crate::shared::form_error_notification(error), cx);
@@ -240,6 +317,7 @@ impl SerialToolsPanel {
     pub(in crate::serial) fn render_assistant_sender(&self, locked: bool, cx: &App) -> AnyElement {
         let dispatch = self.dispatch.clone();
         let busy = locked || self.group_task.is_some() || self.repeat_task.is_some();
+        let message_empty = self.message.read(cx).value().is_empty();
         let tool_button = |id, label: SharedString, command: SerialToolCommand| {
             let dispatch = dispatch.clone();
             Button::new(id)
@@ -249,6 +327,7 @@ impl SerialToolsPanel {
                     dispatch.send(command.clone(), window, cx);
                 })
         };
+        let save_dispatch = dispatch.clone();
         let automatic = self
             .target
             .as_ref()
@@ -257,11 +336,16 @@ impl SerialToolsPanel {
         v_flex()
             .id("serial-assistant")
             .test_support()
-            .gap_2()
+            .p_2()
+            .gap_1p5()
+            .rounded_md()
+            .border_1()
+            .border_color(cx.theme().border)
+            .bg(cx.theme().sidebar)
             .child(
                 h_flex()
                     .gap_2()
-                    .items_end()
+                    .items_stretch()
                     .child(
                         div()
                             .id("serial-tool-message")
@@ -292,13 +376,40 @@ impl SerialToolsPanel {
                             ),
                     )
                     .child(
-                        tool_button(
-                            "serial-tool-send",
-                            t!("serial.hex.send"),
-                            SerialToolCommand::Send,
-                        )
-                        .primary()
-                        .disabled(!self.can_send_assistant(cx)),
+                        v_flex()
+                            .w(rems(5.5))
+                            .flex_shrink_0()
+                            .justify_between()
+                            .gap_1()
+                            .child(
+                                tool_button(
+                                    "serial-tool-send",
+                                    t!("serial.hex.send"),
+                                    SerialToolCommand::Send,
+                                )
+                                .primary()
+                                .w_full()
+                                .disabled(!self.can_send_assistant(cx)),
+                            )
+                            .child(
+                                Button::new("serial-tool-save-command")
+                                    .xsmall()
+                                    .outline()
+                                    .w_full()
+                                    .icon(IconName::Plus)
+                                    .label(t!("serial.assistant.save_as_command"))
+                                    .tooltip(t!("serial.assistant.save_as_command_hint"))
+                                    .disabled(busy || message_empty)
+                                    .on_click(move |_, window, cx| {
+                                        save_dispatch.send(
+                                            SerialToolCommand::Assistant(
+                                                SerialAssistantCommand::SaveDraftAsCommand,
+                                            ),
+                                            window,
+                                            cx,
+                                        );
+                                    }),
+                            ),
                     ),
             )
             .child(
@@ -532,7 +643,7 @@ impl SerialToolsPanel {
 
     fn open_command_form(
         &self,
-        group: &SerialCommandGroup,
+        group: Option<&SerialCommandGroup>,
         placement: CommandPlacement,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -544,9 +655,11 @@ impl SerialToolsPanel {
             .assistant_storage
             .as_ref()
             .map(|(_, key, _)| key.clone());
-        let group_id = group.id;
-        let saved = match placement {
-            CommandPlacement::Replace(id) => group.commands.iter().find(|command| command.id == id),
+        let group_id = group.map(|group| group.id);
+        let saved = match (placement, group) {
+            (CommandPlacement::Replace(id), Some(group)) => {
+                group.commands.iter().find(|command| command.id == id)
+            }
             _ => None,
         };
         let title = match placement {
@@ -583,7 +696,7 @@ impl SerialToolsPanel {
     fn commit_command(
         &mut self,
         key: Option<&str>,
-        group_id: u64,
+        group_id: Option<u64>,
         placement: CommandPlacement,
         mut draft: SerialCommand,
         cx: &mut Context<Self>,
@@ -591,6 +704,21 @@ impl SerialToolsPanel {
         self.check_editor_target(key)?;
         crate::terminal::encode_serial_tool(self.assistant_encoding, &draft.content, draft.hex)?;
         let mut value = self.assistant_value(cx);
+        let group_id = match group_id {
+            Some(id) => id,
+            None => {
+                if let Some(existing) = value.groups.first() {
+                    existing.id
+                } else {
+                    let mut created = SerialCommandGroup::default();
+                    created.id = value.allocate_id();
+                    created.name = t!("serial.assistant.default_group").to_string();
+                    let id = created.id;
+                    value.groups.push(created);
+                    id
+                }
+            }
+        };
         draft.id = match placement {
             CommandPlacement::Replace(id) => id,
             _ => value.allocate_id(),
@@ -692,8 +820,24 @@ impl SerialToolsPanel {
                     }
                     _ => return Err(t!("serial.assistant.command_missing")),
                 };
-                self.open_command_form(group, placement, window, cx);
+                self.open_command_form(Some(group), placement, window, cx);
                 return Ok(());
+            }
+            SerialAssistantCommand::QuickNewCommand => {
+                self.open_command_form(group, CommandPlacement::Append, window, cx);
+                return Ok(());
+            }
+            SerialAssistantCommand::QuickHex(enabled) => {
+                if let Some(editor) = &mut self.assistant {
+                    editor.quick_hex = *enabled;
+                }
+                return Ok(());
+            }
+            SerialAssistantCommand::QuickAdd => {
+                return self.quick_add_command(window, cx);
+            }
+            SerialAssistantCommand::SaveDraftAsCommand => {
+                return self.save_draft_as_command(cx);
             }
             _ => {}
         }
@@ -760,6 +904,23 @@ impl SerialToolsPanel {
                     saved.enabled = *enabled;
                 }
             }
+            SerialAssistantCommand::ToggleHex(id, enabled) => {
+                if let Some(saved) = value
+                    .groups
+                    .iter_mut()
+                    .flat_map(|group| &mut group.commands)
+                    .find(|command| command.id == *id)
+                {
+                    if *enabled {
+                        crate::terminal::encode_serial_tool(
+                            self.assistant_encoding,
+                            &saved.content,
+                            true,
+                        )?;
+                    }
+                    saved.hex = *enabled;
+                }
+            }
             SerialAssistantCommand::MoveUp(id) | SerialAssistantCommand::MoveDown(id) => {
                 if let Some(group) = value
                     .groups
@@ -806,6 +967,10 @@ impl SerialToolsPanel {
             | SerialAssistantCommand::CreateGroup
             | SerialAssistantCommand::RenameGroup
             | SerialAssistantCommand::NewCommand
+            | SerialAssistantCommand::QuickNewCommand
+            | SerialAssistantCommand::QuickAdd
+            | SerialAssistantCommand::QuickHex(_)
+            | SerialAssistantCommand::SaveDraftAsCommand
             | SerialAssistantCommand::InsertCommand
             | SerialAssistantCommand::EditCommand(_) => unreachable!(),
         }
@@ -824,6 +989,120 @@ impl SerialToolsPanel {
             editor.undo = None;
         }
         self.save_assistant(value, cx)
+    }
+
+    fn append_command(
+        &mut self,
+        mut draft: SerialCommand,
+        cx: &mut Context<Self>,
+    ) -> Result<(), SharedString> {
+        crate::terminal::encode_serial_tool(self.assistant_encoding, &draft.content, draft.hex)?;
+        let mut value = self.assistant_value(cx);
+        let selected = self.assistant.as_ref().and_then(|editor| editor.group);
+        let group_id = if let Some(group) = value
+            .groups
+            .iter()
+            .find(|group| Some(group.id) == selected)
+            .or_else(|| value.groups.first())
+        {
+            group.id
+        } else {
+            let mut created = SerialCommandGroup::default();
+            created.id = value.allocate_id();
+            created.name = t!("serial.assistant.default_group").to_string();
+            let id = created.id;
+            value.groups.push(created);
+            id
+        };
+        draft.id = value.allocate_id();
+        let group = value
+            .groups
+            .iter_mut()
+            .find(|group| group.id == group_id)
+            .ok_or_else(|| t!("serial.assistant.create_first"))?;
+        if draft.name.trim().is_empty() {
+            draft.name = derive_command_name(&draft.content, group.commands.len() + 1);
+        }
+        let index = group.commands.len();
+        let id = draft.id;
+        group.commands.push(draft);
+        if !value.is_valid() {
+            return Err(t!("serial.assistant.limits"));
+        }
+        self.save_assistant(value, cx)?;
+        if let Some(editor) = &mut self.assistant {
+            editor.group = Some(group_id);
+            editor.command = Some(id);
+            editor.page = index / COMMANDS_PER_PAGE;
+            editor.undo = None;
+        }
+        Ok(())
+    }
+
+    fn quick_add_command(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<(), SharedString> {
+        let Some(editor) = self.assistant.as_ref() else {
+            return Ok(());
+        };
+        let content = editor.quick_content.read(cx).value().to_string();
+        if content.is_empty() {
+            return Err(t!("serial.assistant.content_required"));
+        }
+        let name = editor.quick_name.read(cx).value().trim().to_owned();
+        let delay_text = editor.quick_delay.read(cx).value().to_string();
+        let delay_ms = if delay_text.trim().is_empty() {
+            500
+        } else {
+            delay_text
+                .trim()
+                .parse::<u32>()
+                .ok()
+                .filter(|delay| *delay <= 60000)
+                .ok_or_else(|| t!("serial.assistant.invalid_delay"))?
+        };
+        let hex = editor.quick_hex;
+        let ending = if hex {
+            SerialCommandEnding::None
+        } else {
+            stored_ending(self.ending)
+        };
+        let mut draft = SerialCommand::default();
+        draft.name = name;
+        draft.content = content;
+        draft.hex = hex;
+        draft.ending = ending;
+        draft.crc = false;
+        draft.delay_ms = delay_ms;
+        draft.enabled = true;
+        self.append_command(draft, cx)?;
+        if let Some(editor) = self.assistant.as_ref() {
+            let quick_content = editor.quick_content.clone();
+            let quick_name = editor.quick_name.clone();
+            quick_content.update(cx, |input, cx| input.set_value(String::new(), window, cx));
+            quick_name.update(cx, |input, cx| input.set_value(String::new(), window, cx));
+        }
+        self.status = SharedString::default();
+        Ok(())
+    }
+
+    fn save_draft_as_command(&mut self, cx: &mut Context<Self>) -> Result<(), SharedString> {
+        let content = self.message.read(cx).value().to_string();
+        if content.is_empty() {
+            return Err(t!("serial.assistant.content_required"));
+        }
+        let mut draft = SerialCommand::default();
+        draft.content = content;
+        draft.hex = self.assistant_send_hex;
+        draft.ending = stored_ending(self.ending);
+        draft.crc = self.crc;
+        draft.delay_ms = 500;
+        draft.enabled = true;
+        self.append_command(draft, cx)?;
+        self.status = t!("serial.assistant.saved_as_command");
+        Ok(())
     }
 
     fn run_group(

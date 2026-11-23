@@ -296,7 +296,11 @@ impl SerialToolsPanel {
             return;
         }
         self.assistant_storage = Some((store, target, host));
-        self.assistant = Some(assistant::AssistantEditor::new(window, cx));
+        self.assistant = Some(assistant::AssistantEditor::new(
+            self.dispatch.clone(),
+            window,
+            cx,
+        ));
         self.status = SharedString::default();
         self.body_scroll.set_offset(Point::default());
         cx.notify();
