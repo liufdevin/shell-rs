@@ -738,6 +738,7 @@ impl SerialToolsPanel {
         cx: &mut Context<Self>,
     ) -> Result<(), SharedString> {
         if matches!(command, SerialAssistantCommand::Stop) {
+            self.group_cancel.store(true, Ordering::Release);
             self.group_task = None;
             self.status = t!("serial.assistant.stopped");
             return Ok(());
@@ -967,10 +968,15 @@ impl SerialToolsPanel {
         }
         let generation = view.read(cx).generation(cx);
         let target = view.downgrade();
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.group_cancel = cancel.clone();
         self.status = t!("serial.assistant.running", count = commands.len());
         self.group_task = Some(cx.spawn(async move |owner, cx| {
             let result: Result<(), SharedString> = async {
                 for (bytes, delay) in commands {
+                    if cancel.load(Ordering::Acquire) {
+                        return Ok(());
+                    }
                     let answer = owner
                         .update(cx, |_, cx| {
                             let view = target
@@ -982,6 +988,9 @@ impl SerialToolsPanel {
                         .map_err(|_| t!("serial.tool.unavailable"))??;
                     let deadline = Instant::now() + Duration::from_secs(12);
                     loop {
+                        if cancel.load(Ordering::Acquire) {
+                            return Ok(());
+                        }
                         match answer.try_recv() {
                             Ok(Ok(())) => break,
                             Ok(Err(error)) => {
@@ -1003,15 +1012,21 @@ impl SerialToolsPanel {
                     cx.background_executor()
                         .timer(Duration::from_millis(u64::from(delay)))
                         .await;
+                    if cancel.load(Ordering::Acquire) {
+                        return Ok(());
+                    }
                 }
                 Ok(())
             }
             .await;
+            let cancelled = cancel.load(Ordering::Acquire);
             let _ = owner.update(cx, |owner, cx| {
                 owner.group_task = None;
-                owner.status = result
-                    .err()
-                    .unwrap_or_else(|| t!("serial.assistant.complete"));
+                if !cancelled {
+                    owner.status = result
+                        .err()
+                        .unwrap_or_else(|| t!("serial.assistant.complete"));
+                }
                 cx.notify();
             });
         }));

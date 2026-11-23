@@ -1,4 +1,8 @@
 use std::collections::HashMap;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 use std::time::{Duration, Instant};
 
 use gpui_kit::component::{
@@ -90,6 +94,7 @@ pub struct SerialToolsPanel {
     body_scroll: ScrollHandle,
     preview_scroll: ScrollHandle,
     group_task: Option<Task<()>>,
+    group_cancel: Arc<AtomicBool>,
     drafts: HashMap<EntityId, SerialToolDraft>,
     target: Option<WeakEntity<TerminalView>>,
     observer: Option<Subscription>,
@@ -134,6 +139,7 @@ impl SerialToolsPanel {
             body_scroll: ScrollHandle::new(),
             preview_scroll: ScrollHandle::new(),
             group_task: None,
+            group_cancel: Arc::new(AtomicBool::new(false)),
             drafts: HashMap::new(),
             target: None,
             observer: None,
@@ -322,6 +328,7 @@ impl SerialToolsPanel {
     }
 
     pub(super) fn stop_sending(&mut self, cx: &mut Context<Self>) {
+        self.group_cancel.store(true, Ordering::Release);
         let group = self.group_task.take().is_some();
         let repeating = self.repeat_task.take().is_some();
         if group || repeating {
@@ -345,6 +352,7 @@ impl SerialToolsPanel {
         }
         self.baud_task = None;
         self.repeat_task = None;
+        self.group_cancel.store(true, Ordering::Release);
         self.group_task = None;
         self.body_scroll.set_offset(Point::default());
         self.preview_scroll.set_offset(Point::default());

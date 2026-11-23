@@ -886,9 +886,12 @@ impl Render for ToolSidebar {
                     ToolKind::Snippets => v_flex()
                         .size_full()
                         .when_some(
-                            self.remote().and_then(|terminal| terminal.view.upgrade()),
-                            |panel, view| {
+                            self.remote().and_then(|terminal| {
+                                terminal.view.upgrade().map(|view| (terminal.id, view))
+                            }),
+                            |panel, (terminal, view)| {
                                 panel.child(crate::snippets::command_group_controls(
+                                    terminal,
                                     view.read(cx),
                                     self.dispatch.clone(),
                                     cx,

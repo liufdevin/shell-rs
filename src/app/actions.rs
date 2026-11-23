@@ -127,7 +127,6 @@ gpui_kit::actions!(
         DetachTmux,
         /// Open the new-snippet dialog, for a snippet of no category.
         NewSnippet,
-        StopCommandGroup,
         AddSnippetStep,
         /// Open the new-category dialog of 命令片段.
         NewSnippetCategory,
@@ -349,6 +348,8 @@ id_actions! {
     /// Hold a serial host's line in the break condition for a moment.
     SendBreak(RemoteTerminalId);
     SendSerialHex(RemoteTerminalId);
+    /// Stop the command group running in one terminal.
+    StopCommandGroup(RemoteTerminalId);
     ToggleSerialReceiveHex(RemoteTerminalId);
     ToggleSerialSendHex(RemoteTerminalId);
     ManageSerialDebug(RemoteTerminalId);

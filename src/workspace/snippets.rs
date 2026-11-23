@@ -13,6 +13,8 @@ use crate::app::{RunSnippet, StopCommandGroup};
 use crate::i18n::{t, tn};
 use crate::shared::confirm_delete;
 use crate::snippets::{CategoryDialog, SnippetDialog, open_category_dialog, open_snippet_dialog};
+use crate::terminal::{CommandGroupStatus, TerminalView};
+use gpui_kit::component::{WindowExt as _, notification::Notification};
 
 use super::workspace_view::Workspace;
 
@@ -75,25 +77,18 @@ impl Workspace {
         let Some(view) = terminal.view.upgrade() else {
             return;
         };
-        if let Err(error) = view.update(cx, |view, cx| {
-            view.start_command_group(snippet.name.to_string(), steps, cx)
-        }) {
-            use gpui_kit::component::{WindowExt as _, notification::Notification};
-            window.push_notification(Notification::error(error), cx);
-        }
+        start_command_group_or_replace(view, snippet.name.to_string(), steps, window, cx);
     }
 
     pub(super) fn on_stop_command_group(
         &mut self,
-        _: &StopCommandGroup,
+        action: &StopCommandGroup,
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Some(view) = self
-            .tool_terminal(cx)
-            .and_then(|terminal| terminal.view.upgrade())
-        {
-            view.update(cx, |view, cx| view.stop_command_group(cx));
+        if let Some(panel) = self.terminals.get(&action.0) {
+            let terminal = panel.read(cx).terminal().clone();
+            terminal.update(cx, |view, cx| view.stop_command_group(cx));
         }
     }
 
@@ -130,14 +125,17 @@ impl Workspace {
         let Some(view) = focused else {
             return;
         };
-        if let Err(error) = view.update(cx, |view, cx| {
-            if let Some(steps) = &snippet.steps {
-                view.start_command_group(snippet.name.to_string(), steps.clone(), cx)
-            } else {
-                view.enter_command(&snippet.command, shortcut.runs(), false, cx)
-            }
+        if let Some(steps) = &snippet.steps {
+            start_command_group_or_replace(
+                view,
+                snippet.name.to_string(),
+                steps.clone(),
+                window,
+                cx,
+            );
+        } else if let Err(error) = view.update(cx, |view, cx| {
+            view.enter_command(&snippet.command, shortcut.runs(), false, cx)
         }) {
-            use gpui_kit::component::{WindowExt as _, notification::Notification};
             let message = if shortcut.runs() {
                 t!("tools.command.run_failed", error = error)
             } else {
@@ -329,5 +327,49 @@ impl Workspace {
         let id = action.0;
         self.tools
             .update(cx, |tools, cx| tools.toggle_snippet_category(id, cx));
+    }
+}
+
+fn start_command_group_or_replace(
+    view: Entity<TerminalView>,
+    name: String,
+    steps: Vec<crate::host::SnippetStep>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let status = view.read(cx).command_group_status(cx);
+    if let CommandGroupStatus::Running { name: current, .. } = &status {
+        if current == &name {
+            return;
+        }
+        let current = current.clone();
+        let progress = status.message().unwrap_or_default();
+        let title = t!(
+            "snippets.group.replace_title",
+            current = current,
+            next = name.clone()
+        );
+        let description = Some(t!("snippets.group.replace_description", current = progress));
+        let on_ok = Rc::new(move |window: &mut Window, cx: &mut App| {
+            let result = view.update(cx, |view, cx| {
+                view.stop_command_group(cx);
+                view.start_command_group(name.clone(), steps.clone(), cx)
+            });
+            if let Err(error) = result {
+                window.push_notification(Notification::error(error), cx);
+            }
+        });
+        crate::shared::confirm_danger(
+            title,
+            description,
+            t!("snippets.group.replace_action"),
+            on_ok,
+            window,
+            cx,
+        );
+        return;
+    }
+    if let Err(error) = view.update(cx, |view, cx| view.start_command_group(name, steps, cx)) {
+        window.push_notification(Notification::error(error), cx);
     }
 }

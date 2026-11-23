@@ -19,7 +19,8 @@ use crate::app::{
     CatalogIcon, CenterTab, ClearTerminalLog, CloseTerminal, CopyHostAddress, CopyHostId,
     DeleteTerminalLog, DisconnectTerminal, DuplicateTerminal, EditHost, ManageSerialDebug,
     OpenExplorer, ReconnectTerminal, RenameTerminal, SendBreak, SendSerialHex,
-    SerialBackspaceChoice, SetSerialBackspace, ToggleSerialReceiveHex, ToggleSerialSendHex,
+    SerialBackspaceChoice, SetSerialBackspace, StopCommandGroup, ToggleSerialReceiveHex,
+    ToggleSerialSendHex,
 };
 use crate::connection::{ConnectionPrompt, ConnectionPromptReply};
 use crate::host::{ConnectionState, Host, HostConnection, HostId, HostOs, HostStore, ProtocolKind};
@@ -1148,10 +1149,53 @@ impl Render for TerminalPanel {
             .unwrap_or_default();
         let dispatch = self.focus_handle(cx);
         let id = self.id;
+        let command_group = self
+            .terminal
+            .read(cx)
+            .command_group_status(cx)
+            .active_message();
         v_flex()
             .id(("terminal-pane", id.0))
             .test_support()
             .size_full()
+            .when_some(command_group, |view, message| {
+                let retry = dispatch.clone();
+                view.child(
+                    h_flex()
+                        .id(("terminal-command-group", id.0))
+                        .test_support()
+                        .flex_shrink_0()
+                        .justify_between()
+                        .gap_2()
+                        .px_3()
+                        .py_1()
+                        .border_b_1()
+                        .border_color(cx.theme().border)
+                        .bg(cx.theme().tokens.group_box)
+                        .child(
+                            div()
+                                .id(("terminal-command-group-status", id.0))
+                                .test_support()
+                                .role(Role::Status)
+                                .aria_label(message.clone())
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .text_sm()
+                                .child(message),
+                        )
+                        .child(
+                            Button::new(("terminal-command-group-stop", id.0))
+                                .xsmall()
+                                .outline()
+                                .label(t!("snippets.group.stop"))
+                                .tooltip(t!("snippets.group.stop_hint"))
+                                .on_click(move |_, window, cx| {
+                                    retry.dispatch_action(&StopCommandGroup(id), window, cx)
+                                }),
+                        ),
+                )
+            })
             .when(serial && self.is_serial_debug_available(cx), |view| {
                 let status = self
                     .serial_debug

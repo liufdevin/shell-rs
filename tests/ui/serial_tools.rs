@@ -1,5 +1,5 @@
 use crate::support::*;
-use shellrs::host::SerialSettings;
+use shellrs::host::{SerialSettings, SnippetDraft, SnippetStep, SnippetWait};
 use shellrs::serial::{SerialToolCommand, SerialToolPage};
 
 struct AssistantPorts;
@@ -302,6 +302,150 @@ async fn snippet_command_groups_are_edited_and_sent_in_order(cx: &mut TestAppCon
     factory.output(b"\r\nUser ID:");
     cx.run_until_parked();
     assert_eq!(factory.writes.lock().unwrap().len(), 2);
+}
+
+#[gpui_kit::test]
+async fn command_group_running_strip_and_replace_confirmation_cover_clicks_and_shortcuts(
+    cx: &mut TestAppContext,
+) {
+    let mut store = HostStore::empty();
+    let host = store.insert_unnotified(HostDraft::serial(
+        "console",
+        "TEST-NOT-A-PORT",
+        SerialSettings::default(),
+        None,
+    ));
+    store.insert_snippet_unnotified(
+        SnippetDraft::new("login", "", None)
+            .with_steps(vec![SnippetStep::new(
+                "operator",
+                SnippetWait::Prompt {
+                    text: "login:".into(),
+                    timeout_ms: 60_000,
+                },
+                true,
+            )])
+            .unwrap(),
+    );
+    store.insert_snippet_unnotified(
+        SnippetDraft::new("next", "", None)
+            .with_steps(vec![SnippetStep::new(
+                "next-command",
+                SnippetWait::Immediate,
+                true,
+            )])
+            .unwrap(),
+    );
+    let next_public_id = store
+        .snippets()
+        .iter()
+        .find(|snippet| snippet.name == "next")
+        .unwrap()
+        .sync_id
+        .to_string();
+    let factory = Arc::new(SerialToolFactory::default());
+    let (handle, workspace) = open_workspace_with_terminals(
+        cx,
+        store,
+        Arc::new(FakeTerminalFactory::default()),
+        Arc::new(FixedSerialTerminalTransportProvider::new(factory.clone())),
+    );
+    connect(cx, handle, host, "console").await;
+    cx.update(|cx| {
+        let settings = workspace.read(cx).settings().clone();
+        settings.update(cx, |store, cx| {
+            store.update(
+                |settings| {
+                    settings.snippet_shortcuts.set(
+                        next_public_id.clone(),
+                        Some(shellrs::app::SnippetShortcut::new("ctrl-2".into(), true)),
+                    )
+                },
+                cx,
+            )
+        });
+    });
+
+    in_frame(cx, handle, |window, cx| window.click("tool-snippets", cx));
+    in_frame(cx, handle, |window, cx| {
+        window.click(("snippet-run", 1_u64), cx)
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window
+            .try_find(("terminal-command-group-status", 1_u64))
+            .is_some_and(|status| {
+                status
+                    .label()
+                    .is_some_and(|label| label.contains("login") && label.contains("login:"))
+            })
+    })
+    .await;
+
+    // The strip belongs to the terminal, not the currently selected tool.
+    in_frame(cx, handle, |window, cx| window.click("tool-utilities", cx));
+    in_frame(cx, handle, |window, _| {
+        assert!(window.find(("terminal-command-group", 1_u64)).visible());
+        assert!(
+            window
+                .find(("terminal-command-group-stop", 1_u64))
+                .visible()
+        );
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.click(("terminal-command-group-stop", 1_u64), cx)
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window.try_find(("terminal-command-group", 1_u64)).is_none()
+    })
+    .await;
+
+    in_frame(cx, handle, |window, cx| {
+        window.click("tool-snippets", cx);
+        window.click(("snippet-run", 1_u64), cx);
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window.try_find(("terminal-command-group", 1_u64)).is_some()
+    })
+    .await;
+
+    // Clicking another group asks first; cancelling keeps the current group.
+    in_frame(cx, handle, |window, cx| {
+        window.click(("snippet-run", 2_u64), cx)
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window
+            .try_find("ok")
+            .is_some_and(|button| button.label() == Some("停止并运行"))
+    })
+    .await;
+    in_frame(cx, handle, |window, cx| window.click("cancel", cx));
+    cx.run_until_parked();
+    in_frame(cx, handle, |window, _| {
+        assert!(window.try_find("ok").is_none());
+        assert!(window.find(("terminal-command-group", 1_u64)).visible());
+    });
+    assert!(factory.writes.lock().unwrap().is_empty());
+
+    // A shortcut takes the same confirmation path.
+    in_frame(cx, handle, |window, cx| {
+        window.click(("terminal", 1_u64), cx);
+        window.dispatch_action(
+            Box::new(shellrs::app::InsertSnippet(next_public_id.clone())),
+            cx,
+        );
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window
+            .try_find("ok")
+            .is_some_and(|button| button.label() == Some("停止并运行"))
+    })
+    .await;
+    in_frame(cx, handle, |window, cx| window.click("ok", cx));
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window.try_find(("terminal-command-group", 1_u64)).is_none()
+            && factory.writes.lock().unwrap().as_slice() == [b"next-command\r".to_vec()]
+    })
+    .await;
 }
 
 #[gpui_kit::test]
@@ -628,7 +772,12 @@ async fn serial_assistant_saves_groups_runs_in_order_and_stops_when_hidden(
         factory.writes.lock().unwrap().len() == 3
     })
     .await;
-    in_frame(cx, handle, |window, cx| window.click("open-settings", cx));
+    in_frame(cx, handle, |window, cx| {
+        window.click("serial-assistant-edit-groups", cx)
+    });
+    // Dock activation changes are deferred. Let the serial assistant see
+    // that it is hidden before advancing past its pending command delay.
+    cx.run_until_parked();
     cx.executor().advance_clock(Duration::from_secs(21));
     cx.run_until_parked();
     assert_eq!(factory.writes.lock().unwrap().len(), 3);

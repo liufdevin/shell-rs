@@ -333,6 +333,10 @@ impl SerialAssistantPanel {
         &self.tools
     }
 
+    pub(crate) fn stop_sending(&self, cx: &mut Context<Self>) {
+        self.tools.update(cx, |tools, cx| tools.stop_sending(cx));
+    }
+
     pub(crate) fn load_command(
         &mut self,
         id: u64,

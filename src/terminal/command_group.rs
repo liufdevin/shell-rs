@@ -32,6 +32,50 @@ impl CommandGroupStatus {
     pub(crate) fn is_active(&self) -> bool {
         matches!(self, Self::Running { .. })
     }
+
+    pub(crate) fn message(&self) -> Option<gpui_kit::SharedString> {
+        match self {
+            Self::Idle => None,
+            Self::Running {
+                name,
+                step,
+                total,
+                wait,
+            } => {
+                let wait = match wait {
+                    SnippetWait::Immediate => crate::i18n::t!("snippets.group.sending"),
+                    SnippetWait::Delay { milliseconds } => crate::i18n::t!(
+                        "snippets.group.waiting_seconds",
+                        seconds = f64::from(*milliseconds) / 1000.
+                    ),
+                    SnippetWait::Prompt { text, .. } => {
+                        crate::i18n::t!("snippets.group.waiting_prompt", text = text)
+                    }
+                };
+                Some(crate::i18n::t!(
+                    "snippets.group.progress",
+                    name = name,
+                    step = step,
+                    total = total,
+                    wait = wait
+                ))
+            }
+            Self::Sent => Some(crate::i18n::t!("snippets.group.sent")),
+            Self::Stopped => Some(crate::i18n::t!("snippets.group.stopped")),
+            Self::TimedOut { step } => {
+                Some(crate::i18n::t!("snippets.group.timed_out", step = step))
+            }
+            Self::Unavailable => Some(crate::i18n::t!("snippets.group.unavailable")),
+        }
+    }
+
+    pub(crate) fn active_message(&self) -> Option<gpui_kit::SharedString> {
+        if self.is_active() {
+            self.message()
+        } else {
+            None
+        }
+    }
 }
 
 struct Step {

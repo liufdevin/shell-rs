@@ -60,6 +60,7 @@ pub(super) struct TerminalPresentation {
     latency: Option<Latency>,
     recording: Option<PathBuf>,
     modes: super::SerialDataModes,
+    command_group: super::CommandGroupStatus,
 }
 
 /// How long typing in the find bar pauses before the scrollback is searched.
@@ -1101,6 +1102,7 @@ impl TerminalView {
             latency: self.latency(cx),
             recording: self.recording_path(cx),
             modes: self.serial_modes(cx),
+            command_group: self.command_group_status(cx),
         }
     }
 

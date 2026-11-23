@@ -215,6 +215,18 @@ snippets.group.progress:
 snippets.group.stop:
   zh-CN: 停止命令组
   en: Stop command group
+snippets.group.stop_hint:
+  zh-CN: 停止发送后续步骤；已经发送的数据不会撤回
+  en: Stop sending the remaining steps; data already sent stays sent
+snippets.group.replace_title:
+  zh-CN: 停止“%{current}”并运行“%{next}”？
+  en: Stop “%{current}” and run “%{next}”?
+snippets.group.replace_description:
+  zh-CN: "%{current}。停止后不会发送剩余步骤；已发送的数据不会撤回。"
+  en: "%{current}. Stopping prevents the remaining steps from being sent; data already sent stays sent."
+snippets.group.replace_action:
+  zh-CN: 停止并运行
+  en: Stop and run
 snippets.group.sent:
   zh-CN: 全部步骤已发送
   en: All steps sent

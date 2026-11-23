@@ -2313,6 +2313,9 @@ impl Workspace {
     /// Open the settings tab, or bring the open one forward: settings are
     /// one place, not one tab per visit.
     fn on_open_settings(&mut self, _: &OpenSettings, window: &mut Window, cx: &mut Context<Self>) {
+        // A pending serial-assistant delay must not send once Settings is
+        // opened. Dock activation is deferred, so stop at the user's intent.
+        self.stop_serial_assistant_sending(cx);
         if self.show_detached_tab(CenterTab::Settings, window, cx) {
             return;
         }
@@ -2514,6 +2517,12 @@ impl Workspace {
                 window.focus(&editor.read(cx).focus_handle(cx), cx);
             }
             panel.update(cx, |panel, cx| panel.command(&action.0, window, cx));
+        }
+    }
+
+    pub(super) fn stop_serial_assistant_sending(&self, cx: &mut Context<Self>) {
+        if let Some(assistant) = &self.serial_assistant_tab {
+            assistant.update(cx, |assistant, cx| assistant.stop_sending(cx));
         }
     }
 
