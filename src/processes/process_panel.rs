@@ -225,7 +225,7 @@ impl ProcessPanel {
             Some(Err(error)) => {
                 host.problem = Some(Problem::Failed(error));
                 host.tracker = Tracker::default();
-                return INTERVAL;
+                return RETRY;
             }
             Some(Ok(output)) => output,
         };
@@ -479,7 +479,10 @@ fn render_problem(problem: &Problem, cx: &App) -> impl IntoElement {
             t!("processes.panel.unsupported"),
             cx.theme().muted_foreground,
         ),
-        Problem::Failed(error) => (t!("tools.read_failed", error = error), cx.theme().danger),
+        Problem::Failed(error) => (
+            t!("tools.read_failed_retry", error = error),
+            cx.theme().danger,
+        ),
     };
     div()
         .id("processes-message")

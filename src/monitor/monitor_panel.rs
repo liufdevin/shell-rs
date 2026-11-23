@@ -159,6 +159,11 @@ impl Default for SerialRoute {
 }
 
 impl MonitorPanel {
+    pub(crate) fn refresh(&mut self, cx: &mut Context<Self>) {
+        self.restart(cx);
+        cx.notify();
+    }
+
     pub fn new(dispatch: FocusHandle, store: Entity<HostStore>, _: &mut Context<Self>) -> Self {
         Self {
             store,
@@ -869,7 +874,10 @@ fn render_problem(problem: &Problem, cx: &App) -> impl IntoElement {
         Problem::Unsupported(None) => {
             (t!("monitor.panel.unsupported"), cx.theme().muted_foreground)
         }
-        Problem::Failed(error) => (t!("tools.read_failed", error = error), cx.theme().danger),
+        Problem::Failed(error) => (
+            t!("tools.read_failed_retry", error = error),
+            cx.theme().danger,
+        ),
     };
     div()
         .id("monitor-message")

@@ -9,26 +9,44 @@ monitor.route.choose_adb:
   zh-CN: 选择 ADB 设备…
   en: Choose ADB device…
 monitor.route.shared_help:
-  zh-CN: 文件、监控、系统服务、进程和网络工具共用当前连接的通道。首次自动检测最多两轮；已选中的 ADB 设备断开或重启后，工具读取会每隔约 2 秒尝试恢复原设备的通道。也可在这里重新检测或切换。
-  en: Files, monitoring, services, processes and network tools share this connection's channel. Initial discovery stops after two attempts. After the selected ADB device disconnects or restarts, tool reads retry that device about every 2 seconds. You can also detect again or switch here.
+  zh-CN: 文件、监控、系统服务、进程和网络工具共用当前连接的通道。自动检测和已选中的 ADB 设备恢复失败后会持续重试，间隔从 2 秒逐步延长到最多 30 秒。工具重新显示或串口重连时会立即再试；也可在这里重新检测或切换。
+  en: Files, monitoring, services, processes and network tools share this connection's channel. Failed detection and selected-ADB recovery retry continuously, backing off from 2 to 30 seconds. Showing a tool again or reconnecting the serial line retries immediately. You can also detect again or switch here.
 monitor.route.adb_reconnecting:
   zh-CN: ADB 设备暂时离线，正在自动尝试恢复连接…
   en: ADB device temporarily offline. Retrying automatically…
+monitor.route.retry_in:
+  zh-CN: 将在 %{seconds} 秒后自动重试
+  en: Retrying in %{seconds} seconds
+monitor.route.retry_manual:
+  zh-CN: 立即重试
+  en: Retry now
+monitor.route.adb_recovering:
+  zh-CN: "ADB 设备暂时离线，正在恢复原设备；%{retry}"
+  en: "The selected ADB device is temporarily offline; %{retry}"
+monitor.route.detection_failed:
+  zh-CN: "尚未找到可用的 SSH 或 ADB 通道；%{retry}"
+  en: "No usable SSH or ADB channel yet; %{retry}"
+monitor.route.discovery_detail:
+  zh-CN: "SSH：%{ssh}\nADB：%{adb}"
+  en: "SSH: %{ssh}\nADB: %{adb}"
+monitor.route.retrying:
+  zh-CN: 读取失败，正在自动重试；%{retry}
+  en: "Read failed; retrying automatically. %{retry}"
 monitor.route.detecting:
   zh-CN: 正在检测可用通道…
   en: Detecting an available channel…
 monitor.route.not_selected:
-  zh-CN: 尚未匹配服务通道，请重新检测或选择 ADB 设备
-  en: No service channel matched. Detect again or choose an ADB device.
+  zh-CN: 尚未匹配服务通道，正在准备重新检测
+  en: No service channel matched; preparing to detect again.
 monitor.route.connection_lost:
-  zh-CN: 服务通道已断开，请在实用工具中重新检测
-  en: Service channel disconnected. Detect again in Utilities.
+  zh-CN: 服务通道暂时断开，正在自动尝试恢复连接
+  en: Service channel temporarily disconnected. Retrying automatically.
 monitor.route.queue_busy:
   zh-CN: 服务通道正在处理其他请求，请稍后刷新
   en: The service channel is busy. Refresh shortly.
 monitor.route.timed_out:
-  zh-CN: 服务通道响应超时，请在实用工具中重新检测
-  en: Service channel timed out. Detect again in Utilities.
+  zh-CN: 服务通道响应超时，正在自动重试
+  en: The service channel timed out; retrying automatically.
 monitor.status.cpu:
   zh-CN: CPU
   en: CPU

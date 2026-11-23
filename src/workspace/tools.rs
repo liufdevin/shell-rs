@@ -83,6 +83,16 @@ pub(super) struct LogSplit {
 }
 
 impl Workspace {
+    pub(super) fn on_retry_serial_tools(
+        &mut self,
+        _: &crate::app::RetrySerialTools,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.tools
+            .update(cx, |tools, cx| tools.retry_serial_tools(cx));
+    }
+
     pub(super) fn log_split_measure(&self, cx: &Context<Self>) -> Option<AnyElement> {
         let previous = self.log_split?;
         let workspace = cx.weak_entity();

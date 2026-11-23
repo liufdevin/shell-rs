@@ -439,6 +439,8 @@ struct IndependentMonitor {
     samples: Arc<AtomicUsize>,
     failed: Arc<std::sync::atomic::AtomicBool>,
     discoveries: AtomicUsize,
+    discovery_failures: AtomicUsize,
+    expected_channel: shellrs::host::MonitorChannel,
     ssh: bool,
     recoverable_adb: bool,
     recoveries: AtomicUsize,
@@ -510,9 +512,16 @@ impl shellrs::monitor::MonitorConnector for IndependentMonitor {
         _: &[(String, HostLogin)],
         _: &std::sync::atomic::AtomicBool,
     ) -> Result<Option<Box<dyn shellrs::monitor::MonitorLink>>, String> {
-        assert!(identity.contains("@@boot_id"));
-        assert_eq!(settings.channel, shellrs::host::MonitorChannel::Auto);
-        self.discoveries.fetch_add(1, Ordering::SeqCst);
+        if !identity.contains("@@boot_id") {
+            return Err("serial identity unavailable".into());
+        }
+        assert_eq!(settings.channel, self.expected_channel);
+        let attempt = self.discoveries.fetch_add(1, Ordering::SeqCst);
+        if attempt < self.discovery_failures.load(Ordering::Acquire)
+            || self.failed.load(Ordering::Acquire)
+        {
+            return Err("ADB offline during discovery".into());
+        }
         Ok(Some(Box::new(IndependentLink {
             commands: self.commands.clone(),
             samples: self.samples.clone(),
@@ -550,8 +559,17 @@ async fn serial_monitor(
     line: Arc<FakeTerminalFactory>,
     connector: Option<Arc<dyn shellrs::monitor::MonitorConnector>>,
 ) -> (WindowHandle<Root>, Entity<Workspace>) {
+    serial_monitor_with_channel(cx, line, connector, shellrs::host::MonitorChannel::Auto).await
+}
+
+async fn serial_monitor_with_channel(
+    cx: &mut TestAppContext,
+    line: Arc<FakeTerminalFactory>,
+    connector: Option<Arc<dyn shellrs::monitor::MonitorConnector>>,
+    channel: shellrs::host::MonitorChannel,
+) -> (WindowHandle<Root>, Entity<Workspace>) {
     let mut store = HostStore::empty();
-    let id = store.insert_unnotified(HostDraft::serial(
+    let mut draft = HostDraft::serial(
         "console",
         "COM3",
         shellrs::host::SerialSettings {
@@ -559,7 +577,9 @@ async fn serial_monitor(
             ..Default::default()
         },
         None,
-    ));
+    );
+    draft.monitor.channel = channel;
+    let id = store.insert_unnotified(draft);
     let (handle, workspace) = open_workspace_with_terminals(
         cx,
         store,
@@ -681,7 +701,9 @@ async fn independent_adb_monitor_never_competes_with_busy_serial_and_falls_back_
         window.try_find("monitor-paused").is_none()
     })
     .await;
-    assert_eq!(connector.discoveries.load(Ordering::SeqCst), 1);
+    // If wall time has reached the backoff, automatic discovery may already
+    // have retried. It still never sends monitor hardware reads to serial.
+    assert!(connector.discoveries.load(Ordering::SeqCst) >= 1);
     assert!(
         line.exec_commands()
             .iter()
@@ -792,7 +814,11 @@ async fn adb_tools_resume_after_reboot_without_refresh_or_channel_redetection(
     ] {
         let before = connector.recoveries.load(Ordering::SeqCst);
         connector.failed.store(true, Ordering::Release);
-        in_frame(cx, handle, |window, cx| window.click(tool, cx));
+        // The helper already opened Monitor. Clicking its active switch
+        // would hide the sidebar instead of testing offline recovery.
+        if tool != "tool-monitor" {
+            in_frame(cx, handle, |window, cx| window.click(tool, cx));
+        }
         cx.wait_for(handle.into(), Duration::from_secs(8), |window, cx| {
             window.render_frame(cx);
             window.try_find(message).is_some_and(|element| {
@@ -819,6 +845,127 @@ async fn adb_tools_resume_after_reboot_without_refresh_or_channel_redetection(
     }
     assert_eq!(connector.discoveries.load(Ordering::SeqCst), 1);
     assert_eq!(line.exec_count(), 1);
+}
+
+#[gpui_kit::test]
+async fn serial_service_discovery_retries_past_two_failures_with_visible_feedback(
+    cx: &mut TestAppContext,
+) {
+    let identity = "@@boot_id\n00000000-0000-4000-8000-000000000001\n@@user\nroot\n";
+    let line = Arc::new(FakeTerminalFactory::answering(&[identity]));
+    let connector = Arc::new(IndependentMonitor {
+        recoverable_adb: true,
+        discovery_failures: AtomicUsize::new(2),
+        expected_channel: shellrs::host::MonitorChannel::Adb,
+        ..Default::default()
+    });
+    let (handle, _workspace) = serial_monitor_with_channel(
+        cx,
+        line,
+        Some(connector.clone()),
+        shellrs::host::MonitorChannel::Adb,
+    )
+    .await;
+    in_frame(cx, handle, |window, cx| window.click("tool-services", cx));
+    cx.wait_for(handle.into(), Duration::from_secs(5), |window, cx| {
+        window.render_frame(cx);
+        window
+            .try_find("serial-tool-retry-status")
+            .is_some_and(|element| {
+                element
+                    .label()
+                    .is_some_and(|label| label.contains("自动重试"))
+            })
+    })
+    .await;
+    in_frame(cx, handle, |window, _| {
+        assert!(window.find("serial-tool-retry-now").visible());
+        assert_eq!(
+            window.find("serial-tool-retry-detail").label(),
+            Some("ADB offline during discovery")
+        );
+    });
+    // GPUI's test clock is accelerated; the worker's backoff uses wall time.
+    // Keep the same tool visible throughout both automatic retries.
+    for _ in 0..2 {
+        std::thread::sleep(Duration::from_secs(4));
+        cx.executor().advance_clock(Duration::from_secs(3));
+        cx.run_until_parked();
+    }
+    cx.wait_for(handle.into(), Duration::from_secs(8), |window, cx| {
+        window.render_frame(cx);
+        window.try_find("services-summary").is_some()
+            && window.try_find("serial-tool-retry").is_none()
+    })
+    .await;
+    assert!(connector.discoveries.load(Ordering::SeqCst) >= 3);
+}
+
+#[gpui_kit::test]
+async fn serial_tools_retry_now_and_show_again_bypass_backoff(cx: &mut TestAppContext) {
+    let identity = "@@boot_id\n00000000-0000-4000-8000-000000000001\n@@user\nroot\n";
+    let line = Arc::new(FakeTerminalFactory::answering(&[identity]));
+    let connector = Arc::new(IndependentMonitor {
+        recoverable_adb: true,
+        ..Default::default()
+    });
+    let (handle, _workspace) = serial_monitor(cx, line.clone(), Some(connector.clone())).await;
+    wait_for_label(cx, handle, "monitor-host", "web-01-vm").await;
+    in_frame(cx, handle, |window, cx| window.click("tool-services", cx));
+    wait_for_label(cx, handle, "services-summary", "systemd 249 · 运行正常").await;
+
+    for manual in [true, false] {
+        connector.failed.store(true, Ordering::Release);
+        // Refresh starts a new read without discarding the old table.
+        in_frame(cx, handle, |window, cx| {
+            window.dispatch_action(Box::new(shellrs::app::RefreshServices), cx)
+        });
+        cx.wait_for(handle.into(), Duration::from_secs(5), |window, cx| {
+            window.render_frame(cx);
+            window.try_find("serial-tool-retry-now").is_some()
+        })
+        .await;
+        in_frame(cx, handle, |window, _| {
+            assert!(window.find("services-summary").visible());
+        });
+        connector.failed.store(false, Ordering::Release);
+        if manual {
+            in_frame(cx, handle, |window, cx| {
+                window.click("serial-tool-retry-now", cx)
+            });
+        } else {
+            in_frame(cx, handle, |window, cx| window.click("tool-snippets", cx));
+            in_frame(cx, handle, |window, cx| window.click("tool-services", cx));
+        }
+        cx.wait_for(handle.into(), Duration::from_secs(5), |window, cx| {
+            window.render_frame(cx);
+            window.try_find("serial-tool-retry").is_none()
+                && window.try_find("services-message").is_none()
+                && window.try_find("services-summary").is_some()
+        })
+        .await;
+    }
+    assert_eq!(connector.discoveries.load(Ordering::SeqCst), 1);
+    assert_eq!(line.exec_count(), 1);
+    assert!(connector.recoveries.load(Ordering::SeqCst) >= 2);
+
+    // A successful, idle service list must also reload on serial reconnect,
+    // even though its ExecTarget (the terminal id/view) did not change.
+    let before = connector.discoveries.load(Ordering::SeqCst);
+    in_frame(cx, handle, |window, cx| {
+        window.dispatch_action(
+            Box::new(shellrs::app::ReconnectTerminal(RemoteTerminalId(1))),
+            cx,
+        )
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(8), |window, cx| {
+        window.render_frame(cx);
+        line.starts() >= 2
+            && connector.discoveries.load(Ordering::SeqCst) > before
+            && window.try_find("services-summary").is_some()
+            && window.try_find("services-message").is_none()
+    })
+    .await;
 }
 
 #[gpui_kit::test]

@@ -1174,7 +1174,9 @@ impl TerminalView {
         cx: &mut Context<Self>,
     ) {
         let changed = self.serial_service_config.as_ref().is_none_or(|current| {
-            current.settings != settings || !std::sync::Arc::ptr_eq(&current.connector, &connector)
+            current.settings != settings
+                || current.candidates != candidates
+                || !std::sync::Arc::ptr_eq(&current.connector, &connector)
         });
         self.serial_service_config = Some(SerialServiceConfig {
             connector,
@@ -1257,6 +1259,32 @@ impl TerminalView {
             .map(|(_, service)| service.status().label)
             .filter(|label| !label.is_empty())
             .unwrap_or_else(|| t!("monitor.route.not_selected").to_string())
+    }
+
+    pub(crate) fn serial_service_problem(&self, cx: &App) -> Option<(String, String)> {
+        self.serial_services
+            .borrow()
+            .as_ref()
+            .filter(|(on, _)| *on == self.generation(cx))?
+            .1
+            .status()
+            .problem()
+    }
+
+    pub(crate) fn retry_serial_services(&self, cx: &App) {
+        if let Some(service) = self.shared_serial_services(cx) {
+            let failed = service.status().problem().is_some();
+            service.retry_now();
+            if failed {
+                // Some tools stop polling after loading. Wake recovery with a
+                // harmless read as well as clearing the delay.
+                let _ = service.execute_with_serial(
+                    self.serial_service_sender(cx),
+                    ":".to_string(),
+                    None,
+                );
+            }
+        }
     }
 
     pub(crate) fn serial_service_link(

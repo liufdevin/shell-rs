@@ -41,6 +41,9 @@ tools.reading:
 tools.read_failed:
   zh-CN: 读取失败：%{error}
   en: "Couldn’t load: %{error}"
+tools.read_failed_retry:
+  zh-CN: "读取失败：%{error}\n正在自动重试，恢复后会自动更新。"
+  en: "Couldn’t load: %{error}\nRetrying automatically. This view will update when it recovers."
 tools.not_connected:
   zh-CN: 终端没有连接
   en: The terminal isn’t connected

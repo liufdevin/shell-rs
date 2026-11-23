@@ -131,17 +131,26 @@ impl MonitorConnector for SystemMonitorConnector {
             return Ok(None);
         }
         if matches!(settings.channel, MonitorChannel::Auto | MonitorChannel::Adb) {
-            if let Some(device) = select_adb(
-                self.adb.detect(boot.as_deref()),
-                boot.as_deref(),
-                &settings.adb_serial,
-            ) && device.monitor_command(":", cancel).is_ok()
-            {
-                return Ok(Some(Box::new(device)));
-            }
+            let detection = self.adb.detect(boot.as_deref());
+            let adb_problem = match detection {
+                AdbDetection::Unavailable(reason) if !reason.is_empty() => reason,
+                detection => match select_adb(detection, boot.as_deref(), &settings.adb_serial) {
+                    Some(device) => match device.monitor_command(":", cancel) {
+                        Ok(_) => return Ok(Some(Box::new(device))),
+                        Err(error) => error.to_string(),
+                    },
+                    None => t!("monitor.route.adb_unmatched").to_string(),
+                },
+            };
             if settings.channel == MonitorChannel::Adb {
-                return Err(t!("monitor.route.adb_unmatched").to_string());
+                return Err(adb_problem);
             }
+            return Err(t!(
+                "monitor.route.discovery_detail",
+                ssh = problem.unwrap_or_else(|| t!("monitor.route.ssh_unavailable").to_string()),
+                adb = adb_problem,
+            )
+            .to_string());
         }
         Ok(None)
     }
@@ -250,6 +259,33 @@ mod tests {
     use std::sync::atomic::AtomicUsize;
     const FIRST: &str = "00000000-0000-4000-8000-000000000001";
     const SECOND: &str = "00000000-0000-4000-8000-000000000002";
+
+    #[test]
+    fn detection_preserves_adb_errors_and_explains_both_auto_channels() {
+        struct MissingAdb;
+        impl AdbDetector for MissingAdb {
+            fn detect(&self, _: Option<&str>) -> AdbDetection {
+                AdbDetection::Unavailable("ADB device unauthorized".into())
+            }
+        }
+        let connector = SystemMonitorConnector::new(Arc::new(MissingAdb), None);
+        let cancel = AtomicBool::new(false);
+        let mut settings = MonitorSettings::default();
+        let error = connector
+            .connect("", &settings, &[], &cancel)
+            .err()
+            .unwrap();
+        assert!(error.contains("SSH"));
+        assert!(error.contains("ADB device unauthorized"));
+        settings.channel = MonitorChannel::Adb;
+        assert_eq!(
+            connector
+                .connect("", &settings, &[], &cancel)
+                .err()
+                .unwrap(),
+            "ADB device unauthorized"
+        );
+    }
 
     fn devices() -> AdbDetection {
         AdbDetection::Choose(vec![

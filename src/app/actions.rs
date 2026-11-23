@@ -106,6 +106,8 @@ gpui_kit::actions!(
         RefreshProcesses,
         /// Read the services of the SSH terminal's host again.
         RefreshServices,
+        /// Retry the serial tools' selected channel immediately.
+        RetrySerialTools,
         /// Read the Docker of the SSH terminal's host again.
         RefreshDocker,
         /// Read the bash history of the SSH terminal's host again.

@@ -13,8 +13,8 @@ use crate::{
     terminal::{ExecRequest, ExecResult, TerminalTransportCommand},
 };
 
-const MAX_ATTEMPTS: u8 = 2;
-const ADB_RETRY: Duration = Duration::from_secs(2);
+const RETRY: Duration = Duration::from_secs(2);
+const MAX_RETRY: Duration = Duration::from_secs(30);
 #[cfg(test)]
 #[path = "serial_route_tests.rs"]
 mod tests;
@@ -22,7 +22,57 @@ type RawSender = mpsc::Sender<TerminalTransportCommand>;
 
 struct AdbRecovery {
     device: AdbConnection,
-    retry_at: Instant,
+}
+
+struct RetrySchedule {
+    initial: Duration,
+    delay: Duration,
+    at: Option<Instant>,
+}
+
+impl RetrySchedule {
+    fn new(initial: Duration) -> Self {
+        Self {
+            initial,
+            delay: initial,
+            at: None,
+        }
+    }
+
+    fn is_due(&self) -> bool {
+        self.at.is_none_or(|at| Instant::now() >= at)
+    }
+
+    fn failed(&mut self) -> Instant {
+        let at = Instant::now() + self.delay;
+        self.at = Some(at);
+        self.delay = self.delay.saturating_mul(2).min(MAX_RETRY);
+        at
+    }
+
+    fn reset(&mut self) {
+        self.delay = self.initial;
+        self.at = None;
+    }
+}
+
+#[derive(Clone)]
+struct PendingRetry {
+    at: Instant,
+    kind: &'static str,
+    detail: String,
+}
+
+impl PendingRetry {
+    fn message(&self) -> String {
+        let seconds = self
+            .at
+            .saturating_duration_since(Instant::now())
+            .as_secs_f64()
+            .ceil() as u64;
+        let retry = t!("monitor.route.retry_in", seconds = seconds);
+        t!(self.kind, retry = retry).to_string()
+    }
 }
 
 #[derive(Clone, Default)]
@@ -30,6 +80,15 @@ pub(crate) struct RouteStatus {
     pub label: String,
     pub adb: Option<AdbConnection>,
     pub ssh: Option<HostLogin>,
+    retry: Option<PendingRetry>,
+}
+
+impl RouteStatus {
+    pub(crate) fn problem(&self) -> Option<(String, String)> {
+        self.retry
+            .as_ref()
+            .map(|retry| (retry.message(), retry.detail.clone()))
+    }
 }
 
 enum Job {
@@ -46,6 +105,7 @@ enum Job {
         id: String,
         login: Box<HostLogin>,
     },
+    Retry,
 }
 
 pub(crate) struct SerialServices {
@@ -60,7 +120,7 @@ impl SerialServices {
         settings: MonitorSettings,
         candidates: Vec<(String, HostLogin)>,
     ) -> Arc<Self> {
-        Self::with_retry_interval(connector, settings, candidates, ADB_RETRY)
+        Self::with_retry_interval(connector, settings, candidates, RETRY)
     }
 
     fn with_retry_interval(
@@ -80,7 +140,7 @@ impl SerialServices {
         std::thread::spawn(move || {
             let mut link: Option<Box<dyn MonitorLink>> = None;
             let mut identity = None;
-            let mut attempts = 0;
+            let mut retry = RetrySchedule::new(retry_interval);
             let mut problem = None;
             let mut recovery: Option<AdbRecovery> = None;
             loop {
@@ -104,12 +164,13 @@ impl SerialServices {
                         candidates = vec![(id, login.clone())];
                         link = None;
                         recovery = None;
-                        attempts = 0;
+                        retry.reset();
                         problem = None;
                         *status.lock().unwrap_or_else(|error| error.into_inner()) = RouteStatus {
                             label,
                             adb: None,
                             ssh: Some(login),
+                            retry: None,
                         };
                     }
                     Job::Adb(device) => {
@@ -117,11 +178,22 @@ impl SerialServices {
                             label: device.label(),
                             adb: Some(device.clone()),
                             ssh: None,
+                            retry: None,
                         };
                         link = Some(Box::new(device));
                         recovery = None;
-                        attempts = MAX_ATTEMPTS;
+                        retry.reset();
                         problem = None;
+                    }
+                    Job::Retry => {
+                        retry.reset();
+                        if let Some(pending) = &mut status
+                            .lock()
+                            .unwrap_or_else(|error| error.into_inner())
+                            .retry
+                        {
+                            pending.at = Instant::now();
+                        }
                     }
                     Job::Execute {
                         raw,
@@ -131,11 +203,9 @@ impl SerialServices {
                         polling,
                         reply,
                     } => {
-                        if recovery
-                            .as_ref()
-                            .is_some_and(|pending| Instant::now() >= pending.retry_at)
+                        if retry.is_due()
+                            && let Some(pending) = recovery.take()
                         {
-                            let mut pending = recovery.take().unwrap();
                             match connector.reconnect_adb(&pending.device, &cancel) {
                                 Ok(selected) => {
                                     *status.lock().unwrap_or_else(|error| error.into_inner()) =
@@ -143,38 +213,52 @@ impl SerialServices {
                                             label: selected.label(),
                                             adb: selected.adb_connection(),
                                             ssh: selected.ssh_login(),
+                                            retry: None,
                                         };
                                     link = Some(selected);
                                     problem = None;
+                                    retry.reset();
                                 }
-                                Err(_) => {
+                                Err(error) => {
                                     // Schedule from the end of the attempt, so a slow
                                     // offline device cannot cause a burst of retries.
-                                    pending.retry_at = Instant::now() + retry_interval;
+                                    let at = retry.failed();
+                                    status
+                                        .lock()
+                                        .unwrap_or_else(|error| error.into_inner())
+                                        .retry = Some(PendingRetry {
+                                        at,
+                                        kind: "monitor.route.adb_recovering",
+                                        detail: error.clone(),
+                                    });
+                                    problem = Some(error);
                                     recovery = Some(pending);
                                 }
                             }
                         }
                         if link.is_none()
                             && recovery.is_none()
-                            && attempts < MAX_ATTEMPTS
+                            && retry.is_due()
                             && settings.channel != MonitorChannel::Serial
                         {
-                            attempts += 1;
                             *status.lock().unwrap_or_else(|error| error.into_inner()) =
                                 RouteStatus {
                                     label: t!("monitor.route.detecting").to_string(),
                                     adb: None,
                                     ssh: None,
+                                    retry: None,
                                 };
-                            if identity.is_none() {
-                                identity = raw_command(
+                            if raw.is_some() {
+                                let fresh = raw_command(
                                     raw.as_ref(),
                                     crate::serial::files::NETWORK_COMMAND,
                                     &cancel,
                                     true,
                                 )
                                 .ok();
+                                if fresh.is_some() {
+                                    identity = fresh;
+                                }
                             }
                             match connector.connect(
                                 identity.as_deref().unwrap_or(""),
@@ -188,27 +272,69 @@ impl SerialServices {
                                             label: selected.label(),
                                             adb: selected.adb_connection(),
                                             ssh: selected.ssh_login(),
+                                            retry: None,
                                         };
                                     link = Some(selected);
                                     problem = None;
+                                    retry.reset();
                                 }
                                 Ok(None) => {
-                                    problem = Some(t!("monitor.route.unavailable").to_string())
+                                    problem = Some(
+                                        match settings.channel {
+                                            MonitorChannel::Ssh => {
+                                                t!("monitor.route.ssh_unavailable")
+                                            }
+                                            MonitorChannel::Adb => {
+                                                t!("monitor.route.adb_unmatched")
+                                            }
+                                            _ => t!("monitor.route.not_selected"),
+                                        }
+                                        .to_string(),
+                                    )
                                 }
                                 Err(error) => problem = Some(error),
+                            }
+                            if link.is_none() {
+                                let at = retry.failed();
+                                status
+                                    .lock()
+                                    .unwrap_or_else(|error| error.into_inner())
+                                    .retry = Some(PendingRetry {
+                                    at,
+                                    kind: "monitor.route.detection_failed",
+                                    detail: problem.clone().unwrap_or_default(),
+                                });
                             }
                         }
                         let result = if cancel.load(Ordering::Acquire) {
                             Err(t!("adb.interrupted").to_string())
                         } else if let Some(selected) = &mut link {
                             let result = selected.sample(&command, &cancel);
-                            if result.is_err() && selected.sample(":", &cancel).is_err() {
-                                recovery = selected.adb_connection().map(|device| AdbRecovery {
-                                    device,
-                                    retry_at: Instant::now() + retry_interval,
-                                });
+                            if let Err(error) = &result
+                                && selected.sample(":", &cancel).is_err()
+                            {
+                                recovery = selected
+                                    .adb_connection()
+                                    .map(|device| AdbRecovery { device });
+                                // Reconnect the chosen SSH host, never a different board
+                                // found by a fresh automatic scan after a disconnect.
+                                if let Some(login) = selected.ssh_login() {
+                                    let id = candidates
+                                        .iter()
+                                        .find(|(_, candidate)| candidate == &login)
+                                        .map(|(id, _)| id.clone())
+                                        .unwrap_or_else(|| "selected-ssh".to_string());
+                                    settings.channel = MonitorChannel::Ssh;
+                                    settings.ssh_host = id.clone();
+                                    candidates = vec![(id, login)];
+                                    // The selected, trusted SSH endpoint stays
+                                    // fixed, but its boot id may change. Never
+                                    // carry an old serial boot id into recovery
+                                    // while the serial console is still busy.
+                                    identity = None;
+                                }
                                 link = None;
-                                attempts = MAX_ATTEMPTS;
+                                let at = retry.failed();
                                 let message = if recovery.is_some() {
                                     t!("monitor.route.adb_reconnecting")
                                 } else {
@@ -221,6 +347,15 @@ impl SerialServices {
                                         label: message,
                                         adb: None,
                                         ssh: None,
+                                        retry: Some(PendingRetry {
+                                            at,
+                                            kind: if recovery.is_some() {
+                                                "monitor.route.adb_recovering"
+                                            } else {
+                                                "monitor.route.retrying"
+                                            },
+                                            detail: error.clone(),
+                                        }),
                                     };
                             }
                             result
@@ -232,28 +367,33 @@ impl SerialServices {
                             && (settings.channel == MonitorChannel::Serial
                                 || (settings.channel == MonitorChannel::Auto && identity.is_some()))
                         {
-                            *status.lock().unwrap_or_else(|error| error.into_inner()) =
-                                RouteStatus {
-                                    label: t!("monitor.route.serial").to_string(),
-                                    adb: None,
-                                    ssh: None,
-                                };
-                            raw_command(
+                            status
+                                .lock()
+                                .unwrap_or_else(|error| error.into_inner())
+                                .label = t!("monitor.route.serial").to_string();
+                            let result = raw_command(
                                 raw.as_ref(),
                                 serial_command.as_deref().unwrap_or(&command),
                                 &cancel,
                                 polling,
-                            )
+                            );
+                            // A usable serial fallback is not an offline error.
+                            // Keep the discovery schedule for future reads, but
+                            // don't show a countdown on a successfully loaded
+                            // view that no longer needs to poll.
+                            if result.is_ok()
+                                || matches!(&result, Err(error) if error == crate::terminal::MONITOR_PAUSED)
+                            {
+                                status
+                                    .lock()
+                                    .unwrap_or_else(|error| error.into_inner())
+                                    .retry = None;
+                            }
+                            result
                         } else {
                             let error = problem
                                 .clone()
                                 .unwrap_or_else(|| t!("monitor.route.not_selected").to_string());
-                            *status.lock().unwrap_or_else(|error| error.into_inner()) =
-                                RouteStatus {
-                                    label: error.clone(),
-                                    adb: None,
-                                    ssh: None,
-                                };
                             Err(error)
                         };
                         let _ = reply.send(result);
@@ -318,6 +458,12 @@ impl SerialServices {
         });
     }
 
+    /// Reset only the retry delay; preserve the selected device and never
+    /// replay the failed command (it may have been a service control).
+    pub(crate) fn retry_now(&self) {
+        self.adopt(Job::Retry);
+    }
+
     fn adopt(&self, job: Job) {
         if self.jobs.try_send(job).is_err() {
             *self
@@ -327,15 +473,23 @@ impl SerialServices {
                 label: t!("monitor.route.queue_busy").to_string(),
                 adb: None,
                 ssh: None,
+                retry: None,
             };
         }
     }
 
     pub(crate) fn status(&self) -> RouteStatus {
-        self.status
+        let mut status = self
+            .status
             .lock()
             .unwrap_or_else(|error| error.into_inner())
-            .clone()
+            .clone();
+        if let Some(retry) = &status.retry
+            && status.label != t!("monitor.route.serial").as_ref()
+        {
+            status.label = retry.message();
+        }
+        status
     }
 
     pub(crate) fn cancel(&self) {

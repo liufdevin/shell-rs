@@ -162,6 +162,8 @@ pub struct ToolSidebar {
     projects: Entity<ProjectPanel>,
     focus_handle: FocusHandle,
     terminal_observer: Option<Subscription>,
+    serial_route_target: Option<(RemoteTerminalId, ToolKind)>,
+    serial_route_task: Option<Task<()>>,
 }
 
 impl ToolSidebar {
@@ -209,6 +211,8 @@ impl ToolSidebar {
             dispatch,
             focus_handle: cx.focus_handle(),
             terminal_observer: None,
+            serial_route_target: None,
+            serial_route_task: None,
         }
     }
 
@@ -305,10 +309,25 @@ impl ToolSidebar {
             || self.status_system_info != status_system_info
         {
             self.terminal_observer = match &target {
-                Some(SidebarTarget::Remote(terminal)) => terminal
-                    .view
-                    .upgrade()
-                    .map(|view| cx.observe(&view, |_, _, cx| cx.notify())),
+                Some(SidebarTarget::Remote(terminal)) => {
+                    let serial = terminal.serial && !terminal.shell_only;
+                    terminal.view.upgrade().map(|view| {
+                        let mut generation = Some(view.read(cx).generation(cx));
+                        cx.observe(&view, move |this, view, cx| {
+                            if serial {
+                                let view = view.read(cx);
+                                if view.lifecycle(cx) != crate::terminal::TerminalLifecycle::Running
+                                {
+                                    generation = None;
+                                } else if generation != Some(view.generation(cx)) {
+                                    generation = Some(view.generation(cx));
+                                    this.retry_serial_tools(cx);
+                                }
+                            }
+                            cx.notify();
+                        })
+                    })
+                }
                 _ => None,
             };
             self.target = target;
@@ -367,7 +386,32 @@ impl ToolSidebar {
 
     /// 网络连接's 刷新.
     pub fn refresh_connections(&mut self, cx: &mut Context<Self>) {
+        self.retry_serial_channel(cx);
         self.netstat.update(cx, |netstat, cx| netstat.refresh(cx));
+    }
+
+    fn retry_serial_channel(&self, cx: &App) {
+        if let Some(view) = self
+            .remote()
+            .filter(|terminal| terminal.serial)
+            .and_then(|terminal| terminal.view.upgrade())
+        {
+            view.read(cx).retry_serial_services(cx);
+        }
+    }
+
+    pub(super) fn retry_serial_tools(&mut self, cx: &mut Context<Self>) {
+        match self.tool {
+            ToolKind::Services => self.refresh_services(cx),
+            ToolKind::Processes => self.refresh_processes(cx),
+            ToolKind::Connections => self.refresh_connections(cx),
+            ToolKind::Monitor => {
+                self.retry_serial_channel(cx);
+                self.monitor.update(cx, |panel, cx| panel.refresh(cx));
+            }
+            _ => self.retry_serial_channel(cx),
+        }
+        cx.notify();
     }
 
     /// Fold a category of 命令片段 away, or unfold it.
@@ -430,6 +474,7 @@ impl ToolSidebar {
 
     /// 系统服务's 刷新, and after a command.
     pub fn refresh_services(&mut self, cx: &mut Context<Self>) {
+        self.retry_serial_channel(cx);
         self.services
             .update(cx, |services, cx| services.refresh(cx));
     }
@@ -441,6 +486,7 @@ impl ToolSidebar {
 
     /// 进程管理's 刷新.
     pub fn refresh_processes(&mut self, cx: &mut Context<Self>) {
+        self.retry_serial_channel(cx);
         self.processes
             .update(cx, |processes, cx| processes.refresh(cx));
     }
@@ -524,6 +570,42 @@ impl ToolSidebar {
             view.update(cx, |view, cx| {
                 view.configure_serial_services(connector, terminal.monitor_settings, candidates, cx)
             });
+        }
+        let serial_target = self
+            .remote()
+            .filter(|terminal| {
+                terminal.serial && !terminal.shell_only && self.shown && self.tool.runs_commands()
+            })
+            .map(|terminal| (terminal.id, self.tool));
+        if self.serial_route_target != serial_target {
+            self.serial_route_target = serial_target;
+            self.serial_route_task = None;
+            if serial_target.is_some() {
+                self.retry_serial_channel(cx);
+                if let Some(view) = self.remote().map(|terminal| terminal.view.clone()) {
+                    // Read worker snapshots on the UI executor. The worker must
+                    // never wake GPUI directly, even while a countdown changes.
+                    self.serial_route_task = Some(cx.spawn(async move |this, cx| {
+                        let mut previous = None;
+                        loop {
+                            let Ok(problem) =
+                                view.read_with(cx, |view, cx| view.serial_service_problem(cx))
+                            else {
+                                break;
+                            };
+                            if previous != problem {
+                                previous = problem;
+                                if this.update(cx, |_, cx| cx.notify()).is_err() {
+                                    break;
+                                }
+                            }
+                            cx.background_executor()
+                                .timer(std::time::Duration::from_millis(500))
+                                .await;
+                        }
+                    }));
+                }
+            }
         }
         let target = self.remote().map(|terminal| ExecTarget {
             terminal: terminal.id,
@@ -741,6 +823,12 @@ impl Render for ToolSidebar {
             Some(SidebarTarget::Remote(terminal)) => ("tool-sidebar", terminal.id.0).into(),
             None => ("tool-sidebar", 0_u64).into(),
         };
+        let problem = self
+            .serial_route_target
+            .and_then(|_| self.remote())
+            .and_then(|terminal| terminal.view.upgrade())
+            .and_then(|view| view.read(cx).serial_service_problem(cx));
+        let retry = self.dispatch.clone();
         v_flex()
             .id(id)
             .test_support()
@@ -749,6 +837,49 @@ impl Render for ToolSidebar {
             .size_full()
             .bg(cx.theme().sidebar)
             .text_color(cx.theme().sidebar_foreground)
+            .when_some(problem, |sidebar, (message, detail)| {
+                sidebar.child(
+                    v_flex()
+                        .id("serial-tool-retry")
+                        .test_support()
+                        .flex_shrink_0()
+                        .p_3()
+                        .gap_2()
+                        .border_b_1()
+                        .border_color(cx.theme().border)
+                        .child(
+                            div()
+                                .id("serial-tool-retry-status")
+                                .test_support()
+                                .role(Role::Status)
+                                .aria_label(message.clone())
+                                .text_sm()
+                                .text_color(cx.theme().warning)
+                                .child(message),
+                        )
+                        .child(
+                            div()
+                                .id("serial-tool-retry-detail")
+                                .test_support()
+                                .aria_label(detail.clone())
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(detail),
+                        )
+                        .child(
+                            Button::new("serial-tool-retry-now")
+                                .small()
+                                .label(t!("monitor.route.retry_manual"))
+                                .on_click(move |_, window, cx| {
+                                    retry.dispatch_action(
+                                        &crate::app::RetrySerialTools,
+                                        window,
+                                        cx,
+                                    );
+                                }),
+                        ),
+                )
+            })
             .when(self.target.is_some(), |sidebar| {
                 let panel = match self.tool {
                     ToolKind::Utilities => self.utilities.clone().into_any_element(),

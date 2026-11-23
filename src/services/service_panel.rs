@@ -462,7 +462,10 @@ fn render_problem(problem: &Problem, cx: &App) -> impl IntoElement {
             t!("services.panel.unsupported"),
             cx.theme().muted_foreground,
         ),
-        Problem::Failed(error) => (t!("tools.read_failed", error = error), cx.theme().danger),
+        Problem::Failed(error) => (
+            t!("tools.read_failed_retry", error = error),
+            cx.theme().danger,
+        ),
     };
     div()
         .id("services-message")

@@ -5033,6 +5033,7 @@ impl Workspace {
             .on_action(cx.listener(Self::on_end_process))
             .on_action(cx.listener(Self::on_show_process))
             .on_action(cx.listener(Self::on_refresh_services))
+            .on_action(cx.listener(Self::on_retry_serial_tools))
             .on_action(cx.listener(Self::on_show_service))
             .on_action(cx.listener(Self::on_control_service))
             .on_action(cx.listener(Self::on_refresh_history))
