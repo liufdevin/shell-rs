@@ -315,3 +315,51 @@ serial.assistant.add_command:
 serial.assistant.saved_hint:
   zh-CN: 每条命令独立保存 HEX、换行、CRC 和发送后等待时间。右侧「多条发送」支持单条、顺序发送和整组循环；整组发送只包含勾选的命令，末条等待结束后开始下一轮。断开、重连、切换标签或关闭工具时自动停止。命令内容会明文保存，请勿保存密码。
   en: Each command saves its HEX, line ending, CRC and delay after sending. Multi-send supports individual commands, sending in order and looping enabled commands. The last delay also applies between cycles. Sending stops on disconnect, reconnect, tab change or closing the tool. Content is stored as plain text; do not save passwords.
+serial.assistant.group_actions:
+  zh-CN: 分组操作
+  en: Group actions
+serial.assistant.duplicate_group:
+  zh-CN: 复制分组
+  en: Duplicate group
+serial.assistant.import_group:
+  zh-CN: 导入命令组…
+  en: Import group…
+serial.assistant.export_json:
+  zh-CN: 导出为 JSON…
+  en: Export as JSON…
+serial.assistant.export_sscom:
+  zh-CN: 导出为 SSCOM (.ini)…
+  en: Export as SSCOM (.ini)…
+serial.assistant.import_prompt:
+  zh-CN: 选择 JSON 或 SSCOM (.ini) 命令组文件
+  en: Choose a JSON or SSCOM (.ini) command group file
+serial.assistant.import_done:
+  zh-CN: "已导入 %{count} 条命令。"
+  en: "Imported %{count} commands."
+serial.assistant.import_empty:
+  zh-CN: 文件中没有可导入的命令。
+  en: No commands found in the selected file.
+serial.assistant.import_invalid:
+  zh-CN: 无法识别命令组文件格式，请使用 JSON 或 SSCOM (.ini) 文件。
+  en: Unrecognized file format. Choose a JSON or SSCOM (.ini) file.
+serial.assistant.import_failed:
+  zh-CN: "导入命令组失败：%{error}"
+  en: "Couldn’t import command group: %{error}"
+serial.assistant.export_done:
+  zh-CN: 命令组已导出。
+  en: Command group exported.
+serial.assistant.export_failed:
+  zh-CN: "导出命令组失败：%{error}"
+  en: "Couldn’t export command group: %{error}"
+serial.assistant.select_all:
+  zh-CN: 全选或取消全选本组命令
+  en: Select or deselect all commands in this group
+serial.assistant.cycle_ending:
+  zh-CN: 点击切换行尾（无 / LF / CR / CRLF）
+  en: Click to cycle line ending (None / LF / CR / CRLF)
+serial.assistant.cycle_ending_command:
+  zh-CN: "%{name} 行尾：%{ending}"
+  en: "%{name} line ending: %{ending}"
+serial.assistant.crc_command:
+  zh-CN: "切换 %{name} 的 CRC 校验"
+  en: "Toggle CRC checksum for %{name}"

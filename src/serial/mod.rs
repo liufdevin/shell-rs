@@ -6,6 +6,7 @@ mod command_editor;
 mod diagnostics;
 mod file_picker;
 pub mod files;
+mod import_export;
 pub mod isp;
 pub mod maintenance;
 mod message;

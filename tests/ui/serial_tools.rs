@@ -2333,3 +2333,129 @@ async fn serial_multi_send_quick_add_draft_save_and_inline_hex_work_without_leav
         assert_eq!(factory.writes.lock().unwrap().last(), Some(&expected));
     }
 }
+
+#[gpui_kit::test]
+async fn serial_multi_send_sscom_inline_edit_select_all_and_quick_toggles(cx: &mut TestAppContext) {
+    let factory = Arc::new(SerialToolFactory::default());
+    let (handle, workspace) = open_workspace_with_terminals(
+        cx,
+        HostStore::empty(),
+        Arc::new(FakeTerminalFactory::default()),
+        Arc::new(FixedSerialTerminalTransportProvider::new(factory.clone())),
+    );
+    cx.simulate_window_resize(handle.into(), size(px(1280.), px(800.)));
+    cx.update(|cx| {
+        workspace.read(cx).store().clone().update(cx, |store, cx| {
+            assert!(store.set_serial_assistant(
+                "serial-assistant:COM5".into(),
+                None,
+                multi_send_library(),
+                cx
+            ));
+        });
+    });
+    open_assistant(cx, handle, &workspace).await;
+    connect_assistant(cx, handle).await;
+    // Inline edit content and delay on command 2 ("hello", CrLf, 100ms) and send immediately.
+    in_frame(cx, handle, |window, cx| {
+        window.click(("serial-multi-content", 2_u64), cx);
+        window.press("secondary-a", cx);
+        window.input("AT+RST", cx);
+        window.click(("serial-multi-delay", 2_u64), cx);
+        window.press("secondary-a", cx);
+        window.input("250", cx);
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.click(("serial-multi-send", 2_u64), cx);
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(5), |window, _| {
+        window.find("serial-tool-status").label() == Some("命令组发送完成。")
+    })
+    .await;
+    assert_eq!(
+        factory.writes.lock().unwrap().last(),
+        Some(&b"AT+RST\r\n".to_vec())
+    );
+    cx.read(|cx| {
+        let saved = workspace
+            .read(cx)
+            .store()
+            .read(cx)
+            .serial_assistant("serial-assistant:COM5")
+            .unwrap();
+        assert_eq!(saved.groups[0].commands[0].content, "AT+RST");
+        assert_eq!(saved.groups[0].commands[0].delay_ms, 250);
+    });
+    // Cycle ending (CrLf -> None) and toggle CRC on command 2, then send again.
+    in_frame(cx, handle, |window, cx| {
+        window.click(("serial-multi-ending", 2_u64), cx);
+        window.click(("serial-multi-crc", 2_u64), cx);
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.click(("serial-multi-send", 2_u64), cx);
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(5), |window, _| {
+        factory.writes.lock().unwrap().len() == 2
+            && window.find("serial-tool-status").label() == Some("命令组发送完成。")
+    })
+    .await;
+    let sent = factory.writes.lock().unwrap()[1].clone();
+    assert!(sent.starts_with(b"AT+RST"));
+    assert_eq!(sent.len(), b"AT+RST".len() + 2);
+    // Select-all toggles all rows enabled, then all rows disabled.
+    in_frame(cx, handle, |window, cx| {
+        assert_eq!(
+            window.find("serial-multi-select-all").checked(),
+            Some(false)
+        );
+        window.click("serial-multi-select-all", cx);
+    });
+    in_frame(cx, handle, |window, cx| {
+        assert_eq!(window.find("serial-multi-select-all").checked(), Some(true));
+        assert_eq!(
+            window.find(("serial-multi-enabled", 4_u64)).checked(),
+            Some(true)
+        );
+        window.click("serial-multi-select-all", cx);
+    });
+    in_frame(cx, handle, |window, _| {
+        assert_eq!(
+            window.find("serial-multi-select-all").checked(),
+            Some(false)
+        );
+        assert_eq!(
+            window.find(("serial-multi-enabled", 2_u64)).checked(),
+            Some(false)
+        );
+        assert_eq!(
+            window.find(("serial-multi-enabled", 3_u64)).checked(),
+            Some(false)
+        );
+        assert_eq!(
+            window.find(("serial-multi-enabled", 4_u64)).checked(),
+            Some(false)
+        );
+    });
+    // Duplicate group creates an independent copy and selects it.
+    in_frame(cx, handle, |window, cx| {
+        window.dispatch_action(
+            Box::new(shellrs::app::SerialAssistantAction(
+                shellrs::serial::SerialAssistantTabCommand::Tool(SerialToolCommand::Assistant(
+                    shellrs::serial::SerialAssistantCommand::DuplicateGroup,
+                )),
+            )),
+            cx,
+        );
+    });
+    cx.read(|cx| {
+        let saved = workspace
+            .read(cx)
+            .store()
+            .read(cx)
+            .serial_assistant("serial-assistant:COM5")
+            .unwrap();
+        assert_eq!(saved.groups.len(), 2);
+        assert_eq!(saved.groups[1].name, "已有命令组 (2)");
+        assert_eq!(saved.groups[1].commands.len(), 3);
+    });
+}

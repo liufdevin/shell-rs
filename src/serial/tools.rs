@@ -92,6 +92,8 @@ pub struct SerialToolsPanel {
     assistant_send_hex: bool,
     assistant_encoding: crate::host::TerminalEncoding,
     assistant_settings: Option<Entity<SettingsStore>>,
+    assistant_store_observer: Option<Subscription>,
+    assistant_io_task: Option<Task<()>>,
     _assistant_inputs: Vec<Subscription>,
     body_scroll: ScrollHandle,
     preview_scroll: ScrollHandle,
@@ -138,6 +140,8 @@ impl SerialToolsPanel {
             assistant_send_hex: false,
             assistant_encoding: crate::host::TerminalEncoding::default(),
             assistant_settings: None,
+            assistant_store_observer: None,
+            assistant_io_task: None,
             _assistant_inputs: Vec::new(),
             body_scroll: ScrollHandle::new(),
             preview_scroll: ScrollHandle::new(),
@@ -295,12 +299,18 @@ impl SerialToolsPanel {
         {
             return;
         }
-        self.assistant_storage = Some((store, target, host));
+        self.assistant_storage = Some((store.clone(), target, host));
         self.assistant = Some(assistant::AssistantEditor::new(
             self.dispatch.clone(),
             window,
             cx,
         ));
+        self.assistant_store_observer =
+            Some(cx.observe_in(&store, window, |this, _, window, cx| {
+                this.sync_inline_rows(window, cx);
+                cx.notify();
+            }));
+        self.sync_inline_rows(window, cx);
         self.status = SharedString::default();
         self.body_scroll.set_offset(Point::default());
         cx.notify();

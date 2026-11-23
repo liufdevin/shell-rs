@@ -14,7 +14,11 @@ pub enum SerialAssistantCommand {
     SelectGroup(u64),
     CreateGroup,
     RenameGroup,
+    DuplicateGroup,
     DeleteGroup,
+    ImportGroup,
+    ExportGroupJson,
+    ExportGroupSscom,
     NewCommand,
     QuickNewCommand,
     QuickAdd,
@@ -26,7 +30,11 @@ pub enum SerialAssistantCommand {
     DuplicateCommand(u64),
     DeleteCommand(u64),
     ToggleCommand(u64, bool),
+    ToggleAll(bool),
     ToggleHex(u64, bool),
+    CycleEnding(u64),
+    ToggleCrc(u64),
+    CommitInline(u64),
     MoveUp(u64),
     MoveDown(u64),
     Run(Option<u64>),
@@ -34,6 +42,12 @@ pub enum SerialAssistantCommand {
     Stop,
     Undo,
     CommandPage(bool),
+}
+
+pub(super) struct InlineRowInputs {
+    pub(super) content: Entity<InputState>,
+    pub(super) delay: Entity<InputState>,
+    _subscriptions: Vec<Subscription>,
 }
 
 pub(super) struct AssistantEditor {
@@ -44,10 +58,11 @@ pub(super) struct AssistantEditor {
     pub(super) quick_name: Entity<InputState>,
     pub(super) quick_delay: Entity<InputState>,
     pub(super) quick_hex: bool,
+    pub(super) inline_rows: HashMap<u64, InlineRowInputs>,
     command_scroll: ScrollHandle,
     _group_search_observer: Subscription,
     _quick_subscriptions: Vec<Subscription>,
-    undo: Option<SerialAssistant>,
+    pub(super) undo: Option<SerialAssistant>,
     page: usize,
 }
 
@@ -104,6 +119,7 @@ impl AssistantEditor {
             quick_name,
             quick_delay,
             quick_hex: false,
+            inline_rows: HashMap::new(),
             command_scroll: ScrollHandle::new(),
             _group_search_observer: group_search_observer,
             _quick_subscriptions: quick_subscriptions,
@@ -755,6 +771,155 @@ impl SerialToolsPanel {
         Ok(())
     }
 
+    pub(super) fn sync_inline_rows(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let value = self.assistant_value(cx);
+        let dispatch = self.dispatch.clone();
+        let Some(editor) = self.assistant.as_mut() else {
+            return;
+        };
+        let commands: Vec<SerialCommand> = value
+            .groups
+            .iter()
+            .find(|group| Some(group.id) == editor.group)
+            .or_else(|| value.groups.first())
+            .map(|group| group.commands.clone())
+            .unwrap_or_default();
+        let valid_ids: std::collections::HashSet<u64> =
+            commands.iter().map(|command| command.id).collect();
+        editor.inline_rows.retain(|id, _| valid_ids.contains(id));
+        for command in commands {
+            let id = command.id;
+            let delay_text = command.delay_ms.to_string();
+            if let Some(row) = editor.inline_rows.get(&id) {
+                if !row.content.read(cx).focus_handle(cx).is_focused(window)
+                    && row.content.read(cx).value().as_str() != command.content.as_str()
+                {
+                    let content = command.content.clone();
+                    row.content.update(cx, |input, cx| {
+                        input.set_value(content, window, cx);
+                    });
+                }
+                if !row.delay.read(cx).focus_handle(cx).is_focused(window)
+                    && row.delay.read(cx).value().as_str() != delay_text.as_str()
+                {
+                    row.delay.update(cx, |input, cx| {
+                        input.set_value(delay_text, window, cx);
+                    });
+                }
+            } else {
+                let content_value = command.content.clone();
+                let content = cx.new(|cx| {
+                    InputState::new(window, cx)
+                        .default_value(content_value)
+                        .validate(|text, _| text.len() <= 4096)
+                });
+                let delay = cx.new(|cx| {
+                    InputState::new(window, cx)
+                        .default_value(delay_text)
+                        .validate(|text, _| {
+                            text.len() <= 5 && text.bytes().all(|b| b.is_ascii_digit())
+                        })
+                });
+                let mut subscriptions = Vec::with_capacity(2);
+                for input in [&content, &delay] {
+                    let dispatch = dispatch.clone();
+                    subscriptions.push(cx.subscribe_in(
+                        input,
+                        window,
+                        move |_, _, event: &InputEvent, window, cx| {
+                            if matches!(event, InputEvent::Blur | InputEvent::PressEnter { .. }) {
+                                let dispatch = dispatch.clone();
+                                window.defer(cx, move |window, cx| {
+                                    dispatch.send(
+                                        SerialToolCommand::Assistant(
+                                            SerialAssistantCommand::CommitInline(id),
+                                        ),
+                                        window,
+                                        cx,
+                                    );
+                                });
+                            }
+                        },
+                    ));
+                }
+                editor.inline_rows.insert(
+                    id,
+                    InlineRowInputs {
+                        content,
+                        delay,
+                        _subscriptions: subscriptions,
+                    },
+                );
+            }
+        }
+    }
+
+    fn flush_inline_edits(
+        &mut self,
+        only: Option<u64>,
+        cx: &mut Context<Self>,
+    ) -> Result<(), SharedString> {
+        let Some(editor) = self.assistant.as_ref() else {
+            return Ok(());
+        };
+        if editor.inline_rows.is_empty() {
+            return Ok(());
+        }
+        let mut value = self.assistant_value(cx);
+        let selected = editor.group;
+        let group_index = value
+            .groups
+            .iter()
+            .position(|group| Some(group.id) == selected)
+            .or_else(|| (!value.groups.is_empty()).then_some(0));
+        let Some(group_index) = group_index else {
+            return Ok(());
+        };
+        let group = &mut value.groups[group_index];
+        let mut changed = false;
+        for command in &mut group.commands {
+            if only.is_some_and(|target| target != command.id) {
+                continue;
+            }
+            let Some(row) = editor.inline_rows.get(&command.id) else {
+                continue;
+            };
+            let new_content = row.content.read(cx).value().to_string();
+            let delay_raw = row.delay.read(cx).value().to_string();
+            let content_changed = new_content != command.content;
+            let delay_changed = delay_raw.trim() != command.delay_ms.to_string();
+            if !content_changed && !delay_changed {
+                continue;
+            }
+            if new_content.is_empty() {
+                return Err(t!("serial.assistant.content_required"));
+            }
+            if command.hex {
+                crate::terminal::encode_serial_tool(self.assistant_encoding, &new_content, true)?;
+            }
+            let new_delay = delay_raw
+                .trim()
+                .parse::<u32>()
+                .ok()
+                .filter(|delay| *delay <= 60000)
+                .ok_or_else(|| t!("serial.assistant.invalid_delay"))?;
+            command.content = new_content;
+            command.delay_ms = new_delay;
+            changed = true;
+        }
+        if !changed {
+            return Ok(());
+        }
+        if !value.is_valid() {
+            return Err(t!("serial.assistant.limits"));
+        }
+        self.save_assistant(value, cx)?;
+        if let Some(editor) = &mut self.assistant {
+            editor.undo = None;
+        }
+        Ok(())
+    }
+
     pub(super) fn assistant_command(
         &mut self,
         command: &SerialAssistantCommand,
@@ -768,16 +933,34 @@ impl SerialToolsPanel {
             self.status = t!("serial.assistant.stopped");
             return Ok(());
         }
-        let mut value = self.assistant_value(cx);
         if self.group_task.is_some() || self.repeat_task.is_some() {
             return Err(t!("serial.tool.unavailable"));
         }
+        if let SerialAssistantCommand::CommitInline(id) = command {
+            return self.flush_inline_edits(Some(*id), cx);
+        }
         if let SerialAssistantCommand::Run(id) = command {
+            self.flush_inline_edits(*id, cx)?;
             return self.run_group(*id, false, cx);
         }
         if matches!(command, SerialAssistantCommand::RunLoop) {
+            self.flush_inline_edits(None, cx)?;
             return self.run_group(None, true, cx);
         }
+        if matches!(
+            command,
+            SerialAssistantCommand::ToggleHex(_, _)
+                | SerialAssistantCommand::CycleEnding(_)
+                | SerialAssistantCommand::ToggleCrc(_)
+                | SerialAssistantCommand::DuplicateCommand(_)
+                | SerialAssistantCommand::EditCommand(_)
+                | SerialAssistantCommand::DuplicateGroup
+                | SerialAssistantCommand::ExportGroupJson
+                | SerialAssistantCommand::ExportGroupSscom
+        ) {
+            self.flush_inline_edits(None, cx)?;
+        }
+        let mut value = self.assistant_value(cx);
         if matches!(command, SerialAssistantCommand::SelectGroup(_)) {
             self.body_scroll.set_offset(Point::default());
         }
@@ -795,6 +978,24 @@ impl SerialToolsPanel {
             SerialAssistantCommand::RenameGroup => {
                 let group = group.ok_or_else(|| t!("serial.assistant.create_first"))?;
                 self.open_group_form(Some(group), window, cx);
+                return Ok(());
+            }
+            SerialAssistantCommand::ImportGroup => {
+                self.start_import_group(window, cx);
+                return Ok(());
+            }
+            SerialAssistantCommand::ExportGroupJson => {
+                let group = group
+                    .cloned()
+                    .ok_or_else(|| t!("serial.assistant.create_first"))?;
+                self.start_export_group(group, false, window, cx);
+                return Ok(());
+            }
+            SerialAssistantCommand::ExportGroupSscom => {
+                let group = group
+                    .cloned()
+                    .ok_or_else(|| t!("serial.assistant.create_first"))?;
+                self.start_export_group(group, true, window, cx);
                 return Ok(());
             }
             SerialAssistantCommand::NewCommand
@@ -862,6 +1063,37 @@ impl SerialToolsPanel {
                     editor.command = Some(*id);
                 }
             }
+            SerialAssistantCommand::DuplicateGroup => {
+                if let Some(source) = value
+                    .groups
+                    .iter()
+                    .find(|group| Some(group.id) == group_id)
+                    .cloned()
+                {
+                    let new_group_id = value.allocate_id();
+                    let mut copy = SerialCommandGroup::default();
+                    copy.id = new_group_id;
+                    copy.name = format!("{} (2)", source.name);
+                    if copy.name.len() > 128 {
+                        let mut end = 124;
+                        while end > 0 && !copy.name.is_char_boundary(end) {
+                            end -= 1;
+                        }
+                        copy.name.truncate(end);
+                        copy.name.push_str(" (2)");
+                    }
+                    for mut cmd in source.commands {
+                        cmd.id = value.allocate_id();
+                        copy.commands.push(cmd);
+                    }
+                    value.groups.push(copy);
+                    if value.is_valid() {
+                        editor.group = Some(new_group_id);
+                        editor.command = None;
+                        editor.page = 0;
+                    }
+                }
+            }
             SerialAssistantCommand::DeleteGroup => {
                 value.groups.retain(|group| Some(group.id) != group_id);
                 editor.group = None;
@@ -904,6 +1136,17 @@ impl SerialToolsPanel {
                     saved.enabled = *enabled;
                 }
             }
+            SerialAssistantCommand::ToggleAll(enabled) => {
+                if let Some(group) = value
+                    .groups
+                    .iter_mut()
+                    .find(|group| Some(group.id) == group_id)
+                {
+                    for saved in &mut group.commands {
+                        saved.enabled = *enabled;
+                    }
+                }
+            }
             SerialAssistantCommand::ToggleHex(id, enabled) => {
                 if let Some(saved) = value
                     .groups
@@ -919,6 +1162,31 @@ impl SerialToolsPanel {
                         )?;
                     }
                     saved.hex = *enabled;
+                }
+            }
+            SerialAssistantCommand::CycleEnding(id) => {
+                if let Some(saved) = value
+                    .groups
+                    .iter_mut()
+                    .flat_map(|group| &mut group.commands)
+                    .find(|command| command.id == *id)
+                {
+                    saved.ending = match saved.ending {
+                        SerialCommandEnding::None => SerialCommandEnding::Lf,
+                        SerialCommandEnding::Lf => SerialCommandEnding::Cr,
+                        SerialCommandEnding::Cr => SerialCommandEnding::CrLf,
+                        SerialCommandEnding::CrLf => SerialCommandEnding::None,
+                    };
+                }
+            }
+            SerialAssistantCommand::ToggleCrc(id) => {
+                if let Some(saved) = value
+                    .groups
+                    .iter_mut()
+                    .flat_map(|group| &mut group.commands)
+                    .find(|command| command.id == *id)
+                {
+                    saved.crc = !saved.crc;
                 }
             }
             SerialAssistantCommand::MoveUp(id) | SerialAssistantCommand::MoveDown(id) => {
@@ -966,6 +1234,10 @@ impl SerialToolsPanel {
             | SerialAssistantCommand::Stop
             | SerialAssistantCommand::CreateGroup
             | SerialAssistantCommand::RenameGroup
+            | SerialAssistantCommand::ImportGroup
+            | SerialAssistantCommand::ExportGroupJson
+            | SerialAssistantCommand::ExportGroupSscom
+            | SerialAssistantCommand::CommitInline(_)
             | SerialAssistantCommand::NewCommand
             | SerialAssistantCommand::QuickNewCommand
             | SerialAssistantCommand::QuickAdd
@@ -988,7 +1260,173 @@ impl SerialToolsPanel {
         {
             editor.undo = None;
         }
-        self.save_assistant(value, cx)
+        let result = self.save_assistant(value, cx);
+        if result.is_ok() {
+            self.sync_inline_rows(window, cx);
+        }
+        result
+    }
+
+    fn start_import_group(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.assistant_io_task.is_some() {
+            return;
+        }
+        let answer = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some(t!("serial.assistant.import_prompt")),
+        });
+        self.assistant_io_task = Some(cx.spawn_in(window, async move |owner, cx| {
+            let loaded = match answer.await {
+                Ok(Ok(Some(paths))) => {
+                    if let Some(path) = paths.into_iter().next() {
+                        let fallback = path
+                            .file_stem()
+                            .and_then(|s| s.to_str())
+                            .unwrap_or("SSCOM")
+                            .to_owned();
+                        let read = cx
+                            .background_spawn(async move { std::fs::read(&path) })
+                            .await;
+                        Some((fallback, read))
+                    } else {
+                        None
+                    }
+                }
+                _ => None,
+            };
+            let _ = owner.update_in(cx, |owner, window, cx| {
+                owner.assistant_io_task = None;
+                if let Some((fallback, read)) = loaded {
+                    match read {
+                        Ok(bytes) => {
+                            match owner.import_group_bytes(&bytes, &fallback, window, cx) {
+                                Ok(count) => {
+                                    owner.status =
+                                        t!("serial.assistant.import_done", count = count);
+                                }
+                                Err(error) => {
+                                    owner.status = error;
+                                }
+                            }
+                        }
+                        Err(error) => {
+                            owner.status = t!("serial.assistant.import_failed", error = error);
+                        }
+                    }
+                    cx.notify();
+                }
+            });
+        }));
+    }
+
+    pub(crate) fn import_group_bytes(
+        &mut self,
+        bytes: &[u8],
+        fallback_name: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<usize, SharedString> {
+        let imported = crate::serial::import_export::import_groups_from_bytes(bytes, fallback_name)
+            .map_err(|error| match error {
+                crate::serial::import_export::ImportError::Empty => {
+                    t!("serial.assistant.import_empty")
+                }
+                crate::serial::import_export::ImportError::InvalidFormat => {
+                    t!("serial.assistant.import_invalid")
+                }
+            })?;
+        let mut value = self.assistant_value(cx);
+        let mut last_group_id = None;
+        let mut total_commands = 0_usize;
+        for mut group in imported {
+            group.id = value.allocate_id();
+            for command in &mut group.commands {
+                command.id = value.allocate_id();
+            }
+            total_commands += group.commands.len();
+            last_group_id = Some(group.id);
+            value.groups.push(group);
+        }
+        if !value.is_valid() {
+            return Err(t!("serial.assistant.limits"));
+        }
+        self.save_assistant(value, cx)?;
+        if let Some(editor) = &mut self.assistant {
+            editor.group = last_group_id;
+            editor.command = None;
+            editor.page = 0;
+            editor.undo = None;
+        }
+        self.sync_inline_rows(window, cx);
+        Ok(total_commands)
+    }
+
+    fn start_export_group(
+        &mut self,
+        group: SerialCommandGroup,
+        sscom: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.assistant_io_task.is_some() {
+            return;
+        }
+        let ext = if sscom { "ini" } else { "json" };
+        let safe_name: String = group
+            .name
+            .chars()
+            .map(|ch| {
+                if ch.is_alphanumeric() || ch == '-' || ch == '_' {
+                    ch
+                } else {
+                    '_'
+                }
+            })
+            .collect();
+        let filename = format!(
+            "{}.{ext}",
+            if safe_name.is_empty() {
+                "commands"
+            } else {
+                safe_name.as_str()
+            }
+        );
+        let chosen = cx.prompt_for_new_path(
+            &dirs::download_dir().unwrap_or_else(std::env::temp_dir),
+            Some(&filename),
+        );
+        self.assistant_io_task = Some(cx.spawn_in(window, async move |owner, cx| {
+            let status = match chosen.await {
+                Ok(Ok(Some(path))) => {
+                    let result = cx
+                        .background_spawn(async move {
+                            let content = if sscom {
+                                crate::serial::import_export::export_group_sscom(&group)
+                            } else {
+                                crate::serial::import_export::export_group_json(&group)
+                                    .map_err(std::io::Error::other)?
+                            };
+                            std::fs::write(path, content)
+                        })
+                        .await;
+                    Some(match result {
+                        Ok(()) => t!("serial.assistant.export_done"),
+                        Err(error) => t!("serial.assistant.export_failed", error = error),
+                    })
+                }
+                Ok(Err(error)) => Some(t!("serial.assistant.export_failed", error = error)),
+                _ => None,
+            };
+            let _ = owner.update(cx, |owner, cx| {
+                owner.assistant_io_task = None;
+                if let Some(status) = status {
+                    owner.status = status;
+                }
+                cx.notify();
+            });
+        }));
     }
 
     fn append_command(
@@ -1327,6 +1765,20 @@ impl SerialToolsPanel {
                                 t!("serial.assistant.rename_group_button"),
                                 SerialAssistantCommand::RenameGroup,
                                 busy || group.is_none(),
+                            ))
+                            .child(self.command_icon(
+                                "serial-assistant-duplicate-group".into(),
+                                Icon::new(CatalogIcon::CopyPlus),
+                                t!("serial.assistant.duplicate_group"),
+                                SerialAssistantCommand::DuplicateGroup,
+                                busy || group.is_none() || value.groups.len() >= 32,
+                            ))
+                            .child(self.command_icon(
+                                "serial-assistant-import-group".into(),
+                                Icon::new(CatalogIcon::Import),
+                                t!("serial.assistant.import_group"),
+                                SerialAssistantCommand::ImportGroup,
+                                busy || value.groups.len() >= 32,
                             ))
                             .child(self.command_icon(
                                 "serial-assistant-delete-group".into(),

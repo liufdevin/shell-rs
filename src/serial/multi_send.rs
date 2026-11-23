@@ -18,6 +18,8 @@ impl SerialToolsPanel {
         let group_id = current.map(|group| group.id);
         let commands = current.map_or(&[][..], |group| group.commands.as_slice());
         let enabled_count = commands.iter().filter(|command| command.enabled).count();
+        let total_commands = commands.len();
+        let all_enabled = total_commands > 0 && enabled_count == total_commands;
         let busy = self.group_task.is_some() || self.repeat_task.is_some();
         let automatic = self
             .target
@@ -26,6 +28,10 @@ impl SerialToolsPanel {
             .is_some_and(|view| view.read(cx).serial_tool_snapshot(cx).automatic);
         let send_disabled = !running || busy || automatic || self.baud_task.is_some();
         let any_enabled = enabled_count > 0;
+        let has_undo = self
+            .assistant
+            .as_ref()
+            .is_some_and(|editor| editor.undo.is_some());
         let button = |id, label: SharedString, command: SerialAssistantCommand| {
             let dispatch = self.dispatch.clone();
             Button::new(id)
@@ -39,15 +45,22 @@ impl SerialToolsPanel {
         let edit = self.dispatch.focus.clone();
         let new_group_dispatch = self.dispatch.clone();
         let add_dialog_dispatch = self.dispatch.clone();
+        let group_menu_dispatch = self.dispatch.clone();
+        let select_all_dispatch = self.dispatch.clone();
+        let undo_dispatch = self.dispatch.clone();
         let empty_add_dispatch = self.dispatch.clone();
+        let empty_import_dispatch = self.dispatch.clone();
         let picker_label = current
             .map(|group| SharedString::from(group.name.clone()))
             .unwrap_or_else(|| t!("serial.assistant.no_groups"));
-        let total_commands = commands.len();
+        let has_group = current.is_some();
+        let groups_full = value.groups.len() >= 32;
         let rows = commands.iter().enumerate().map(|(index, command)| {
             let id = command.id;
             let toggle = self.dispatch.clone();
             let toggle_hex = self.dispatch.clone();
+            let cycle_ending = self.dispatch.clone();
+            let toggle_crc = self.dispatch.clone();
             let send = self.dispatch.clone();
             let menu_dispatch = self.dispatch.clone();
             let load_focus = self.dispatch.focus.clone();
@@ -64,11 +77,63 @@ impl SerialToolsPanel {
                 info.push_str(" · CRC");
             }
             let info = SharedString::from(info);
-            h_flex()
+            let inline = self
+                .assistant
+                .as_ref()
+                .and_then(|editor| editor.inline_rows.get(&id));
+            let content_control: AnyElement = if let Some(row) = inline {
+                Input::new(&row.content)
+                    .id(("serial-multi-content", id))
+                    .xsmall()
+                    .flex_1()
+                    .min_w_0()
+                    .disabled(busy)
+                    .font_family(cx.theme().mono_font_family.clone())
+                    .aria_label(command.content.clone())
+                    .into_any_element()
+            } else {
+                div()
+                    .id(("serial-multi-content", id))
+                    .test_support()
+                    .aria_label(command.content.clone())
+                    .flex_1()
+                    .min_w_0()
+                    .font_family(cx.theme().mono_font_family.clone())
+                    .text_xs()
+                    .truncate()
+                    .child(preview)
+                    .into_any_element()
+            };
+            let delay_control: AnyElement = if let Some(row) = inline {
+                h_flex()
+                    .items_center()
+                    .gap_1()
+                    .child(
+                        Input::new(&row.delay)
+                            .id(("serial-multi-delay", id))
+                            .xsmall()
+                            .w_12()
+                            .disabled(busy)
+                            .aria_label(t!("serial.assistant.command_delay")),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child("ms"),
+                    )
+                    .into_any_element()
+            } else {
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(format!("{} ms", command.delay_ms))
+                    .into_any_element()
+            };
+            v_flex()
                 .id(("serial-multi-row", id))
                 .test_support()
-                .items_center()
-                .gap_1p5()
+                .gap_1()
                 .px_2()
                 .py_1p5()
                 .border_b_1()
@@ -77,191 +142,255 @@ impl SerialToolsPanel {
                     row.bg(cx.theme().list_active)
                 })
                 .child(
-                    Checkbox::new(("serial-multi-enabled", id))
-                        .small()
-                        .w_auto()
-                        .accessibility_label(t!(
-                            "serial.assistant.include_command",
-                            name = command.name
-                        ))
-                        .checked(command.enabled)
-                        .disabled(busy)
-                        .on_click(move |enabled, window, cx| {
-                            toggle.send(
-                                SerialToolCommand::Assistant(
-                                    SerialAssistantCommand::ToggleCommand(id, *enabled),
-                                ),
-                                window,
-                                cx,
-                            )
-                        }),
-                )
-                .child(
-                    Checkbox::new(("serial-multi-hex", id))
-                        .small()
-                        .w_auto()
-                        .accessibility_label(t!(
-                            "serial.assistant.hex_command",
-                            name = command.name
-                        ))
-                        .checked(command.hex)
-                        .disabled(busy)
-                        .on_click(move |enabled, window, cx| {
-                            toggle_hex.send(
-                                SerialToolCommand::Assistant(SerialAssistantCommand::ToggleHex(
-                                    id, *enabled,
-                                )),
-                                window,
-                                cx,
-                            )
-                        }),
-                )
-                .child(
-                    v_flex()
-                        .flex_1()
-                        .min_w_0()
+                    h_flex()
+                        .items_center()
+                        .gap_1p5()
                         .child(
-                            div()
-                                .id(("serial-multi-content", id))
-                                .test_support()
-                                .aria_label(command.content.clone())
-                                .font_family(cx.theme().mono_font_family.clone())
-                                .text_xs()
-                                .truncate()
-                                .child(preview),
+                            Checkbox::new(("serial-multi-enabled", id))
+                                .small()
+                                .w_auto()
+                                .accessibility_label(t!(
+                                    "serial.assistant.include_command",
+                                    name = command.name
+                                ))
+                                .checked(command.enabled)
+                                .disabled(busy)
+                                .on_click(move |enabled, window, cx| {
+                                    toggle.send(
+                                        SerialToolCommand::Assistant(
+                                            SerialAssistantCommand::ToggleCommand(id, *enabled),
+                                        ),
+                                        window,
+                                        cx,
+                                    )
+                                }),
                         )
                         .child(
-                            div()
-                                .id(("serial-multi-info", id))
-                                .test_support()
-                                .aria_label(info.clone())
-                                .text_xs()
-                                .text_color(cx.theme().muted_foreground)
+                            Checkbox::new(("serial-multi-hex", id))
+                                .small()
+                                .w_auto()
+                                .accessibility_label(t!(
+                                    "serial.assistant.hex_command",
+                                    name = command.name
+                                ))
+                                .checked(command.hex)
+                                .disabled(busy)
+                                .on_click(move |enabled, window, cx| {
+                                    toggle_hex.send(
+                                        SerialToolCommand::Assistant(
+                                            SerialAssistantCommand::ToggleHex(id, *enabled),
+                                        ),
+                                        window,
+                                        cx,
+                                    )
+                                }),
+                        )
+                        .child(content_control)
+                        .child(
+                            Button::new(("serial-multi-send", id))
+                                .xsmall()
+                                .outline()
+                                .w(rems(5.5))
+                                .flex_shrink_0()
                                 .truncate()
-                                .child(info),
+                                .label(command.name.clone())
+                                .tooltip(t!("serial.assistant.send_command", name = command.name))
+                                .accessibility_label(t!(
+                                    "serial.assistant.send_command",
+                                    name = command.name
+                                ))
+                                .disabled(send_disabled)
+                                .on_click(move |_, window, cx| {
+                                    send.send(
+                                        SerialToolCommand::Assistant(SerialAssistantCommand::Run(
+                                            Some(id),
+                                        )),
+                                        window,
+                                        cx,
+                                    )
+                                }),
+                        )
+                        .child(
+                            Button::new(("serial-multi-menu", id))
+                                .xsmall()
+                                .ghost()
+                                .flex_shrink_0()
+                                .icon(IconName::Ellipsis)
+                                .label(SharedString::default())
+                                .tooltip(t!("serial.assistant.row_actions"))
+                                .accessibility_label(t!("serial.assistant.row_actions"))
+                                .disabled(busy)
+                                .dropdown_menu(move |menu, _, _| {
+                                    let edit_cmd = menu_dispatch.clone();
+                                    let dup_cmd = menu_dispatch.clone();
+                                    let up_cmd = menu_dispatch.clone();
+                                    let down_cmd = menu_dispatch.clone();
+                                    let del_cmd = menu_dispatch.clone();
+                                    let load_focus = load_focus.clone();
+                                    menu.item(
+                                        PopupMenuItem::new(t!(
+                                            "serial.assistant.edit_command_button"
+                                        ))
+                                        .icon(Icon::new(CatalogIcon::Pencil))
+                                        .on_click(
+                                            move |_, window, cx| {
+                                                edit_cmd.send(
+                                                    SerialToolCommand::Assistant(
+                                                        SerialAssistantCommand::EditCommand(id),
+                                                    ),
+                                                    window,
+                                                    cx,
+                                                );
+                                            },
+                                        ),
+                                    )
+                                    .item(
+                                        PopupMenuItem::new(t!("serial.assistant.load_draft"))
+                                            .icon(Icon::new(IconName::ArrowLeft))
+                                            .on_click(move |_, window, cx| {
+                                                load_focus.dispatch_action(
+                                                    &crate::app::LoadSerialCommand(id),
+                                                    window,
+                                                    cx,
+                                                );
+                                            }),
+                                    )
+                                    .item(
+                                        PopupMenuItem::new(t!("serial.assistant.duplicate"))
+                                            .icon(Icon::new(IconName::Copy))
+                                            .disabled(total_commands >= 128)
+                                            .on_click(move |_, window, cx| {
+                                                dup_cmd.send(
+                                                    SerialToolCommand::Assistant(
+                                                        SerialAssistantCommand::DuplicateCommand(
+                                                            id,
+                                                        ),
+                                                    ),
+                                                    window,
+                                                    cx,
+                                                );
+                                            }),
+                                    )
+                                    .separator()
+                                    .item(
+                                        PopupMenuItem::new(t!("serial.assistant.move_up"))
+                                            .icon(Icon::new(IconName::ArrowUp))
+                                            .disabled(index == 0)
+                                            .on_click(move |_, window, cx| {
+                                                up_cmd.send(
+                                                    SerialToolCommand::Assistant(
+                                                        SerialAssistantCommand::MoveUp(id),
+                                                    ),
+                                                    window,
+                                                    cx,
+                                                );
+                                            }),
+                                    )
+                                    .item(
+                                        PopupMenuItem::new(t!("serial.assistant.move_down"))
+                                            .icon(Icon::new(IconName::ArrowDown))
+                                            .disabled(index + 1 == total_commands)
+                                            .on_click(move |_, window, cx| {
+                                                down_cmd.send(
+                                                    SerialToolCommand::Assistant(
+                                                        SerialAssistantCommand::MoveDown(id),
+                                                    ),
+                                                    window,
+                                                    cx,
+                                                );
+                                            }),
+                                    )
+                                    .separator()
+                                    .item(
+                                        PopupMenuItem::new(t!("serial.assistant.delete"))
+                                            .icon(Icon::new(CatalogIcon::Trash))
+                                            .on_click(move |_, window, cx| {
+                                                del_cmd.send(
+                                                    SerialToolCommand::Assistant(
+                                                        SerialAssistantCommand::DeleteCommand(id),
+                                                    ),
+                                                    window,
+                                                    cx,
+                                                );
+                                            }),
+                                    )
+                                }),
                         ),
                 )
                 .child(
-                    Button::new(("serial-multi-send", id))
-                        .xsmall()
-                        .outline()
-                        .w(rems(5.5))
-                        .flex_shrink_0()
-                        .truncate()
-                        .label(command.name.clone())
-                        .tooltip(t!("serial.assistant.send_command", name = command.name))
-                        .accessibility_label(t!(
-                            "serial.assistant.send_command",
-                            name = command.name
-                        ))
-                        .disabled(send_disabled)
-                        .on_click(move |_, window, cx| {
-                            send.send(
-                                SerialToolCommand::Assistant(SerialAssistantCommand::Run(Some(id))),
-                                window,
-                                cx,
-                            )
-                        }),
-                )
-                .child(
-                    Button::new(("serial-multi-menu", id))
-                        .xsmall()
-                        .ghost()
-                        .flex_shrink_0()
-                        .icon(IconName::Ellipsis)
-                        .label(SharedString::default())
-                        .tooltip(t!("serial.assistant.row_actions"))
-                        .accessibility_label(t!("serial.assistant.row_actions"))
-                        .disabled(busy)
-                        .dropdown_menu(move |menu, _, _| {
-                            let edit_cmd = menu_dispatch.clone();
-                            let dup_cmd = menu_dispatch.clone();
-                            let up_cmd = menu_dispatch.clone();
-                            let down_cmd = menu_dispatch.clone();
-                            let del_cmd = menu_dispatch.clone();
-                            let load_focus = load_focus.clone();
-                            menu.item(
-                                PopupMenuItem::new(t!("serial.assistant.edit_command_button"))
-                                    .icon(Icon::new(CatalogIcon::Pencil))
-                                    .on_click(move |_, window, cx| {
-                                        edit_cmd.send(
-                                            SerialToolCommand::Assistant(
-                                                SerialAssistantCommand::EditCommand(id),
-                                            ),
-                                            window,
-                                            cx,
-                                        );
-                                    }),
-                            )
-                            .item(
-                                PopupMenuItem::new(t!("serial.assistant.load_draft"))
-                                    .icon(Icon::new(IconName::ArrowLeft))
-                                    .on_click(move |_, window, cx| {
-                                        load_focus.dispatch_action(
-                                            &crate::app::LoadSerialCommand(id),
-                                            window,
-                                            cx,
-                                        );
-                                    }),
-                            )
-                            .item(
-                                PopupMenuItem::new(t!("serial.assistant.duplicate"))
-                                    .icon(Icon::new(IconName::Copy))
-                                    .disabled(total_commands >= 128)
-                                    .on_click(move |_, window, cx| {
-                                        dup_cmd.send(
-                                            SerialToolCommand::Assistant(
-                                                SerialAssistantCommand::DuplicateCommand(id),
-                                            ),
-                                            window,
-                                            cx,
-                                        );
-                                    }),
-                            )
-                            .separator()
-                            .item(
-                                PopupMenuItem::new(t!("serial.assistant.move_up"))
-                                    .icon(Icon::new(IconName::ArrowUp))
-                                    .disabled(index == 0)
-                                    .on_click(move |_, window, cx| {
-                                        up_cmd.send(
-                                            SerialToolCommand::Assistant(
-                                                SerialAssistantCommand::MoveUp(id),
-                                            ),
-                                            window,
-                                            cx,
-                                        );
-                                    }),
-                            )
-                            .item(
-                                PopupMenuItem::new(t!("serial.assistant.move_down"))
-                                    .icon(Icon::new(IconName::ArrowDown))
-                                    .disabled(index + 1 == total_commands)
-                                    .on_click(move |_, window, cx| {
-                                        down_cmd.send(
-                                            SerialToolCommand::Assistant(
-                                                SerialAssistantCommand::MoveDown(id),
-                                            ),
-                                            window,
-                                            cx,
-                                        );
-                                    }),
-                            )
-                            .separator()
-                            .item(
-                                PopupMenuItem::new(t!("serial.assistant.delete"))
-                                    .icon(Icon::new(CatalogIcon::Trash))
-                                    .on_click(move |_, window, cx| {
-                                        del_cmd.send(
-                                            SerialToolCommand::Assistant(
-                                                SerialAssistantCommand::DeleteCommand(id),
-                                            ),
-                                            window,
-                                            cx,
-                                        );
-                                    }),
-                            )
-                        }),
+                    h_flex()
+                        .id(("serial-multi-info", id))
+                        .test_support()
+                        .aria_label(info)
+                        .items_center()
+                        .gap_1p5()
+                        .pl_8()
+                        .child(
+                            div()
+                                .text_xs()
+                                .font_family(cx.theme().mono_font_family.clone())
+                                .text_color(cx.theme().muted_foreground)
+                                .child(format!("#{}", index + 1)),
+                        )
+                        .child(
+                            Button::new(("serial-multi-ending", id))
+                                .xsmall()
+                                .map(|btn| {
+                                    if ending == SerialLineEnding::None {
+                                        btn.ghost()
+                                    } else {
+                                        btn.outline()
+                                    }
+                                })
+                                .label(ending.label())
+                                .tooltip(t!("serial.assistant.cycle_ending"))
+                                .accessibility_label(t!(
+                                    "serial.assistant.cycle_ending_command",
+                                    name = command.name,
+                                    ending = ending.label()
+                                ))
+                                .disabled(busy)
+                                .on_click(move |_, window, cx| {
+                                    cycle_ending.send(
+                                        SerialToolCommand::Assistant(
+                                            SerialAssistantCommand::CycleEnding(id),
+                                        ),
+                                        window,
+                                        cx,
+                                    )
+                                }),
+                        )
+                        .child(
+                            Button::new(("serial-multi-crc", id))
+                                .xsmall()
+                                .toggled(command.crc)
+                                .selected(command.crc)
+                                .map(|btn| {
+                                    if command.crc {
+                                        btn.outline()
+                                    } else {
+                                        btn.ghost()
+                                    }
+                                })
+                                .label("CRC")
+                                .tooltip(t!("serial.tool.crc"))
+                                .accessibility_label(t!(
+                                    "serial.assistant.crc_command",
+                                    name = command.name
+                                ))
+                                .disabled(busy)
+                                .on_click(move |_, window, cx| {
+                                    toggle_crc.send(
+                                        SerialToolCommand::Assistant(
+                                            SerialAssistantCommand::ToggleCrc(id),
+                                        ),
+                                        window,
+                                        cx,
+                                    )
+                                }),
+                        )
+                        .child(div().flex_1())
+                        .child(delay_control),
                 )
         });
         let quick_add_bar = self.assistant.as_ref().map(|editor| {
@@ -413,7 +542,7 @@ impl SerialToolsPanel {
                                     .label(SharedString::default())
                                     .tooltip(t!("serial.assistant.create_group_button"))
                                     .accessibility_label(t!("serial.assistant.create_group_button"))
-                                    .disabled(busy || value.groups.len() >= 32)
+                                    .disabled(busy || groups_full)
                                     .on_click(move |_, window, cx| {
                                         new_group_dispatch.send(
                                             SerialToolCommand::Assistant(
@@ -441,6 +570,113 @@ impl SerialToolsPanel {
                                             window,
                                             cx,
                                         );
+                                    }),
+                            )
+                            .child(
+                                Button::new("serial-multi-group-menu")
+                                    .xsmall()
+                                    .ghost()
+                                    .icon(IconName::Ellipsis)
+                                    .label(SharedString::default())
+                                    .tooltip(t!("serial.assistant.group_actions"))
+                                    .accessibility_label(t!("serial.assistant.group_actions"))
+                                    .disabled(busy)
+                                    .dropdown_menu(move |menu, _, _| {
+                                        let rename = group_menu_dispatch.clone();
+                                        let dup = group_menu_dispatch.clone();
+                                        let del = group_menu_dispatch.clone();
+                                        let import = group_menu_dispatch.clone();
+                                        let export_json = group_menu_dispatch.clone();
+                                        let export_sscom = group_menu_dispatch.clone();
+                                        menu.item(
+                                            PopupMenuItem::new(t!(
+                                                "serial.assistant.rename_group_button"
+                                            ))
+                                            .icon(Icon::new(CatalogIcon::Pencil))
+                                            .disabled(!has_group)
+                                            .on_click(move |_, window, cx| {
+                                                rename.send(
+                                                    SerialToolCommand::Assistant(
+                                                        SerialAssistantCommand::RenameGroup,
+                                                    ),
+                                                    window,
+                                                    cx,
+                                                );
+                                            }),
+                                        )
+                                        .item(
+                                            PopupMenuItem::new(t!(
+                                                "serial.assistant.duplicate_group"
+                                            ))
+                                            .icon(Icon::new(CatalogIcon::CopyPlus))
+                                            .disabled(!has_group || groups_full)
+                                            .on_click(move |_, window, cx| {
+                                                dup.send(
+                                                    SerialToolCommand::Assistant(
+                                                        SerialAssistantCommand::DuplicateGroup,
+                                                    ),
+                                                    window,
+                                                    cx,
+                                                );
+                                            }),
+                                        )
+                                        .item(
+                                            PopupMenuItem::new(t!("serial.assistant.delete_group"))
+                                                .icon(Icon::new(CatalogIcon::Trash))
+                                                .disabled(!has_group)
+                                                .on_click(move |_, window, cx| {
+                                                    del.send(
+                                                        SerialToolCommand::Assistant(
+                                                            SerialAssistantCommand::DeleteGroup,
+                                                        ),
+                                                        window,
+                                                        cx,
+                                                    );
+                                                }),
+                                        )
+                                        .separator()
+                                        .item(
+                                            PopupMenuItem::new(t!("serial.assistant.import_group"))
+                                                .icon(Icon::new(CatalogIcon::Import))
+                                                .disabled(groups_full)
+                                                .on_click(move |_, window, cx| {
+                                                    import.send(
+                                                        SerialToolCommand::Assistant(
+                                                            SerialAssistantCommand::ImportGroup,
+                                                        ),
+                                                        window,
+                                                        cx,
+                                                    );
+                                                }),
+                                        )
+                                        .item(
+                                            PopupMenuItem::new(t!("serial.assistant.export_json"))
+                                                .icon(Icon::new(CatalogIcon::Download))
+                                                .disabled(!has_group)
+                                                .on_click(move |_, window, cx| {
+                                                    export_json.send(
+                                                        SerialToolCommand::Assistant(
+                                                            SerialAssistantCommand::ExportGroupJson,
+                                                        ),
+                                                        window,
+                                                        cx,
+                                                    );
+                                                }),
+                                        )
+                                        .item(
+                                            PopupMenuItem::new(t!("serial.assistant.export_sscom"))
+                                                .icon(Icon::new(CatalogIcon::Download))
+                                                .disabled(!has_group)
+                                                .on_click(move |_, window, cx| {
+                                                    export_sscom.send(
+                                                    SerialToolCommand::Assistant(
+                                                        SerialAssistantCommand::ExportGroupSscom,
+                                                    ),
+                                                    window,
+                                                    cx,
+                                                );
+                                                }),
+                                        )
                                     }),
                             )
                             .child(
@@ -496,6 +732,27 @@ impl SerialToolsPanel {
                                 .icon(CatalogIcon::Square)
                                 .disabled(self.group_task.is_none()),
                             )
+                            .when(has_undo, |row| {
+                                row.child(
+                                    Button::new("serial-multi-undo")
+                                        .xsmall()
+                                        .ghost()
+                                        .icon(CatalogIcon::RotateCcw)
+                                        .label(SharedString::default())
+                                        .tooltip(t!("serial.assistant.undo"))
+                                        .accessibility_label(t!("serial.assistant.undo"))
+                                        .disabled(busy)
+                                        .on_click(move |_, window, cx| {
+                                            undo_dispatch.send(
+                                                SerialToolCommand::Assistant(
+                                                    SerialAssistantCommand::Undo,
+                                                ),
+                                                window,
+                                                cx,
+                                            );
+                                        }),
+                                )
+                            })
                             .when(total_commands > 0, |row| {
                                 row.child(
                                     div()
@@ -544,10 +801,21 @@ impl SerialToolsPanel {
                         .text_xs()
                         .text_color(cx.theme().muted_foreground)
                         .child(
-                            div()
-                                .w_4()
-                                .text_center()
-                                .child(t!("serial.assistant.include")),
+                            Checkbox::new("serial-multi-select-all")
+                                .small()
+                                .w_auto()
+                                .accessibility_label(t!("serial.assistant.select_all"))
+                                .checked(all_enabled)
+                                .disabled(busy)
+                                .on_click(move |enabled, window, cx| {
+                                    select_all_dispatch.send(
+                                        SerialToolCommand::Assistant(
+                                            SerialAssistantCommand::ToggleAll(*enabled),
+                                        ),
+                                        window,
+                                        cx,
+                                    );
+                                }),
                         )
                         .child(div().w_6().text_center().child("HEX"))
                         .child(
@@ -606,21 +874,44 @@ impl SerialToolsPanel {
                                         .child(t!("serial.assistant.multi_empty")),
                                 )
                                 .child(
-                                    Button::new("serial-multi-empty-add")
-                                        .small()
-                                        .outline()
-                                        .icon(IconName::Plus)
-                                        .label(t!("serial.assistant.add_command_button"))
-                                        .disabled(busy)
-                                        .on_click(move |_, window, cx| {
-                                            empty_add_dispatch.send(
-                                                SerialToolCommand::Assistant(
-                                                    SerialAssistantCommand::QuickNewCommand,
-                                                ),
-                                                window,
-                                                cx,
-                                            );
-                                        }),
+                                    h_flex()
+                                        .gap_2()
+                                        .flex_wrap()
+                                        .justify_center()
+                                        .child(
+                                            Button::new("serial-multi-empty-add")
+                                                .small()
+                                                .outline()
+                                                .icon(IconName::Plus)
+                                                .label(t!("serial.assistant.add_command_button"))
+                                                .disabled(busy)
+                                                .on_click(move |_, window, cx| {
+                                                    empty_add_dispatch.send(
+                                                        SerialToolCommand::Assistant(
+                                                            SerialAssistantCommand::QuickNewCommand,
+                                                        ),
+                                                        window,
+                                                        cx,
+                                                    );
+                                                }),
+                                        )
+                                        .child(
+                                            Button::new("serial-multi-empty-import")
+                                                .small()
+                                                .ghost()
+                                                .icon(CatalogIcon::Import)
+                                                .label(t!("serial.assistant.import_group"))
+                                                .disabled(busy || groups_full)
+                                                .on_click(move |_, window, cx| {
+                                                    empty_import_dispatch.send(
+                                                        SerialToolCommand::Assistant(
+                                                            SerialAssistantCommand::ImportGroup,
+                                                        ),
+                                                        window,
+                                                        cx,
+                                                    );
+                                                }),
+                                        ),
                                 ),
                         )
                     }),
