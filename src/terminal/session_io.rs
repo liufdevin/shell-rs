@@ -275,6 +275,7 @@ impl Recording {
 
 #[derive(Default)]
 pub(super) struct SessionIo {
+    pub serial_isp_active: Arc<AtomicBool>,
     pub serial: AtomicBool,
     pub timestamps_enabled: AtomicBool,
     pub receive_hex: AtomicBool,

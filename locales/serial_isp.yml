@@ -1,0 +1,136 @@
+_version: 2
+serial.isp.ready:
+  zh-CN: 先打开串口，再检测芯片或选择固件烧录。
+  en: Open the serial port, then detect a chip or select firmware to flash.
+serial.isp.detect:
+  zh-CN: 检测芯片
+  en: Detect chip
+serial.isp.flash:
+  zh-CN: 擦除并烧录
+  en: Erase and flash
+serial.isp.flash_dialog:
+  zh-CN: 擦除并烧录…
+  en: Erase and flash…
+serial.isp.confirm_title:
+  zh-CN: "擦除并烧录 %{port} 上的芯片？"
+  en: "Erase and flash the chip on %{port}?"
+serial.isp.firmware:
+  zh-CN: 固件路径（BIN / Intel HEX）
+  en: Firmware path (BIN / Intel HEX)
+serial.isp.choose_firmware:
+  zh-CN: 选择固件…
+  en: Choose firmware…
+serial.isp.choose_python:
+  zh-CN: 选择 Python…
+  en: Choose Python…
+serial.isp.python:
+  zh-CN: 已安装 stcgal 的 Python 可执行文件
+  en: Python executable with stcgal installed
+serial.isp.baud:
+  zh-CN: 烧录波特率
+  en: Programming baud rate
+serial.isp.address:
+  zh-CN: BIN 起始地址（十六进制，HEX 使用文件内地址）
+  en: BIN start address (hex; HEX uses embedded addresses)
+serial.isp.verify:
+  zh-CN: 写入后回读校验
+  en: Verify by reading back
+serial.isp.run:
+  zh-CN: 写入完成后启动程序
+  en: Start program after flashing
+serial.isp.auto:
+  zh-CN: 自动识别
+  en: Auto-detect
+serial.isp.stm_help:
+  zh-CN: 先按芯片手册设置 BOOT 并复位进入 USART Bootloader。烧录临时使用 8E1，结束后恢复原串口参数。仅支持已识别容量寄存器的兼容型号；不会解除读写保护或修改选项字节。
+  en: Set BOOT and reset into the USART bootloader as described in the chip manual. Programming uses 8E1 and restores the original port settings afterward. Only compatible chips with known capacity registers are supported. Protection and option bytes are not changed.
+serial.isp.stc_help:
+  zh-CN: 需要在所选 Python 环境中安装 stcgal。支持 STC15/IAP15（stc15、stc15a）；保留后端读取的芯片选项，不提供额外选项覆盖。校验由 STC 后端确认写入完成，不支持独立回读校验。STC 烧录期间临时交接串口，结束后恢复原连接。
+  en: Install stcgal in the selected Python environment. Supports STC15/IAP15 (stc15 and stc15a). Chip options read by the backend are retained without extra overrides. STC uses backend write acknowledgements, not independent read-back verification. The port is handed to the backend temporarily and restored afterward.
+serial.isp.stc_waiting:
+  zh-CN: 等待 STC 芯片，请重新给目标板上电；握手使用 2400 波特率。
+  en: Waiting for the STC chip. Power-cycle the target board; handshake uses 2400 baud.
+serial.isp.erase_hint:
+  zh-CN: 烧录会擦除 Flash；STM32/GD32 为整片擦除，包含其中的用户数据。运行期间发送、定时发送和自动应答停止；停止或断电后可能需要重新烧录。
+  en: Flashing erases flash. STM32/GD32 uses mass erase, including user data stored there. Manual sends, repeated sends and auto-reply are suspended. After stopping or losing power, the chip may need flashing again.
+serial.isp.preparing:
+  zh-CN: 正在校验固件并准备独占串口…
+  en: Validating firmware and acquiring exclusive serial access…
+serial.isp.stopping:
+  zh-CN: 正在停止，等待当前操作结束并恢复串口…
+  en: Stopping; waiting for the current operation and restoring the port…
+serial.isp.cancelled:
+  zh-CN: ISP 已停止。已擦除或写入的数据不会撤回，请复位设备后继续，必要时重新烧录。
+  en: ISP stopped. Erased or written data cannot be recalled. Reset the device before continuing; flash again if needed.
+serial.isp.invalid_image:
+  zh-CN: 固件为空、过大或 Intel HEX 格式无效（校验和、地址、记录重叠或结束记录错误）。
+  en: Firmware is empty, too large or invalid Intel HEX (checksum, address, overlapping records or EOF error).
+serial.isp.invalid_settings:
+  zh-CN: 请检查起始地址、波特率、Python 路径和 STC 协议设置。
+  en: Check the start address, baud rate, Python path and STC protocol.
+serial.isp.select_firmware:
+  zh-CN: 请先选择 BIN 或 Intel HEX 固件。
+  en: Select a BIN or Intel HEX firmware file first.
+serial.isp.synchronizing:
+  zh-CN: 正在同步 USART Bootloader…
+  en: Synchronizing with USART bootloader…
+serial.isp.nack:
+  zh-CN: "Bootloader 返回非预期响应 0x%{byte}。请检查 BOOT 状态、接线和波特率。"
+  en: "Unexpected bootloader response 0x%{byte}. Check BOOT, wiring and baud rate."
+serial.isp.timeout:
+  zh-CN: ISP 等待响应超时。请检查连接和启动模式，重新复位后重试。
+  en: ISP response timed out. Check the connection and boot mode, reset and try again.
+serial.isp.unsupported:
+  zh-CN: 芯片未提供本次操作需要的 Bootloader 命令，未开始擦除。
+  en: The chip lacks a required bootloader command. Erase has not started.
+serial.isp.chip:
+  zh-CN: "芯片 PID 0x%{id} · Bootloader 0x%{version}"
+  en: "Chip PID 0x%{id} · Bootloader 0x%{version}"
+serial.isp.unknown_capacity:
+  zh-CN: "无法可靠识别 PID 0x%{id} 的 Flash 容量，已停止，未擦除。"
+  en: "Could not reliably determine flash capacity for PID 0x%{id}. Stopped without erasing."
+serial.isp.address_range:
+  zh-CN: "固件地址必须四字节对齐，且完整位于 0x08000000 起的 %{size} KiB Flash 内，未开始擦除。"
+  en: "Firmware must be four-byte aligned and fit entirely in %{size} KiB of flash starting at 0x08000000. Erase has not started."
+serial.isp.erasing:
+  zh-CN: 正在整片擦除 Flash，请勿断电…
+  en: Erasing flash; keep the target powered…
+serial.isp.writing:
+  zh-CN: "正在写入 %{done}/%{total} 字节…"
+  en: "Writing %{done}/%{total} bytes…"
+serial.isp.verifying:
+  zh-CN: 正在回读校验…
+  en: Verifying by reading back…
+serial.isp.verify_failed:
+  zh-CN: "地址 0x%{address} 回读校验失败，未启动程序，请重新烧录。"
+  en: "Read-back verification failed at 0x%{address}. Program not started; flash again."
+serial.isp.starting:
+  zh-CN: 正在启动程序…
+  en: Starting program…
+serial.isp.detected:
+  zh-CN: 检测完成，未擦除或写入固件。
+  en: Detection complete. Firmware was not erased or written.
+serial.isp.complete:
+  zh-CN: 烧录完成，串口已恢复。
+  en: Flashing complete. Serial port restored.
+serial.isp.backend_complete:
+  zh-CN: STC 后端已确认操作完成，正在恢复串口。
+  en: STC backend confirmed completion. Restoring the port.
+serial.isp.transport_closed:
+  zh-CN: ISP 通道已关闭或当前传输不支持 ISP，请检查连接后重试。
+  en: ISP channel closed or unsupported by this transport. Check the connection and retry.
+serial.isp.stc_range:
+  zh-CN: STC15 固件必须从地址 0 开始且不超过 64 KiB；实际容量会在擦除前再次检查。
+  en: STC15 firmware must start at address 0 and be at most 64 KiB. Actual capacity is checked before erase.
+serial.isp.stc_unavailable:
+  zh-CN: "无法启动 STC 后端，请检查 Python 路径并安装 stcgal：%{error}"
+  en: "Could not start the STC backend. Check the Python path and install stcgal: %{error}"
+serial.isp.stc_start_timeout:
+  zh-CN: STC 后端启动后 15 秒未响应，请确认所选 Python 能正常运行且已安装 stcgal。
+  en: The STC backend did not respond within 15 seconds. Check that the selected Python runs correctly and has stcgal installed.
+serial.isp.restore_failed:
+  zh-CN: "ISP 结束后无法恢复串口参数，请重新打开串口：%{error}"
+  en: "Could not restore serial settings after ISP. Reopen the port: %{error}"
+serial.isp.stc_failed:
+  zh-CN: "STC 操作失败，请检查所选 Python 的 stcgal 安装、接线及上电时机：%{error}"
+  en: "STC operation failed. Check stcgal in the selected Python, wiring and power-cycle timing: %{error}"

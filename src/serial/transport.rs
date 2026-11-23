@@ -72,15 +72,48 @@ impl TerminalTransport for SerialTransport {
         events: Sender<TerminalTransportEvent>,
     ) -> Result<()> {
         let device = self.line.device.as_str();
-        let port = open(&self.line).map_err(|error| anyhow!(open_error(device, &error)))?;
-        serve_shell(
-            Arc::new(port),
-            device,
-            commands,
-            &events,
-            crate::terminal::ShellQuery::new(self.line.settings.linux_shell, self.encoding),
-            self.line.settings.baud,
-        )
+        let mut completed: Option<(super::isp::IspRequest, Result<(), String>)> = None;
+        loop {
+            if completed.is_some() && reject_isp_pending(&commands, &events) {
+                if let Some((request, result)) = completed.take() {
+                    request.finish(result);
+                }
+                return Ok(());
+            }
+            let port = match open(&self.line) {
+                Ok(port) => port,
+                Err(error) => {
+                    let error = open_error(device, &error).to_string();
+                    if let Some((request, _)) = completed.take() {
+                        request.finish(Err(
+                            t!("serial.isp.restore_failed", error = error).to_string()
+                        ));
+                    }
+                    return Err(anyhow!(error));
+                }
+            };
+            if let Some((request, result)) = completed.take() {
+                request.finish(result);
+            }
+            let mut external = None;
+            let result = serve_shell(
+                Arc::new(port),
+                device,
+                &commands,
+                &events,
+                crate::terminal::ShellQuery::new(self.line.settings.linux_shell, self.encoding),
+                self.line.settings.baud,
+                &mut external,
+            );
+            if let Some(request) = external {
+                // serve_shell has joined its reader and dropped every port
+                // handle. Only then may stcgal take exclusive ownership.
+                let result = super::isp::stc::execute(device, &request);
+                completed = Some((request, result));
+            } else {
+                return result;
+            }
+        }
     }
 }
 
@@ -311,20 +344,22 @@ fn serve(
     serve_shell(
         port,
         device,
-        commands,
+        &commands,
         events,
         crate::terminal::ShellQuery::new(false, crate::host::TerminalEncoding::Utf8),
         115200,
+        &mut None,
     )
 }
 
 fn serve_shell(
     port: Arc<SerialPort>,
     device: &str,
-    commands: mpsc::Receiver<TerminalTransportCommand>,
+    commands: &mpsc::Receiver<TerminalTransportCommand>,
     events: &Sender<TerminalTransportEvent>,
     mut shell: crate::terminal::ShellQuery,
     mut baud: u32,
+    external: &mut Option<super::isp::IspRequest>,
 ) -> Result<()> {
     let port = Arc::new(ObservedPort::new(port)?);
     // Set by the reader when the port is gone, and by the command loop when
@@ -355,6 +390,7 @@ fn serve_shell(
     let mut group_write = None;
     let mut debug = SerialDebugCapture::default();
     let mut poll_debug = false;
+    let mut isp_synced_baud = None;
     let result = (|| -> Result<()> {
         while !stop.load(Ordering::Acquire) {
             if Instant::now() >= next_diagnostics {
@@ -375,6 +411,7 @@ fn serve_shell(
             while let Ok(event) = received.try_recv() {
                 match event {
                     SerialRead::Output(bytes) => {
+                        isp_synced_baud = None;
                         let visible = shell.output(&bytes);
                         debug.append(&visible);
                         if !visible.is_empty()
@@ -444,6 +481,105 @@ fn serve_shell(
             }
             poll_debug = false;
             match commands.recv_timeout(Duration::from_millis(20)) {
+                Ok(TerminalTransportCommand::SerialIsp(request)) => {
+                    if shell.busy() {
+                        request.finish(Err(t!("serial.tool.unavailable").to_string()));
+                        continue;
+                    }
+                    if request.stc.is_some() {
+                        *external = Some(request);
+                        break;
+                    }
+                    let previous = port.get_configuration()?;
+                    let mut handle = port.try_clone()?;
+                    let mut settings = previous.clone();
+                    settings.set_baud_rate(request.baud)?;
+                    settings.set_char_size(serial2::CharSize::Bits8);
+                    settings.set_stop_bits(serial2::StopBits::One);
+                    settings.set_parity(serial2::Parity::Even);
+                    settings.set_flow_control(serial2::FlowControl::None);
+                    let mut boot_output = Vec::new();
+                    let result = handle
+                        .set_configuration(&settings)
+                        .map_err(|error| error.to_string())
+                        .and_then(|_| {
+                            let actual = handle
+                                .get_configuration()
+                                .map_err(|error| error.to_string())?;
+                            if !same_isp_frame(&actual, &settings)
+                                .map_err(|error| error.to_string())?
+                            {
+                                return Err(t!("serial.open.configuration_mismatch").to_string());
+                            }
+                            discard_isp_input(&received, events, &stop)?;
+                            let mut link = IspLink {
+                                port: &port,
+                                received: &received,
+                                pending: VecDeque::new(),
+                                request: &request,
+                                lost: None,
+                            };
+                            let result = super::isp::stm32::execute_with_sync(
+                                &mut link,
+                                &request,
+                                isp_synced_baud != Some(request.baud),
+                            );
+                            if result.is_ok() && request.run && request.image.is_some() {
+                                boot_output.extend(link.pending.drain(..));
+                            }
+                            if let Some(error) = link.lost {
+                                send_event(events, TerminalTransportEvent::Failed(error));
+                                stop.store(true, Ordering::Release);
+                            }
+                            result
+                        });
+                    isp_synced_baud = if result.is_ok() && (request.image.is_none() || !request.run)
+                    {
+                        Some(request.baud)
+                    } else {
+                        None
+                    };
+                    let application_started =
+                        result.is_ok() && request.run && request.image.is_some();
+                    let restored = handle
+                        .set_configuration(&previous)
+                        .and_then(|_| {
+                            let actual = handle.get_configuration()?;
+                            if same_isp_frame(&actual, &previous)? {
+                                Ok(())
+                            } else {
+                                Err(io::Error::other(
+                                    t!("serial.open.configuration_mismatch").to_string(),
+                                ))
+                            }
+                        })
+                        .map_err(|error| error.to_string())
+                        .and_then(|_| {
+                            if application_started {
+                                Ok(())
+                            } else {
+                                discard_isp_input(&received, events, &stop)
+                            }
+                        })
+                        .map_err(|error| {
+                            t!("serial.isp.restore_failed", error = error).to_string()
+                        });
+                    if let Err(error) = &restored {
+                        stop.store(true, Ordering::Release);
+                        send_event(events, TerminalTransportEvent::Failed(error.clone()));
+                    }
+                    if reject_isp_pending(commands, events) {
+                        stop.store(true, Ordering::Release);
+                    }
+                    let result = restored.and(result);
+                    let show_boot_output =
+                        application_started && result.is_ok() && !stop.load(Ordering::Acquire);
+                    request.finish(result);
+                    if show_boot_output && !boot_output.is_empty() {
+                        send_event(events, TerminalTransportEvent::Output(boot_output));
+                    }
+                    shell.invalidate_debug_prompt();
+                }
                 Ok(TerminalTransportCommand::ShareSerialDebug(share)) => {
                     debug = SerialDebugCapture(Some((share, shell.debug_decoder())));
                 }
@@ -478,10 +614,12 @@ fn serve_shell(
                     let _ = reply.send(result.map_err(|error| error.to_string()));
                 }
                 Ok(TerminalTransportCommand::WriteData(bytes)) => {
+                    isp_synced_baud = None;
                     shell.invalidate_debug_prompt();
                     port.write_all(&bytes)?;
                 }
                 Ok(TerminalTransportCommand::SerialWriteChecked { bytes, reply }) => {
+                    isp_synced_baud = None;
                     let result = if shell.busy() {
                         Err(io::Error::other(t!("serial.tool.unavailable").to_string()))
                     } else {
@@ -494,6 +632,7 @@ fn serve_shell(
                     group_write = Some(command)
                 }
                 Ok(TerminalTransportCommand::Write(bytes)) => {
+                    isp_synced_baud = None;
                     let debug_running = shell.debug_busy();
                     if bytes.contains(&3) {
                         pending_input.clear();
@@ -556,6 +695,154 @@ fn serve_shell(
         first_received_ms=?snapshot.first_received_ms, "Serial connection statistics");
     send_event(events, TerminalTransportEvent::SerialDiagnostics(snapshot));
     result
+}
+
+struct IspLink<'a> {
+    port: &'a ObservedPort,
+    received: &'a mpsc::Receiver<SerialRead>,
+    pending: VecDeque<u8>,
+    request: &'a super::isp::IspRequest,
+    lost: Option<String>,
+}
+
+fn same_isp_frame(left: &serial2::Settings, right: &serial2::Settings) -> io::Result<bool> {
+    #[cfg(windows)]
+    if !super::windows::same(left, right) {
+        return Ok(false);
+    }
+    Ok(left.get_baud_rate()? == right.get_baud_rate()?
+        && left.get_char_size()? == right.get_char_size()?
+        && left.get_parity()? == right.get_parity()?
+        && left.get_stop_bits()? == right.get_stop_bits()?
+        && left.get_flow_control()? == right.get_flow_control()?)
+}
+
+/// Drop writes queued while ISP owned the wire, including parser replies
+/// racing the UI gate. Never replay them into a bootloader after cancellation.
+fn reject_isp_pending(
+    commands: &mpsc::Receiver<TerminalTransportCommand>,
+    events: &Sender<TerminalTransportEvent>,
+) -> bool {
+    let mut shutdown = false;
+    loop {
+        let command = match commands.try_recv() {
+            Ok(command) => command,
+            Err(mpsc::TryRecvError::Empty) => return shutdown,
+            Err(mpsc::TryRecvError::Disconnected) => return true,
+        };
+        let error = t!("serial.tool.unavailable").to_string();
+        match command {
+            TerminalTransportCommand::Shutdown => shutdown = true,
+            TerminalTransportCommand::SerialWriteChecked { reply, .. }
+            | TerminalTransportCommand::SetSerialBaud { reply, .. } => {
+                let _ = reply.send(Err(error));
+            }
+            TerminalTransportCommand::CommandGroupWrite { id, .. } => {
+                send_event(
+                    events,
+                    TerminalTransportEvent::CommandGroupWritten { id, success: false },
+                );
+            }
+            TerminalTransportCommand::SerialIsp(request) => request.finish(Err(error)),
+            TerminalTransportCommand::Exec(request)
+            | TerminalTransportCommand::Monitor(request)
+            | TerminalTransportCommand::SerialTransfer(request) => {
+                let _ = request.reply.send(Err(error));
+            }
+            TerminalTransportCommand::OpenSftp(request) => {
+                let _ = request.reply.send(Err(error));
+            }
+            _ => {}
+        }
+    }
+}
+
+#[cfg(test)]
+mod isp_queue_tests {
+    use super::*;
+
+    #[test]
+    fn writes_during_isp_are_rejected_and_shutdown_is_preserved() {
+        let (send, receive) = mpsc::channel();
+        let (events, _) = async_channel::unbounded();
+        let (reply, answer) = mpsc::channel();
+        send.send(TerminalTransportCommand::Write(b"stale".to_vec()))
+            .unwrap();
+        send.send(TerminalTransportCommand::SerialWriteChecked {
+            bytes: vec![1],
+            reply,
+        })
+        .unwrap();
+        send.send(TerminalTransportCommand::Shutdown).unwrap();
+        assert!(reject_isp_pending(&receive, &events));
+        assert!(answer.recv().unwrap().is_err());
+        assert!(receive.try_recv().is_err());
+        send.send(TerminalTransportCommand::Write(b"new input".to_vec()))
+            .unwrap();
+        assert!(
+            matches!(receive.recv().unwrap(), TerminalTransportCommand::Write(bytes) if bytes == b"new input")
+        );
+    }
+}
+
+fn discard_isp_input(
+    received: &mpsc::Receiver<SerialRead>,
+    events: &Sender<TerminalTransportEvent>,
+    stop: &AtomicBool,
+) -> Result<(), String> {
+    for _ in 0..32 {
+        match received.try_recv() {
+            Ok(SerialRead::Output(_)) => {}
+            Err(mpsc::TryRecvError::Empty) => break,
+            failure => {
+                let error = match failure {
+                    Ok(SerialRead::Lost(error)) => error,
+                    _ => t!("serial.tool.unavailable").to_string(),
+                };
+                stop.store(true, Ordering::Release);
+                send_event(events, TerminalTransportEvent::Failed(error.clone()));
+                return Err(error);
+            }
+        }
+    }
+    Ok(())
+}
+
+impl super::isp::stm32::Link for IspLink<'_> {
+    fn write(&mut self, bytes: &[u8]) -> Result<(), String> {
+        self.request.check_cancelled()?;
+        self.port
+            .write_all(bytes)
+            .map_err(|error| error.to_string())
+    }
+
+    fn read(&mut self, count: usize, timeout: Duration) -> Result<Vec<u8>, String> {
+        let deadline = Instant::now() + timeout;
+        let mut result = Vec::with_capacity(count);
+        while result.len() < count {
+            self.request.check_cancelled()?;
+            if let Some(byte) = self.pending.pop_front() {
+                result.push(byte);
+                continue;
+            }
+            if Instant::now() >= deadline {
+                return Err(t!("serial.isp.timeout").to_string());
+            }
+            match self.received.recv_timeout(Duration::from_millis(50)) {
+                Ok(SerialRead::Output(bytes)) => self.pending.extend(bytes),
+                Ok(SerialRead::Lost(error)) => {
+                    self.lost = Some(error.clone());
+                    return Err(error);
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    self.lost = Some(t!("serial.tool.unavailable").to_string());
+                    return Err(t!("serial.tool.unavailable").to_string());
+                }
+            }
+        }
+        Ok(result)
+    }
 }
 
 #[derive(Default)]

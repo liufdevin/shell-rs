@@ -68,6 +68,7 @@ fn observe_serial_output(
     suspended: bool,
 ) {
     if io.serial.load(Ordering::Acquire)
+        && !io.serial_isp_active.load(Ordering::Acquire)
         && let Some(state) = state.lock().unwrap().as_mut()
         && let Some(reply) = state.receive(bytes, Instant::now(), suspended)
     {
@@ -256,6 +257,7 @@ impl TerminalEngine {
     ) -> Result<(), SharedString> {
         let mut group = self.runtime.command_group.lock().unwrap();
         if !self.lifecycle.accepts_input()
+            || self.serial_isp_active()
             || self.runtime.transferring()
             || lock_run(&self.runtime.run)
                 .as_ref()
@@ -359,6 +361,7 @@ impl TerminalEngine {
 
     fn serial_tool_ready(&self) -> Result<(), SharedString> {
         if self.serial_name.is_none()
+            || self.serial_isp_active()
             || !matches!(self.lifecycle, TerminalLifecycle::Running)
             || self.runtime.transferring()
             || lock_run(&self.runtime.run)
@@ -368,6 +371,26 @@ impl TerminalEngine {
             return Err(t!("serial.tool.unavailable"));
         }
         Ok(())
+    }
+
+    pub(crate) fn serial_isp_active(&self) -> bool {
+        self.io.serial_isp_active.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn start_serial_isp(
+        &self,
+        mut request: crate::serial::isp::IspRequest,
+    ) -> Result<(), SharedString> {
+        self.serial_tool_ready()?;
+        if self.command_group_status().is_active() {
+            return Err(t!("serial.tool.unavailable"));
+        }
+        self.io.serial_isp_active.store(true, Ordering::Release);
+        request.active = self.io.serial_isp_active.clone();
+        self.runtime
+            .commands
+            .send(TerminalTransportCommand::SerialIsp(request))
+            .map_err(|_| t!("serial.tool.unavailable"))
     }
 
     pub(crate) fn serial_tool_send(&self, bytes: Vec<u8>) -> Result<(), SharedString> {
@@ -955,7 +978,7 @@ impl TerminalEngine {
     /// Break the line, while it is connected: see
     /// [`TerminalTransportCommand::SendBreak`].
     pub fn send_break(&self) {
-        if matches!(self.lifecycle, TerminalLifecycle::Running) {
+        if matches!(self.lifecycle, TerminalLifecycle::Running) && !self.serial_isp_active() {
             self.runtime.send_break();
         }
     }
@@ -1001,7 +1024,7 @@ impl TerminalEngine {
     }
 
     pub fn write(&self, bytes: impl Into<Vec<u8>>) {
-        if self.lifecycle.accepts_input() {
+        if self.lifecycle.accepts_input() && !self.serial_isp_active() {
             self.runtime.write(bytes.into());
         }
     }
@@ -1010,7 +1033,7 @@ impl TerminalEngine {
     /// terminal query responses and focus reports, interactive input returns
     /// to the live screen and retires the previous selection first.
     pub fn send_user_input(&self, bytes: impl Into<Vec<u8>>) -> bool {
-        if !self.lifecycle.accepts_input() || self.sends_hex() {
+        if !self.lifecycle.accepts_input() || self.sends_hex() || self.serial_isp_active() {
             return false;
         }
         let bytes = match encode_input(self.runtime.encoding, bytes.into()) {
@@ -1059,7 +1082,7 @@ impl TerminalEngine {
         run: bool,
         replace: bool,
     ) -> Result<(), SharedString> {
-        if !self.lifecycle.accepts_input() {
+        if !self.lifecycle.accepts_input() || self.serial_isp_active() {
             return Err(t!("terminal.command.not_connected"));
         }
         if self.sends_hex() {
@@ -1487,7 +1510,7 @@ impl TerminalEngine {
     /// shell is not running, a full-screen program has the keys or a
     /// transfer the terminal.
     pub fn upload_dropped(&self, files: Vec<PathBuf>) -> Result<(), SharedString> {
-        if self.runtime.transferring() {
+        if self.runtime.transferring() || self.serial_isp_active() {
             return Err(t!("terminal.zmodem.busy"));
         }
         // Sent first: `rz` answers once the other end has run it.
@@ -1727,6 +1750,7 @@ pub enum TerminalEvent {
 }
 
 struct TerminalRuntime {
+    serial_isp_active: Arc<AtomicBool>,
     serial_tool: Arc<Mutex<Option<super::serial_tools::SerialToolState>>>,
     command_group: Arc<Mutex<super::command_group::CommandGroupState>>,
     timestamps: Arc<Mutex<super::timestamps::Timestamps>>,
@@ -1783,7 +1807,9 @@ impl TerminalRuntime {
         let rewritten_output = Arc::new(AtomicU64::new(0));
         let synchronized_output = Arc::new(AtomicBool::new(false));
         let synchronized_frames = Arc::new(AtomicU64::new(0));
+        let serial_isp_active = io.serial_isp_active.clone();
         let proxy = TerminalEventProxy {
+            serial_isp_active: serial_isp_active.clone(),
             generation,
             commands: commands.clone(),
             ui_events: ui_events.clone(),
@@ -1934,9 +1960,10 @@ impl TerminalRuntime {
                             }
                             // `exec --terminal` reads the output for its
                             // markers: no transfer starts under it.
-                            let detect = !lock_run(&parser.run)
-                                .as_ref()
-                                .is_some_and(RunHandle::is_active);
+                            let detect = !io.serial_isp_active.load(Ordering::Acquire)
+                                && !lock_run(&parser.run)
+                                    .as_ref()
+                                    .is_some_and(RunHandle::is_active);
                             let transferring = parser.transferring.load(Ordering::Acquire);
                             let fed = parser.zmodem.feed(&bytes, Instant::now(), detect);
                             parser.transfer(fed);
@@ -2068,6 +2095,7 @@ impl TerminalRuntime {
             .expect("terminal transport thread");
 
         Self {
+            serial_isp_active,
             serial_tool,
             command_group,
             timestamps,
@@ -2088,6 +2116,9 @@ impl TerminalRuntime {
     }
 
     fn write(&self, bytes: Vec<u8>) {
+        if self.serial_isp_active.load(Ordering::Acquire) {
+            return;
+        }
         self.stop_command_group(super::CommandGroupStatus::Stopped);
         if self.transferring() {
             // Keys would land in the transfer: only Ctrl+C means anything.
@@ -2164,6 +2195,7 @@ impl Drop for TerminalRuntime {
 
 #[derive(Clone)]
 pub struct TerminalEventProxy {
+    serial_isp_active: Arc<AtomicBool>,
     generation: u64,
     commands: mpsc::Sender<TerminalTransportCommand>,
     ui_events: mpsc::Sender<TerminalUiEvent>,
@@ -2249,6 +2281,9 @@ impl TerminalEventProxy {
                 .unwrap_or_else(|error| error.into_inner()),
         );
         if replies.is_empty() {
+            return;
+        }
+        if self.serial_isp_active.load(Ordering::Acquire) {
             return;
         }
         let theme = self.theme.lock().unwrap_or_else(|error| error.into_inner());
@@ -2423,6 +2458,10 @@ impl Parser {
     /// answers, and ask what it asks.
     fn transfer(&mut self, fed: Fed) {
         let Fed { shown, wire, ask } = fed;
+        let isp = self.io.serial_isp_active.load(Ordering::Acquire);
+        if isp {
+            let _ = self.zmodem.control(ZmodemControl::Cancel, Instant::now());
+        }
         for shown in shown {
             match shown {
                 Shown::Output(bytes) => self.output(&bytes),
@@ -2435,17 +2474,17 @@ impl Parser {
                 }
             }
         }
-        if !wire.is_empty() {
+        if !isp && !wire.is_empty() {
             let _ = self
                 .proxy
                 .commands
                 .send(TerminalTransportCommand::WriteData(wire));
         }
-        if let Some(direction) = ask {
+        if !isp && let Some(direction) = ask {
             self.proxy.send(TerminalUiEventKind::ZmodemAsk(direction));
         }
         self.transferring
-            .store(self.zmodem.active(), Ordering::Release);
+            .store(!isp && self.zmodem.active(), Ordering::Release);
     }
 
     /// Output for the emulator, and for what reads it beside: 关键字高亮,
@@ -3128,6 +3167,7 @@ mod tests {
         let (commands, command_receiver) = mpsc::channel();
         let (ui_events, ui_receiver) = mpsc::channel();
         let proxy = TerminalEventProxy {
+            serial_isp_active: Arc::new(AtomicBool::new(false)),
             generation: 1,
             commands,
             ui_events,
@@ -3182,6 +3222,29 @@ mod tests {
         // Nothing asked, nothing written.
         proxy.answer(&term);
         assert!(commands.try_recv().is_err());
+    }
+
+    #[test]
+    fn serial_isp_suppresses_terminal_query_responses_without_replaying_them() {
+        let size = TerminalSize::new(20, 4, 8, 16);
+        let (proxy, commands, _) = test_proxy(size);
+        let mut term = AlacrittyTerm::new(
+            terminal_config(TerminalInteraction::default()),
+            &size,
+            proxy.clone(),
+        );
+        proxy.serial_isp_active.store(true, Ordering::Release);
+        feed(&mut term, b"\x1b]11;?\x07");
+        proxy.answer(&term);
+        assert!(commands.try_recv().is_err());
+        proxy.serial_isp_active.store(false, Ordering::Release);
+        proxy.answer(&term);
+        assert!(commands.try_recv().is_err());
+        feed(&mut term, b"\x1b[6n");
+        proxy.answer(&term);
+        assert!(
+            matches!(commands.try_recv(), Ok(TerminalTransportCommand::Write(bytes)) if bytes == b"\x1b[1;1R")
+        );
     }
 
     /// A program asks whether keys can be told apart (Claude Code does, to
@@ -4294,6 +4357,20 @@ mod tests {
             })
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    #[test]
+    fn serial_isp_gate_blocks_runtime_writes_including_focus_reports() {
+        let (runtime, _events, commands, _ui) = piped();
+        runtime.serial_isp_active.store(true, Ordering::Release);
+        runtime.write(b"manual".to_vec());
+        runtime.write(b"\x1b[I".to_vec());
+        assert!(commands.try_recv().is_err());
+        runtime.serial_isp_active.store(false, Ordering::Release);
+        runtime.write(b"ok".to_vec());
+        assert!(
+            matches!(next_command(&commands), Some(TerminalTransportCommand::Write(bytes)) if bytes == b"ok")
+        );
     }
 
     /// Wait for `done` to hold, two seconds at most.

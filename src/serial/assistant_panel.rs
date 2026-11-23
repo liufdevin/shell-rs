@@ -9,6 +9,7 @@ use gpui_kit::component::{
     h_flex,
     input::{Input, InputEvent, InputState},
     menu::PopupMenu,
+    resizable::{ResizableState, h_resizable, resizable_panel},
     searchable_list::SearchableListItem,
     select::{Select, SelectEvent, SelectState},
     v_flex,
@@ -28,6 +29,7 @@ use crate::settings::SettingsStore;
 use crate::shared::{ClosableTabTitle, close_tab_items};
 use crate::terminal::{SharedSerialTerminalTransportProvider, TerminalLifecycle, TerminalView};
 
+use super::isp::{IspCommand, IspPage, IspPanel};
 use super::{SerialAssistantPreferences, SerialPortSource, SerialToolCommand, SerialToolsPanel};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -42,7 +44,9 @@ pub enum SerialAssistantTabCommand {
     Follow(bool),
     ToggleFilter,
     SaveLog,
+    ToggleSidebar,
     Tool(SerialToolCommand),
+    Isp(IspCommand),
 }
 
 #[derive(Clone, Copy)]
@@ -100,6 +104,10 @@ pub(crate) struct SerialAssistantPanel {
     store: Entity<HostStore>,
     settings: Entity<SettingsStore>,
     tools: Entity<SerialToolsPanel>,
+    isp: Entity<IspPanel>,
+    sidebar: IspPage,
+    sidebar_visible: bool,
+    split: Entity<ResizableState>,
     ports: Arc<dyn SerialPortSource>,
     transport: SharedSerialTerminalTransportProvider,
     terminal: Option<Entity<TerminalView>>,
@@ -191,7 +199,17 @@ impl SerialAssistantPanel {
                 cx,
             )
         });
+        let isp = cx.new(|cx| {
+            IspPanel::new(
+                dispatch.clone(),
+                settings.clone(),
+                saved.sidebar_page,
+                window,
+                cx,
+            )
+        });
         let subscriptions = vec![
+            cx.observe(&isp, |_, _, cx| cx.notify()),
             cx.subscribe_in(
                 &port,
                 window,
@@ -224,6 +242,10 @@ impl SerialAssistantPanel {
             store,
             settings,
             tools,
+            isp,
+            sidebar: saved.sidebar_page,
+            sidebar_visible: saved.sidebar_visible,
+            split: cx.new(|_| ResizableState::default()),
             ports,
             transport,
             terminal: None,
@@ -299,12 +321,15 @@ impl SerialAssistantPanel {
         });
         self.receive_hex = defaults.receive_hex;
         self.follow_output = defaults.follow_output;
+        self.sidebar = defaults.sidebar_page;
+        self.sidebar_visible = defaults.sidebar_visible;
         self.error = None;
         self.port
             .update(cx, |select, cx| select.set_selected_index(None, window, cx));
         self.tools.update(cx, |tools, cx| {
             tools.apply_sender_preferences(&defaults.sender, window, cx)
         });
+        self.isp.update(cx, |isp, cx| isp.reset(window, cx));
         if let Some(terminal) = &self.terminal {
             terminal.update(cx, |terminal, cx| {
                 let mut modes = terminal.serial_modes(cx);
@@ -469,6 +494,9 @@ impl SerialAssistantPanel {
     }
 
     fn toggle_connection(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.isp.read(cx).busy() {
+            self.isp.update(cx, |isp, cx| isp.cancel(cx));
+        }
         if self.connected_or_opening(cx) {
             self.tools.update(cx, |tools, cx| tools.stop_sending(cx));
             if let Some(terminal) = &self.terminal {
@@ -529,6 +557,8 @@ impl SerialAssistantPanel {
         self.tools.update(cx, |tools, cx| {
             tools.set_target(Some(terminal.downgrade()), window, cx);
         });
+        self.isp
+            .update(cx, |isp, cx| isp.set_target(Some(terminal.downgrade()), cx));
         if let Some(filter) = filter {
             terminal.update(cx, |terminal, cx| {
                 terminal.restore_serial_log_filter(filter, window, cx)
@@ -543,7 +573,52 @@ impl SerialAssistantPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.isp.read(cx).busy()
+            && !matches!(
+                command,
+                SerialAssistantTabCommand::Isp(_)
+                    | SerialAssistantTabCommand::ToggleConnection
+                    | SerialAssistantTabCommand::ClearOutput
+            )
+        {
+            return;
+        }
         match command {
+            SerialAssistantTabCommand::Isp(command) => {
+                if self.isp.read(cx).busy() && !matches!(command, IspCommand::Stop) {
+                    return;
+                }
+                if matches!(command, IspCommand::Start) {
+                    self.confirm_isp_start(window, cx);
+                    return;
+                }
+                if let IspCommand::Page(page) = command {
+                    if self.sidebar == *page {
+                        return;
+                    }
+                    self.sidebar = *page;
+                    self.sidebar_visible = true;
+                    let page = *page;
+                    self.save_preferences(
+                        |saved| {
+                            saved.sidebar_visible = true;
+                            saved.sidebar_page = page;
+                        },
+                        cx,
+                    );
+                }
+                if matches!(command, IspCommand::ConfirmStart | IspCommand::Detect) {
+                    self.tools.update(cx, |tools, cx| tools.stop_sending(cx));
+                    if let Some(terminal) = &self.terminal {
+                        terminal.update(cx, |terminal, cx| {
+                            terminal.stop_command_group(cx);
+                            let _ = terminal.serial_tool_rule(None, cx);
+                        });
+                    }
+                }
+                self.isp
+                    .update(cx, |isp, cx| isp.command(command, window, cx));
+            }
             SerialAssistantTabCommand::ToggleConnection => self.toggle_connection(window, cx),
             SerialAssistantTabCommand::RefreshPorts => self.refresh_ports(window, cx),
             SerialAssistantTabCommand::ResetPreferences => self.reset_preferences(window, cx),
@@ -582,9 +657,59 @@ impl SerialAssistantPanel {
                 }
             }
             SerialAssistantTabCommand::SaveLog => self.save_log(window, cx),
+            SerialAssistantTabCommand::ToggleSidebar => {
+                if self.isp.read(cx).busy() {
+                    return;
+                }
+                self.sidebar_visible = !self.sidebar_visible;
+                let visible = self.sidebar_visible;
+                self.save_preferences(|saved| saved.sidebar_visible = visible, cx);
+            }
             SerialAssistantTabCommand::Tool(command) => self.tool_command(command, window, cx),
         }
         cx.notify();
+    }
+
+    fn confirm_isp_start(&self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(terminal) = self.terminal.as_ref() else {
+            return;
+        };
+        let Some(port) = self.port.read(cx).selected_value().cloned() else {
+            return;
+        };
+        if window.has_active_dialog(cx)
+            || self.sidebar == IspPage::MultiSend
+            || terminal.read(cx).lifecycle(cx) != TerminalLifecycle::Running
+        {
+            return;
+        }
+        let generation = terminal.read(cx).generation(cx);
+        let terminal = terminal.downgrade();
+        let owner = cx.weak_entity();
+        let page = self.sidebar;
+        crate::shared::confirm_danger(
+            t!("serial.isp.confirm_title", port = port),
+            Some(t!("serial.isp.erase_hint")),
+            t!("serial.isp.flash"),
+            std::rc::Rc::new(move |window, cx| {
+                let _ = owner.update(cx, |this, cx| {
+                    if this.sidebar == page
+                        && this.terminal.as_ref().is_some_and(|current| {
+                            current.downgrade() == terminal
+                                && current.read(cx).generation(cx) == generation
+                        })
+                    {
+                        this.command(
+                            &SerialAssistantTabCommand::Isp(IspCommand::ConfirmStart),
+                            window,
+                            cx,
+                        );
+                    }
+                });
+            }),
+            window,
+            cx,
+        );
     }
 
     fn save_log(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -785,8 +910,8 @@ impl SerialAssistantPanel {
 }
 
 impl Render for SerialAssistantPanel {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let locked = self.connected_or_opening(cx);
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let locked = self.connected_or_opening(cx) || self.isp.read(cx).busy();
         let timestamps = self.store.read(cx).timestamps_enabled(TIMESTAMP_TARGET);
         let filter_active = self
             .terminal
@@ -842,120 +967,142 @@ impl Render for SerialAssistantPanel {
             transmitted = diagnostics.as_ref().map_or(0, |counts| counts.transmitted),
             errors = diagnostics.as_ref().map_or(0, |counts| counts.errors)
         );
-        v_flex()
-            .id("serial-assistant-page")
+        let output = div()
+            .id("serial-assistant-output")
             .test_support()
-            .track_focus(&self.focus)
-            .size_full()
+            .flex_1()
             .min_h_0()
             .min_w_0()
+            .overflow_hidden()
+            .rounded_md()
+            .border_1()
+            .border_color(cx.theme().border)
+            .when_some(self.terminal.clone(), |view, terminal| view.child(terminal))
+            .when(self.terminal.is_none(), |view| {
+                view.bg(cx.theme().muted).child(
+                    v_flex()
+                        .size_full()
+                        .items_center()
+                        .justify_center()
+                        .gap_2()
+                        .p_4()
+                        .text_center()
+                        .child(
+                            Icon::default()
+                                .path(SERIAL_ICON)
+                                .text_color(cx.theme().muted_foreground),
+                        )
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(empty),
+                        ),
+                )
+            });
+        let section_label = |label: SharedString| {
+            div()
+                .text_xs()
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(cx.theme().muted_foreground)
+                .child(label)
+        };
+        let controls = v_flex()
+            .flex_shrink_0()
+            .gap_3()
             .p_3()
-            .gap_2()
-            .bg(cx.theme().background)
+            .rounded_lg()
+            .border_1()
+            .border_color(cx.theme().border)
+            .bg(cx.theme().sidebar)
             .child(
-                div()
-                    .id("serial-assistant-output")
-                    .test_support()
-                    .flex_1()
-                    .min_h_0()
-                    .min_w_0()
-                    .overflow_hidden()
-                    .rounded_md()
-                    .border_1()
-                    .border_color(cx.theme().border)
-                    .when_some(self.terminal.clone(), |view, terminal| view.child(terminal))
-                    .when(self.terminal.is_none(), |view| {
-                        view.bg(cx.theme().muted).child(
-                            v_flex()
-                                .size_full()
-                                .items_center()
-                                .justify_center()
-                                .gap_2()
-                                .p_4()
-                                .text_center()
-                                .child(
-                                    Icon::default()
-                                        .path(SERIAL_ICON)
-                                        .text_color(cx.theme().muted_foreground),
-                                )
-                                .child(
-                                    div()
-                                        .text_sm()
-                                        .text_color(cx.theme().muted_foreground)
-                                        .child(empty),
-                                ),
+                h_flex()
+                    .gap_2()
+                    .flex_wrap()
+                    .items_center()
+                    .child(
+                        self.button(
+                            "serial-assistant-connect",
+                            if locked {
+                                t!("serial.assistant.disconnect")
+                            } else {
+                                t!("serial.assistant.connect")
+                            },
+                            SerialAssistantTabCommand::ToggleConnection,
+                        )
+                        .when(!locked, |button| button.primary())
+                        .disabled(!locked && (!has_port || self.port_scan.is_some())),
+                    )
+                    .child(
+                        self.button(
+                            "serial-assistant-clear",
+                            t!("serial.tool.clear"),
+                            SerialAssistantTabCommand::ClearOutput,
+                        )
+                        .ghost()
+                        .disabled(self.terminal.is_none()),
+                    )
+                    .child(check(
+                        "serial-assistant-receive-hex",
+                        t!("serial.mode.receive_hex"),
+                        self.receive_hex,
+                        SerialAssistantTabCommand::ReceiveHex,
+                    ))
+                    .child(check(
+                        "serial-assistant-send-hex",
+                        t!("serial.mode.send_hex"),
+                        self.tools.read(cx).assistant_send_hex(),
+                        SerialAssistantTabCommand::SendHex,
+                    ))
+                    .child(
+                        h_flex()
+                            .id("serial-assistant-connection-status")
+                            .test_support()
+                            .role(Role::Status)
+                            .aria_label(status.clone())
+                            .gap_1()
+                            .items_center()
+                            .text_color(status_color)
+                            .text_xs()
+                            .child(div().w_2().h_2().rounded_full().bg(status_color))
+                            .child(status),
+                    )
+                    .child(
+                        div()
+                            .id("serial-wire-count")
+                            .test_support()
+                            .aria_label(counts.clone())
+                            .ml_auto()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .font_family(cx.theme().mono_font_family.clone())
+                            .child(counts),
+                    )
+                    .when(!self.sidebar_visible, |row| {
+                        row.child(
+                            self.button(
+                                "serial-assistant-tools-toggle",
+                                t!("serial.assistant.show_tools"),
+                                SerialAssistantTabCommand::ToggleSidebar,
+                            )
+                            .ghost()
+                            .icon(CatalogIcon::ArrowLeftToLine)
+                            .tooltip(t!("serial.assistant.show_tools"))
+                            .disabled(self.isp.read(cx).busy()),
                         )
                     }),
             )
             .child(
                 v_flex()
-                    .flex_shrink_0()
+                    .gap_1()
+                    .child(section_label(t!("serial.assistant.connection_settings")))
+                    .child(self.parameters(locked, cx)),
+            )
+            .child(div().h_px().w_full().bg(cx.theme().border))
+            .child(
+                v_flex()
                     .gap_2()
-                    .p_2()
-                    .rounded_md()
-                    .border_1()
-                    .border_color(cx.theme().border)
-                    .child(
-                        h_flex()
-                            .gap_2()
-                            .flex_wrap()
-                            .child(
-                                self.button(
-                                    "serial-assistant-connect",
-                                    if locked {
-                                        t!("serial.assistant.disconnect")
-                                    } else {
-                                        t!("serial.assistant.connect")
-                                    },
-                                    SerialAssistantTabCommand::ToggleConnection,
-                                )
-                                .when(!locked, |button| button.primary())
-                                .disabled(!locked && (!has_port || self.port_scan.is_some())),
-                            )
-                            .child(
-                                self.button(
-                                    "serial-assistant-clear",
-                                    t!("serial.tool.clear"),
-                                    SerialAssistantTabCommand::ClearOutput,
-                                )
-                                .ghost()
-                                .disabled(self.terminal.is_none()),
-                            )
-                            .child(check(
-                                "serial-assistant-receive-hex",
-                                t!("serial.mode.receive_hex"),
-                                self.receive_hex,
-                                SerialAssistantTabCommand::ReceiveHex,
-                            ))
-                            .child(check(
-                                "serial-assistant-send-hex",
-                                t!("serial.mode.send_hex"),
-                                self.tools.read(cx).assistant_send_hex(),
-                                SerialAssistantTabCommand::SendHex,
-                            ))
-                            .child(
-                                div()
-                                    .id("serial-assistant-connection-status")
-                                    .test_support()
-                                    .role(Role::Status)
-                                    .aria_label(status.clone())
-                                    .text_color(status_color)
-                                    .text_xs()
-                                    .child(status),
-                            )
-                            .child(
-                                div()
-                                    .id("serial-wire-count")
-                                    .test_support()
-                                    .aria_label(counts.clone())
-                                    .ml_auto()
-                                    .text_xs()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .font_family(cx.theme().mono_font_family.clone())
-                                    .child(counts),
-                            ),
-                    )
-                    .child(self.parameters(locked, cx))
+                    .child(section_label(t!("serial.assistant.display_and_log")))
                     .child(
                         h_flex()
                             .gap_2()
@@ -1008,27 +1155,133 @@ impl Render for SerialAssistantPanel {
                                         .child(status),
                                 )
                             }),
+                    ),
+            )
+            .when_some(error, |row, error| {
+                row.child(
+                    div()
+                        .id("serial-assistant-error")
+                        .test_support()
+                        .role(Role::Status)
+                        .aria_label(error.clone())
+                        .text_sm()
+                        .text_color(cx.theme().danger)
+                        .child(error),
+                )
+            });
+        let main_content = v_flex()
+            .size_full()
+            .min_h_0()
+            .min_w_0()
+            .gap_2()
+            .child(output)
+            .child(
+                self.tools
+                    .read(cx)
+                    .render_assistant_sender(self.isp.read(cx).busy(), cx),
+            );
+        let right_content = v_flex()
+            .size_full()
+            .min_h_0()
+            .min_w_0()
+            .bg(cx.theme().sidebar)
+            .child(
+                h_flex()
+                    .p_3()
+                    .gap_2()
+                    .items_center()
+                    .border_b_1()
+                    .border_color(cx.theme().border)
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .min_w_0()
+                            .gap_1()
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child(t!("serial.assistant.tools_title")),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .truncate()
+                                    .child(t!("serial.assistant.tools_subtitle")),
+                            ),
                     )
-                    .when_some(error, |row, error| {
-                        row.child(
-                            div()
-                                .id("serial-assistant-error")
-                                .test_support()
-                                .role(Role::Status)
-                                .aria_label(error.clone())
-                                .text_sm()
-                                .text_color(cx.theme().danger)
-                                .child(error),
+                    .child(
+                        self.button(
+                            "serial-assistant-tools-toggle",
+                            t!("serial.assistant.hide_tools"),
+                            SerialAssistantTabCommand::ToggleSidebar,
                         )
-                    }),
+                        .ghost()
+                        .xsmall()
+                        .label(SharedString::default())
+                        .icon(CatalogIcon::ArrowRightToLine)
+                        .tooltip(t!("serial.assistant.hide_tools"))
+                        .accessibility_label(t!("serial.assistant.hide_tools"))
+                        .disabled(self.isp.read(cx).busy()),
+                    ),
             )
             .child(
-                div()
-                    .min_h_0()
-                    .min_w_0()
-                    .flex_shrink_0()
-                    .child(self.tools.clone()),
+                h_flex()
+                    .p_2()
+                    .gap_1()
+                    .border_b_1()
+                    .border_color(cx.theme().border)
+                    .children(IspPage::ALL.map(|page| {
+                        self.button(
+                            page.id(),
+                            page.compact_label(),
+                            SerialAssistantTabCommand::Isp(IspCommand::Page(page)),
+                        )
+                        .xsmall()
+                        .ghost()
+                        .flex_1()
+                        .tooltip(page.label())
+                        .selected(self.sidebar == page)
+                        .disabled(self.isp.read(cx).busy())
+                    })),
             )
+            .child(div().flex_1().min_h_0().min_w_0().child(
+                if self.sidebar == IspPage::MultiSend {
+                    self.tools.clone().into_any_element()
+                } else {
+                    self.isp.clone().into_any_element()
+                },
+            ));
+        let split = h_resizable("serial-assistant-split")
+            .with_state(&self.split)
+            .child(
+                resizable_panel()
+                    .size_range((window.rem_size() * 22.)..Pixels::MAX)
+                    .child(main_content),
+            );
+        let split = if self.sidebar_visible {
+            split.child(
+                resizable_panel()
+                    .size(window.rem_size() * 23.)
+                    .size_range((window.rem_size() * 18.)..Pixels::MAX)
+                    .child(right_content),
+            )
+        } else {
+            split
+        };
+        v_flex()
+            .id("serial-assistant-page")
+            .test_support()
+            .track_focus(&self.focus)
+            .size_full()
+            .min_h_0()
+            .min_w_0()
+            .p_3()
+            .gap_3()
+            .bg(cx.theme().background)
+            .child(div().flex_1().min_h_0().min_w_0().child(split))
+            .child(controls)
     }
 }
 
@@ -1059,6 +1312,7 @@ impl BasePanel for SerialAssistantPanel {
                 self.show(window, cx);
             }
         } else {
+            self.isp.update(cx, |isp, cx| isp.cancel(cx));
             self.tools.update(cx, |tools, cx| tools.stop_sending(cx));
         }
     }
@@ -1073,6 +1327,7 @@ impl BasePanel for SerialAssistantPanel {
             return;
         }
         self.port_scan = None;
+        self.isp.update(cx, |isp, cx| isp.cancel(cx));
         self.log_save = None;
         self.tools.update(cx, |tools, cx| tools.stop_sending(cx));
         self.terminal_observer = None;

@@ -25,6 +25,8 @@ use crate::{app::CatalogIcon, i18n::t, terminal::TerminalView};
 
 #[path = "assistant.rs"]
 mod assistant;
+#[path = "multi_send.rs"]
+mod multi_send;
 pub use assistant::SerialAssistantCommand;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -95,6 +97,7 @@ pub struct SerialToolsPanel {
     preview_scroll: ScrollHandle,
     group_task: Option<Task<()>>,
     group_cancel: Arc<AtomicBool>,
+    group_current: Option<u64>,
     drafts: HashMap<EntityId, SerialToolDraft>,
     target: Option<WeakEntity<TerminalView>>,
     observer: Option<Subscription>,
@@ -140,6 +143,7 @@ impl SerialToolsPanel {
             preview_scroll: ScrollHandle::new(),
             group_task: None,
             group_cancel: Arc::new(AtomicBool::new(false)),
+            group_current: None,
             drafts: HashMap::new(),
             target: None,
             observer: None,
@@ -330,6 +334,7 @@ impl SerialToolsPanel {
     pub(super) fn stop_sending(&mut self, cx: &mut Context<Self>) {
         self.group_cancel.store(true, Ordering::Release);
         let group = self.group_task.take().is_some();
+        self.group_current = None;
         let repeating = self.repeat_task.take().is_some();
         if group || repeating {
             self.status = if group {
@@ -354,6 +359,7 @@ impl SerialToolsPanel {
         self.repeat_task = None;
         self.group_cancel.store(true, Ordering::Release);
         self.group_task = None;
+        self.group_current = None;
         self.body_scroll.set_offset(Point::default());
         self.preview_scroll.set_offset(Point::default());
         self.status = SharedString::default();
@@ -422,13 +428,17 @@ impl SerialToolsPanel {
                     owner.generation = Some(generation);
                     owner.baud_task = None;
                     owner.repeat_task = None;
+                    owner.group_cancel.store(true, Ordering::Release);
                     owner.group_task = None;
+                    owner.group_current = None;
                     owner.status = SharedString::default();
                 }
                 if !matches!(
                     view.read(cx).lifecycle(cx),
                     crate::terminal::TerminalLifecycle::Running
                 ) {
+                    owner.group_cancel.store(true, Ordering::Release);
+                    owner.group_current = None;
                     if owner.group_task.take().is_some() {
                         owner.status = t!("serial.assistant.stopped");
                     }
@@ -1302,6 +1312,7 @@ impl SerialToolsPanel {
     fn target_running(&self, target: Option<&Entity<TerminalView>>, cx: &App) -> bool {
         target.is_some_and(|view| {
             view.read(cx).lifecycle(cx) == crate::terminal::TerminalLifecycle::Running
+                && !view.read(cx).serial_isp_active(cx)
         })
     }
 
@@ -1321,7 +1332,7 @@ impl Render for SerialToolsPanel {
         let target = self.target.as_ref().and_then(WeakEntity::upgrade);
         let running = self.target_running(target.as_ref(), cx);
         let body = if self.assistant.is_some() {
-            self.render_quick_assistant(running, cx)
+            self.render_multi_send(running, cx)
         } else {
             let (body, paused) = self.render_standard_page(target.as_ref(), running, cx);
             self.render_tabbed_tools(body, self.tool_status(paused))
@@ -1330,7 +1341,9 @@ impl Render for SerialToolsPanel {
             .id("serial-tools")
             .test_support()
             .track_focus(&self.focus_handle)
-            .when(self.assistant.is_none(), |view| view.size_full().min_h_0())
+            .size_full()
+            .min_h_0()
+            .min_w_0()
             .child(body)
     }
 }

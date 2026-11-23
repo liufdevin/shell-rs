@@ -19,6 +19,9 @@ pub struct SerialAssistantPreferences {
     pub(crate) follow_output: bool,
     pub(crate) sender: SerialSenderPreferences,
     pub(crate) log_filter: Option<SerialLogFilter>,
+    pub(crate) isp: super::isp::panel::IspPreferences,
+    pub(crate) sidebar_visible: bool,
+    pub(crate) sidebar_page: super::isp::IspPage,
 }
 
 impl Default for SerialAssistantPreferences {
@@ -36,6 +39,9 @@ impl Default for SerialAssistantPreferences {
             follow_output: true,
             sender: SerialSenderPreferences::default(),
             log_filter: None,
+            isp: super::isp::panel::IspPreferences::default(),
+            sidebar_visible: true,
+            sidebar_page: super::isp::IspPage::MultiSend,
         }
     }
 }
@@ -78,4 +84,26 @@ pub(crate) struct SerialLogFilter {
     pub(crate) query: String,
     pub(crate) regex: bool,
     pub(crate) case_sensitive: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn existing_serial_preferences_gain_isp_defaults_without_losing_sender_settings() {
+        let saved: SerialAssistantPreferences = serde_json::from_value(serde_json::json!({
+            "port": "COM5", "baud": 230400, "receive_hex": true,
+            "sender": { "message": "keep this draft", "crc": true }
+        }))
+        .unwrap();
+        assert_eq!(saved.port.as_deref(), Some("COM5"));
+        assert_eq!(saved.baud, Some(230400));
+        assert!(saved.receive_hex);
+        assert_eq!(saved.sender.message, "keep this draft");
+        assert!(saved.sender.crc);
+        assert_eq!(saved.isp, Default::default());
+        assert!(saved.sidebar_visible);
+        assert_eq!(saved.sidebar_page, super::super::isp::IspPage::MultiSend);
+    }
 }

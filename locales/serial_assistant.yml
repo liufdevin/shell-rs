@@ -222,9 +222,51 @@ serial.assistant.move_up:
 serial.assistant.delete:
   zh-CN: 删除
   en: Delete
-serial.assistant.run:
-  zh-CN: 运行整组
-  en: Run group
+serial.assistant.multi_send:
+  zh-CN: 多条发送
+  en: Multi-send
+serial.assistant.tools_title:
+  zh-CN: 串口工具
+  en: Serial tools
+serial.assistant.tools_subtitle:
+  zh-CN: 收发、测试与烧录
+  en: Send, inspect, and flash
+serial.assistant.hide_tools:
+  zh-CN: 隐藏右侧工具区
+  en: Hide tools
+serial.assistant.show_tools:
+  zh-CN: 显示工具
+  en: Show tools
+serial.assistant.connection_settings:
+  zh-CN: 串口设置
+  en: Serial settings
+serial.assistant.display_and_log:
+  zh-CN: 显示与日志
+  en: Display and logging
+serial.assistant.send_once:
+  zh-CN: 顺序发送
+  en: Send in order
+serial.assistant.loop:
+  zh-CN: 整组循环
+  en: Loop group
+serial.assistant.multi_empty:
+  zh-CN: 使用上方「编辑命令组」添加命令，再按保存顺序发送。
+  en: Use Edit command groups above to add commands, then send them in their saved order.
+serial.assistant.multi_empty_title:
+  zh-CN: 还没有发送命令
+  en: No send commands yet
+serial.assistant.include_command:
+  zh-CN: "整组发送时包含 %{name}"
+  en: "Include %{name} in group sends"
+serial.assistant.send_command:
+  zh-CN: "发送 %{name}"
+  en: "Send %{name}"
+serial.assistant.send_progress:
+  zh-CN: "正在顺序发送 %{index}/%{total}：%{name}"
+  en: "Sending %{index}/%{total}: %{name}"
+serial.assistant.loop_progress:
+  zh-CN: "循环第 %{cycle} 轮 · %{index}/%{total}：%{name}"
+  en: "Cycle %{cycle} · %{index}/%{total}: %{name}"
 serial.assistant.stop:
   zh-CN: 停止
   en: Stop
@@ -244,5 +286,5 @@ serial.assistant.add_command:
   zh-CN: 添加命令
   en: Add command
 serial.assistant.saved_hint:
-  zh-CN: 每条命令独立保存 HEX、换行、CRC 和等待时间。运行整组仅发送一次；断开、重连、切换标签或关闭工具时自动停止。命令内容会明文保存，请勿保存密码。
-  en: Each command saves its HEX, line ending, CRC and delay. A group runs once and stops on disconnect, reconnect, tab change or closing the tool. Content is stored as plain text; do not save passwords.
+  zh-CN: 每条命令独立保存 HEX、换行、CRC 和发送后等待时间。右侧「多条发送」支持单条、顺序发送和整组循环；整组发送只包含勾选的命令，末条等待结束后开始下一轮。断开、重连、切换标签或关闭工具时自动停止。命令内容会明文保存，请勿保存密码。
+  en: Each command saves its HEX, line ending, CRC and delay after sending. Multi-send supports individual commands, sending in order and looping enabled commands. The last delay also applies between cycles. Sending stops on disconnect, reconnect, tab change or closing the tool. Content is stored as plain text; do not save passwords.

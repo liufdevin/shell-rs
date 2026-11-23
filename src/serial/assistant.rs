@@ -25,13 +25,14 @@ pub enum SerialAssistantCommand {
     MoveUp(u64),
     MoveDown(u64),
     Run(Option<u64>),
+    RunLoop,
     Stop,
     Undo,
     CommandPage(bool),
 }
 
 pub(super) struct AssistantEditor {
-    group: Option<u64>,
+    pub(super) group: Option<u64>,
     command: Option<u64>,
     group_search: Entity<InputState>,
     command_scroll: ScrollHandle,
@@ -236,30 +237,9 @@ fn ending_style(button: Button, selected: bool) -> Button {
 }
 
 impl SerialToolsPanel {
-    pub(super) fn render_quick_assistant(&self, running: bool, cx: &App) -> AnyElement {
-        use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
-
+    pub(in crate::serial) fn render_assistant_sender(&self, locked: bool, cx: &App) -> AnyElement {
         let dispatch = self.dispatch.clone();
-        let value = self.assistant_value(cx);
-        let group = self.assistant.as_ref().and_then(|editor| editor.group);
-        let current = value
-            .groups
-            .iter()
-            .find(|saved| Some(saved.id) == group)
-            .or_else(|| value.groups.first());
-        let group = current.map(|group| group.id);
-        let any_enabled =
-            current.is_some_and(|group| group.commands.iter().any(|command| command.enabled));
-        let busy = self.group_task.is_some() || self.repeat_task.is_some();
-        let assistant_button = |id, label: SharedString, command: SerialAssistantCommand| {
-            let dispatch = dispatch.clone();
-            Button::new(id)
-                .small()
-                .label(label)
-                .on_click(move |_, window, cx| {
-                    dispatch.send(SerialToolCommand::Assistant(command.clone()), window, cx);
-                })
-        };
+        let busy = locked || self.group_task.is_some() || self.repeat_task.is_some();
         let tool_button = |id, label: SharedString, command: SerialToolCommand| {
             let dispatch = dispatch.clone();
             Button::new(id)
@@ -269,8 +249,6 @@ impl SerialToolsPanel {
                     dispatch.send(command.clone(), window, cx);
                 })
         };
-        let edit = dispatch.clone();
-        let choose = dispatch.clone();
         let automatic = self
             .target
             .as_ref()
@@ -280,77 +258,6 @@ impl SerialToolsPanel {
             .id("serial-assistant")
             .test_support()
             .gap_2()
-            .child(
-                h_flex()
-                    .gap_2()
-                    .flex_wrap()
-                    .child(
-                        Button::new("serial-assistant-edit-groups")
-                            .small()
-                            .outline()
-                            .label(t!("serial.assistant.edit_groups"))
-                            .on_click(move |_, window, cx| {
-                                edit.focus.dispatch_action(
-                                    &crate::app::OpenSerialCommandEditor,
-                                    window,
-                                    cx,
-                                );
-                            }),
-                    )
-                    .child(
-                        Button::new("serial-assistant-group-picker")
-                            .small()
-                            .outline()
-                            .label(
-                                current
-                                    .map(|group| SharedString::from(group.name.clone()))
-                                    .unwrap_or_else(|| t!("serial.assistant.no_groups")),
-                            )
-                            .icon(IconName::ChevronDown)
-                            .disabled(value.groups.is_empty() || busy)
-                            .dropdown_menu(move |menu, _, _| {
-                                value.groups.iter().fold(menu, |menu, saved| {
-                                    let id = saved.id;
-                                    let choose = choose.clone();
-                                    menu.item(
-                                        PopupMenuItem::new(saved.name.clone())
-                                            .checked(group == Some(id))
-                                            .on_click(move |_, window, cx| {
-                                                choose.send(
-                                                    SerialToolCommand::Assistant(
-                                                        SerialAssistantCommand::SelectGroup(id),
-                                                    ),
-                                                    window,
-                                                    cx,
-                                                );
-                                            }),
-                                    )
-                                })
-                            }),
-                    )
-                    .child(
-                        assistant_button(
-                            "serial-assistant-run-quick",
-                            t!("serial.assistant.run"),
-                            SerialAssistantCommand::Run(None),
-                        )
-                        .disabled(!running || !any_enabled || busy || automatic),
-                    )
-                    .when(self.group_task.is_some(), |row| {
-                        row.child(assistant_button(
-                            "serial-assistant-stop-quick",
-                            t!("serial.assistant.stop"),
-                            SerialAssistantCommand::Stop,
-                        ))
-                    })
-                    .when(self.repeat_task.is_some(), |row| {
-                        row.child(tool_button(
-                            "serial-assistant-stop-repeat-quick",
-                            t!("serial.tool.stop_repeat"),
-                            SerialToolCommand::Repeat(false),
-                        ))
-                    }),
-            )
             .child(
                 h_flex()
                     .gap_2()
@@ -459,21 +366,10 @@ impl SerialToolsPanel {
                             .child(t!("serial.assistant.send_keys")),
                     ),
             )
-            .when(!self.status.is_empty(), |body| {
-                body.child(
-                    div()
-                        .id("serial-tool-status")
-                        .test_support()
-                        .role(Role::Status)
-                        .aria_label(self.status.clone())
-                        .text_sm()
-                        .child(self.status.clone()),
-                )
-            })
             .into_any_element()
     }
 
-    fn assistant_value(&self, cx: &App) -> SerialAssistant {
+    pub(super) fn assistant_value(&self, cx: &App) -> SerialAssistant {
         self.assistant_storage
             .as_ref()
             .and_then(|(store, key, _)| store.read(cx).serial_assistant(key).cloned())
@@ -740,6 +636,7 @@ impl SerialToolsPanel {
         if matches!(command, SerialAssistantCommand::Stop) {
             self.group_cancel.store(true, Ordering::Release);
             self.group_task = None;
+            self.group_current = None;
             self.status = t!("serial.assistant.stopped");
             return Ok(());
         }
@@ -748,7 +645,13 @@ impl SerialToolsPanel {
             return Err(t!("serial.tool.unavailable"));
         }
         if let SerialAssistantCommand::Run(id) = command {
-            return self.run_group(*id, cx);
+            return self.run_group(*id, false, cx);
+        }
+        if matches!(command, SerialAssistantCommand::RunLoop) {
+            return self.run_group(None, true, cx);
+        }
+        if matches!(command, SerialAssistantCommand::SelectGroup(_)) {
+            self.body_scroll.set_offset(Point::default());
         }
         let selected_group = self.assistant.as_ref().and_then(|editor| editor.group);
         let group = value
@@ -898,6 +801,7 @@ impl SerialToolsPanel {
                 editor.command_scroll.set_offset(Point::default());
             }
             SerialAssistantCommand::Run(_)
+            | SerialAssistantCommand::RunLoop
             | SerialAssistantCommand::Stop
             | SerialAssistantCommand::CreateGroup
             | SerialAssistantCommand::RenameGroup
@@ -925,6 +829,7 @@ impl SerialToolsPanel {
     fn run_group(
         &mut self,
         single: Option<u64>,
+        looping: bool,
         cx: &mut Context<Self>,
     ) -> Result<(), SharedString> {
         if self.repeat_task.is_some() || self.baud_task.is_some() {
@@ -952,6 +857,8 @@ impl SerialToolsPanel {
             .filter(|command| single.map_or(command.enabled, |id| id == command.id))
             .map(|command| {
                 Ok((
+                    command.id,
+                    command.name.clone(),
                     view.read(cx).serial_tool_message(
                         &command.content,
                         command.hex,
@@ -973,55 +880,84 @@ impl SerialToolsPanel {
         self.status = t!("serial.assistant.running", count = commands.len());
         self.group_task = Some(cx.spawn(async move |owner, cx| {
             let result: Result<(), SharedString> = async {
-                for (bytes, delay) in commands {
-                    if cancel.load(Ordering::Acquire) {
-                        return Ok(());
-                    }
-                    let answer = owner
-                        .update(cx, |_, cx| {
-                            let view = target
-                                .upgrade()
-                                .filter(|view| view.read(cx).generation(cx) == generation)
-                                .ok_or_else(|| t!("serial.tool.unavailable"))?;
-                            view.read(cx).serial_tool_send_checked(bytes, cx)
-                        })
-                        .map_err(|_| t!("serial.tool.unavailable"))??;
-                    let deadline = Instant::now() + Duration::from_secs(12);
-                    loop {
+                let mut cycle = 1_u64;
+                loop {
+                    for (index, (id, name, bytes, delay)) in commands.iter().enumerate() {
                         if cancel.load(Ordering::Acquire) {
                             return Ok(());
                         }
-                        match answer.try_recv() {
-                            Ok(Ok(())) => break,
-                            Ok(Err(error)) => {
-                                return Err(t!("serial.assistant.send_failed", error = error));
+                        let answer = owner
+                            .update(cx, |owner, cx| {
+                                let view = target
+                                    .upgrade()
+                                    .filter(|view| view.read(cx).generation(cx) == generation)
+                                    .ok_or_else(|| t!("serial.tool.unavailable"))?;
+                                owner.group_current = Some(*id);
+                                owner.status = if looping {
+                                    t!(
+                                        "serial.assistant.loop_progress",
+                                        cycle = cycle,
+                                        index = index + 1,
+                                        total = commands.len(),
+                                        name = name
+                                    )
+                                } else {
+                                    t!(
+                                        "serial.assistant.send_progress",
+                                        index = index + 1,
+                                        total = commands.len(),
+                                        name = name
+                                    )
+                                };
+                                cx.notify();
+                                view.read(cx).serial_tool_send_checked(bytes.clone(), cx)
+                            })
+                            .map_err(|_| t!("serial.tool.unavailable"))??;
+                        let deadline = Instant::now() + Duration::from_secs(12);
+                        loop {
+                            if cancel.load(Ordering::Acquire) {
+                                return Ok(());
                             }
-                            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                                return Err(t!("serial.assistant.unsupported"));
-                            }
-                            Err(_) if Instant::now() >= deadline => {
-                                return Err(t!("serial.assistant.timeout"));
-                            }
-                            Err(_) => {
-                                cx.background_executor()
-                                    .timer(Duration::from_millis(20))
-                                    .await
+                            match answer.try_recv() {
+                                Ok(Ok(())) => break,
+                                Ok(Err(error)) => {
+                                    return Err(t!("serial.assistant.send_failed", error = error));
+                                }
+                                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                                    return Err(t!("serial.assistant.unsupported"));
+                                }
+                                Err(_) if Instant::now() >= deadline => {
+                                    return Err(t!("serial.assistant.timeout"));
+                                }
+                                Err(_) => {
+                                    cx.background_executor()
+                                        .timer(Duration::from_millis(20))
+                                        .await
+                                }
                             }
                         }
+                        // A zero-delay loop must still yield so Stop and connection
+                        // changes can be processed between consecutive sends.
+                        let delay = if looping { (*delay).max(1) } else { *delay };
+                        cx.background_executor()
+                            .timer(Duration::from_millis(u64::from(delay)))
+                            .await;
                     }
-                    cx.background_executor()
-                        .timer(Duration::from_millis(u64::from(delay)))
-                        .await;
-                    if cancel.load(Ordering::Acquire) {
+                    if !looping || cancel.load(Ordering::Acquire) {
                         return Ok(());
                     }
+                    cycle = cycle.saturating_add(1);
                 }
-                Ok(())
             }
             .await;
             let cancelled = cancel.load(Ordering::Acquire);
             let _ = owner.update(cx, |owner, cx| {
+                // A cancelled run must never clear a newer run's state.
+                if !Arc::ptr_eq(&owner.group_cancel, &cancel) {
+                    return;
+                }
                 owner.group_task = None;
+                owner.group_current = None;
                 if !cancelled {
                     owner.status = result
                         .err()
@@ -1519,7 +1455,7 @@ fn stored_ending(ending: SerialLineEnding) -> SerialCommandEnding {
     }
 }
 
-fn runtime_ending(ending: &SerialCommandEnding) -> SerialLineEnding {
+pub(super) fn runtime_ending(ending: &SerialCommandEnding) -> SerialLineEnding {
     match ending {
         SerialCommandEnding::None => SerialLineEnding::None,
         SerialCommandEnding::Lf => SerialLineEnding::Lf,

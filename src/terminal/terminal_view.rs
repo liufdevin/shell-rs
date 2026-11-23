@@ -944,6 +944,20 @@ impl TerminalView {
         self.engine.read(cx).serial_tool_snapshot()
     }
 
+    pub(crate) fn serial_isp_active(&self, cx: &App) -> bool {
+        self.engine.read(cx).serial_isp_active()
+    }
+
+    pub(crate) fn start_serial_isp(
+        &mut self,
+        request: crate::serial::isp::IspRequest,
+        cx: &mut Context<Self>,
+    ) -> Result<(), SharedString> {
+        let result = self.engine.read(cx).start_serial_isp(request);
+        cx.notify();
+        result
+    }
+
     pub(crate) fn serial_diagnostics(&self, cx: &App) -> Option<crate::serial::SerialDiagnostics> {
         self.engine.read(cx).serial_diagnostics()
     }

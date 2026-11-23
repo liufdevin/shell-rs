@@ -325,6 +325,9 @@ impl TerminalTransport for FakeTerminalTransport {
                 TerminalTransportCommand::SendBreak => {
                     self.breaks.fetch_add(1, Ordering::SeqCst);
                 }
+                TerminalTransportCommand::SerialIsp(request) => {
+                    request.finish(Err("ISP is unsupported by this fake transport".into()));
+                }
                 TerminalTransportCommand::PromptReply { .. }
                 | TerminalTransportCommand::SetSerialBaud { .. }
                 | TerminalTransportCommand::ShareSerialDebug(_) => {}

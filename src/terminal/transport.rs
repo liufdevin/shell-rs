@@ -20,6 +20,7 @@ pub enum TerminalTransportCommand {
         bytes: Vec<u8>,
         reply: mpsc::Sender<Result<(), String>>,
     },
+    SerialIsp(crate::serial::isp::IspRequest),
     CommandGroupWrite {
         id: u64,
         bytes: zeroize::Zeroizing<Vec<u8>>,
@@ -120,6 +121,7 @@ impl std::fmt::Debug for TerminalTransportCommand {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::CommandGroupWrite { .. } => formatter.write_str("CommandGroupWrite"),
+            Self::SerialIsp(_) => formatter.write_str("SerialIsp"),
             Self::SerialWriteChecked { bytes, .. } => formatter
                 .debug_tuple("SerialWriteChecked")
                 .field(&bytes.len())
