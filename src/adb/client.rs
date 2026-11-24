@@ -38,6 +38,10 @@ fn requires_pty(message: &str) -> bool {
 
 pub trait AdbDetector: Send + Sync + 'static {
     fn detect(&self, boot_id: Option<&str>) -> AdbDetection;
+
+    fn detect_identity(&self, identity: &super::BoardIdentity) -> AdbDetection {
+        self.detect(identity.boot_id.as_deref())
+    }
 }
 
 pub enum AdbDetection {
@@ -56,11 +60,15 @@ impl AdbDetector for NoAdbDetector {
 pub struct SystemAdbDetector;
 impl AdbDetector for SystemAdbDetector {
     fn detect(&self, boot_id: Option<&str>) -> AdbDetection {
+        self.detect_identity(&super::BoardIdentity::from_boot_id(boot_id))
+    }
+
+    fn detect_identity(&self, identity: &super::BoardIdentity) -> AdbDetection {
         let detect = || -> Result<AdbDetection> {
             let runner: Arc<dyn Runner> = Arc::new(SystemRunner(
                 find_adb().ok_or_else(|| anyhow!(t!("adb.missing")))?,
             ));
-            discover(runner, boot_id)
+            discover_with_identity(runner, identity)
         };
         detect().unwrap_or_else(|error| AdbDetection::Unavailable(error.to_string()))
     }
@@ -84,6 +92,7 @@ pub struct AdbConnection {
     serial: String,
     name: Option<String>,
     boot_id: Option<String>,
+    board_identity: super::BoardIdentity,
     transport_id: Option<u64>,
     pty_required: Arc<AtomicBool>,
     server: Option<Arc<super::lan_proxy::AdbProxy>>,
@@ -205,6 +214,7 @@ impl AdbConnection {
             serial,
             name: None,
             boot_id: None,
+            board_identity: super::BoardIdentity::default(),
             transport_id: None,
             pty_required: Arc::new(AtomicBool::new(false)),
             server: None,
@@ -218,6 +228,10 @@ impl AdbConnection {
 
     pub fn serial(&self) -> &str {
         &self.serial
+    }
+
+    pub fn board_identity(&self) -> &super::BoardIdentity {
+        &self.board_identity
     }
 
     pub fn boot_id(&self) -> Option<&str> {
@@ -416,13 +430,80 @@ impl AdbConnection {
             .and_then(canonical_boot_id))
     }
 
+    fn probe_identity(&self, cancel: &mut dyn FnMut() -> bool) -> super::BoardIdentity {
+        let output = self.shell_output(
+            super::identity::ADB_IDENTITY_COMMAND,
+            Duration::from_secs(3),
+            cancel,
+        );
+        match output {
+            Ok(bytes) => std::str::from_utf8(&bytes)
+                .map(super::BoardIdentity::parse)
+                .unwrap_or_default(),
+            Err(_) => super::BoardIdentity::default(),
+        }
+    }
+
+    /// Concurrently check candidate ADB devices for a temporary nonce written
+    /// through the serial console, cleaning up the probe file on match.
+    pub(crate) fn match_nonce(
+        devices: Vec<AdbConnection>,
+        nonce: &str,
+        cancel: &AtomicBool,
+    ) -> Option<AdbConnection> {
+        if devices.is_empty() || nonce.is_empty() || cancel.load(Ordering::Acquire) {
+            return None;
+        }
+        let matched: Vec<AdbConnection> = std::thread::scope(|scope| {
+            let handles: Vec<_> = devices
+                .into_iter()
+                .map(|device| {
+                    scope.spawn(move || {
+                        let mut cancelled = || cancel.load(Ordering::Acquire);
+                        let output = device
+                            .shell_output(
+                                super::identity::NONCE_READ_COMMAND,
+                                Duration::from_secs(3),
+                                &mut cancelled,
+                            )
+                            .ok()?;
+                        let text = std::str::from_utf8(&output).ok()?;
+                        text.lines()
+                            .any(|line| line.trim() == nonce)
+                            .then_some(device)
+                    })
+                })
+                .collect();
+            handles
+                .into_iter()
+                .filter_map(|handle| handle.join().ok().flatten())
+                .collect()
+        });
+        let picked = super::pick_preferred_match(
+            matched,
+            |device| super::is_network_adb_serial(device.serial()),
+            |left, right| left.board_identity.same_board(&right.board_identity),
+        );
+        if let Some(device) = &picked {
+            let mut cancelled = || cancel.load(Ordering::Acquire);
+            let _ = device.shell_output(
+                super::identity::NONCE_CLEAN_COMMAND,
+                Duration::from_secs(2),
+                &mut cancelled,
+            );
+        }
+        picked
+    }
+
     #[cfg(test)]
     pub(super) fn test_connection(runner: Arc<dyn Runner>) -> Self {
+        let boot = "00000000-0000-4000-8000-000000000001".to_owned();
         Self {
             runner,
             serial: "board".into(),
             name: None,
-            boot_id: Some("00000000-0000-4000-8000-000000000001".into()),
+            boot_id: Some(boot.clone()),
+            board_identity: super::BoardIdentity::from_boot_id(Some(&boot)),
             transport_id: None,
             pty_required: Arc::new(AtomicBool::new(false)),
             server: None,
@@ -433,6 +514,7 @@ impl AdbConnection {
     pub(crate) fn monitor_test_connection(serial: &str, boot: Option<&str>) -> Self {
         let mut device = Self::new(PathBuf::from("unused-adb"), serial.to_owned()).unwrap();
         device.boot_id = boot.map(str::to_owned);
+        device.board_identity = super::BoardIdentity::from_boot_id(boot);
         device
     }
 
@@ -494,8 +576,15 @@ pub fn canonical_boot_id(value: &str) -> Option<String> {
         .map(|value| value.to_string())
 }
 
+#[cfg(test)]
 fn discover(runner: Arc<dyn Runner>, boot_id: Option<&str>) -> Result<AdbDetection> {
-    let expected = boot_id.and_then(canonical_boot_id);
+    discover_with_identity(runner, &super::BoardIdentity::from_boot_id(boot_id))
+}
+
+fn discover_with_identity(
+    runner: Arc<dyn Runner>,
+    expected: &super::BoardIdentity,
+) -> Result<AdbDetection> {
     let output = runner.run(
         &["devices".into(), "-l".into()],
         Duration::from_secs(10),
@@ -530,26 +619,59 @@ fn discover(runner: Arc<dyn Runner>, boot_id: Option<&str>) -> Result<AdbDetecti
                 _ => {}
             }
         }
-        let mut device = AdbConnection {
+        devices.push(AdbConnection {
             runner: runner.clone(),
             serial: serial.to_owned(),
             name: model.or(product).or(device_name),
             boot_id: None,
+            board_identity: super::BoardIdentity::default(),
             transport_id,
             pty_required: Arc::new(AtomicBool::new(false)),
             server: None,
-        };
-        device.boot_id = device.identity(&mut || false).ok().flatten();
-        devices.push(device);
+        });
     }
-    let matched: Vec<_> = devices
-        .iter()
-        .enumerate()
-        .filter(|(_, device)| expected.is_some() && device.boot_id == expected)
-        .map(|(index, _)| index)
-        .collect();
-    if matched.len() == 1 {
-        return Ok(AdbDetection::Matched(devices.remove(matched[0])));
+    // Probe all discovered ADB devices concurrently so one slow/offline board
+    // does not stall discovery for other boards.
+    let probed: Vec<super::BoardIdentity> = std::thread::scope(|scope| {
+        let handles: Vec<_> = devices
+            .iter()
+            .map(|device| scope.spawn(move || device.probe_identity(&mut || false)))
+            .collect();
+        handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap_or_default())
+            .collect()
+    });
+    for (device, identity) in devices.iter_mut().zip(probed) {
+        device.boot_id = identity.boot_id.clone();
+        device.board_identity = identity;
+    }
+    let mut serial_counts: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
+    for device in &devices {
+        *serial_counts.entry(device.serial.clone()).or_insert(0) += 1;
+    }
+    if !expected.is_empty() {
+        let matched_indices: Vec<usize> = devices
+            .iter()
+            .enumerate()
+            .filter(|(_, device)| {
+                let unique_serial = serial_counts.get(&device.serial).copied().unwrap_or(0) == 1;
+                expected.matches(&device.serial, &device.board_identity, unique_serial)
+            })
+            .map(|(index, _)| index)
+            .collect();
+        if let Some(chosen_index) = super::pick_preferred_match(
+            matched_indices,
+            |&index| super::is_network_adb_serial(devices[index].serial()),
+            |&left, &right| {
+                devices[left]
+                    .board_identity
+                    .same_board(&devices[right].board_identity)
+            },
+        ) {
+            return Ok(AdbDetection::Matched(devices.remove(chosen_index)));
+        }
     }
     if devices.is_empty() {
         Ok(AdbDetection::Unavailable(t!("adb.unavailable").to_string()))
@@ -1267,5 +1389,149 @@ mod tests {
         );
         assert!(started.elapsed() < Duration::from_secs(3));
         assert!(run_local_adb(PathBuf::from("nonexistent-program"), &[], &mut || true).is_err());
+    }
+
+    struct MultiBoardRunner {
+        devices_output: String,
+        responses: std::collections::HashMap<String, String>,
+        nonce_target: Option<(String, String)>,
+        cleaned: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl Runner for MultiBoardRunner {
+        fn run(
+            &self,
+            args: &[OsString],
+            _: Duration,
+            _: &mut dyn FnMut() -> bool,
+        ) -> Result<Vec<u8>> {
+            if args.first().is_some_and(|a| a == "devices") {
+                return Ok(self.devices_output.as_bytes().to_vec());
+            }
+            let target = args
+                .get(1)
+                .and_then(|s| s.to_str())
+                .unwrap_or_default()
+                .to_owned();
+            let script = args.last().and_then(|s| s.to_str()).unwrap_or_default();
+            if script.contains(".shelllf_probe") && script.contains("rm -f") {
+                self.cleaned.lock().unwrap().push(target);
+                return Ok(Vec::new());
+            }
+            if script.contains(".shelllf_probe") {
+                if let Some((expected_target, nonce)) = &self.nonce_target
+                    && expected_target == &target
+                {
+                    return Ok(format!("{nonce}\n").into_bytes());
+                }
+                return Ok(Vec::new());
+            }
+            Ok(self
+                .responses
+                .get(&target)
+                .cloned()
+                .unwrap_or_default()
+                .into_bytes())
+        }
+    }
+
+    #[test]
+    fn ubuntu_duplicate_default_serials_disambiguate_by_machine_and_hw_id_and_prefer_usb() {
+        // Two Ubuntu boards sharing the same hardcoded USB gadget serial `20080411`
+        // (addressed by transport_id 1 and 2) plus a TCP ADB alias for board 1.
+        let runner = Arc::new(MultiBoardRunner {
+            devices_output: concat!(
+                "List of devices attached\n",
+                "20080411 device transport_id:1 model:Ubuntu_A\n",
+                "192.168.1.50:5555 device transport_id:2 model:Ubuntu_A\n",
+                "20080411 device transport_id:3 model:Ubuntu_B\n",
+            )
+            .into(),
+            responses: std::collections::HashMap::from([
+                (
+                    "1".into(),
+                    format!(
+                        "@@boot_id\n{BOARD_BOOT}\n@@machine_id\n11111111111111111111111111111111\n@@hw_serial\nsunxi_chipid : aabbccdd00112233\n"
+                    ),
+                ),
+                (
+                    "2".into(),
+                    format!(
+                        "@@boot_id\n{BOARD_BOOT}\n@@machine_id\n11111111111111111111111111111111\n@@hw_serial\nsunxi_chipid : aabbccdd00112233\n"
+                    ),
+                ),
+                (
+                    "3".into(),
+                    format!(
+                        "@@boot_id\n{OTHER_BOOT}\n@@machine_id\n22222222222222222222222222222222\n@@hw_serial\nsunxi_chipid : 9988776655443322\n"
+                    ),
+                ),
+            ]),
+            nonce_target: None,
+            cleaned: std::sync::Mutex::default(),
+        });
+
+        // Board A has both USB (transport_id 1) and TCP (transport_id 2) -> auto-picks USB!
+        let board_a = super::super::BoardIdentity {
+            boot_id: None,
+            machine_id: Some("11111111111111111111111111111111".into()),
+            hardware_serial: Some("aabbccdd00112233".into()),
+            adb_serial: Some("20080411".into()),
+        };
+        let AdbDetection::Matched(matched_a) =
+            discover_with_identity(runner.clone(), &board_a).unwrap()
+        else {
+            panic!("expected USB match for board A");
+        };
+        assert_eq!(matched_a.serial(), "20080411");
+        assert_eq!(matched_a.transport_id, Some(1));
+
+        // Duplicate serial alone (without boot/machine/hw) must NOT falsely match!
+        let serial_only = super::super::BoardIdentity {
+            adb_serial: Some("20080411".into()),
+            ..Default::default()
+        };
+        assert!(matches!(
+            discover_with_identity(runner, &serial_only).unwrap(),
+            AdbDetection::Choose(_)
+        ));
+    }
+
+    #[test]
+    fn android_without_boot_id_matches_unique_serialno_and_nonce_fallback_works() {
+        let runner = Arc::new(MultiBoardRunner {
+            devices_output: concat!(
+                "List of devices attached\n",
+                "R5CN90AAA device transport_id:10\n",
+                "R5CN90BBB device transport_id:11\n",
+            )
+            .into(),
+            responses: std::collections::HashMap::new(),
+            nonce_target: Some(("11".into(), "shelllf-nonce-test".into())),
+            cleaned: std::sync::Mutex::default(),
+        });
+        let android_serial = super::super::BoardIdentity {
+            adb_serial: Some("R5CN90AAA".into()),
+            ..Default::default()
+        };
+        let AdbDetection::Matched(matched) =
+            discover_with_identity(runner.clone(), &android_serial).unwrap()
+        else {
+            panic!("expected Android ro.serialno match");
+        };
+        assert_eq!(matched.serial(), "R5CN90AAA");
+
+        // When no identity factor is available, nonce challenge-response finds board 11 and cleans up.
+        let AdbDetection::Choose(candidates) =
+            discover_with_identity(runner.clone(), &super::super::BoardIdentity::default())
+                .unwrap()
+        else {
+            panic!("expected candidate list");
+        };
+        let picked =
+            AdbConnection::match_nonce(candidates, "shelllf-nonce-test", &AtomicBool::new(false))
+                .expect("nonce should match transport_id 11");
+        assert_eq!(picked.serial(), "R5CN90BBB");
+        assert_eq!(runner.cleaned.lock().unwrap().as_slice(), ["11"]);
     }
 }

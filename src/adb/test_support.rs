@@ -208,7 +208,7 @@ impl Runner for FakeAdb {
             _ => bail!("unsupported fake adb command: {args:?}"),
         }
         let script = args.last().unwrap();
-        if script == "cat /proc/sys/kernel/random/boot_id" {
+        if script == "cat /proc/sys/kernel/random/boot_id" || script.contains("@@boot_id") {
             return Ok(format!(
                 "{}\n",
                 self.identities

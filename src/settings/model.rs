@@ -50,6 +50,9 @@ pub struct AppSettings {
     pub flashing_partition_mode: bool,
     pub flashing_tool_directory: Option<PathBuf>,
     pub flashing_firmware_path: Option<PathBuf>,
+    pub flashing_recent_firmwares: Vec<PathBuf>,
+    pub flashing_selected_partitions: Vec<String>,
+    pub flashing_log_width: Option<f32>,
     /// The left sidebar's visibility, restored on the next launch.
     pub sidebar_collapsed: bool,
     pub sidebar_width: Option<f32>,
@@ -693,6 +696,25 @@ impl AppSettings {
                     .and_then(|extension| extension.to_str())
                     .is_some_and(|extension| extension.eq_ignore_ascii_case("img"))
         });
+        let mut seen_firmwares = std::collections::HashSet::new();
+        self.flashing_recent_firmwares.retain(|path| {
+            path.is_absolute()
+                && path
+                    .extension()
+                    .and_then(|extension| extension.to_str())
+                    .is_some_and(|extension| extension.eq_ignore_ascii_case("img"))
+                && seen_firmwares.insert(path.clone())
+        });
+        self.flashing_recent_firmwares.truncate(8);
+        let mut seen_partitions = std::collections::HashSet::new();
+        self.flashing_selected_partitions.retain(|name| {
+            let trimmed = name.trim();
+            !trimmed.is_empty() && seen_partitions.insert(trimmed.to_string())
+        });
+        self.flashing_selected_partitions.truncate(256);
+        self.flashing_log_width = self
+            .flashing_log_width
+            .filter(|width| width.is_finite() && *width >= 260. && *width <= 760.);
         let mut ids = std::collections::HashSet::new();
         self.remote_servers
             .retain(|server| server.validate().is_ok() && ids.insert(server.id.clone()));

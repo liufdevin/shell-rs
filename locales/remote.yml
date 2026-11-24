@@ -2,6 +2,99 @@ _version: 2
 remote.title:
   zh-CN: 远程管理
   en: Remote management
+remote.screen:
+  zh-CN: 远程投屏
+  en: Remote screen
+remote.screen_opened:
+  zh-CN: 已打开独立远程投屏窗口。
+  en: Opened standalone remote screen window.
+remote.error.screen_not_ready:
+  zh-CN: 该设备当前未开启远程投屏或投屏服务离线。
+  en: This device is not currently online for remote screen mirroring.
+remote.error.screen_open:
+  zh-CN: 无法启动远程投屏窗口，请确认系统 WebView 运行时可用。
+  en: Couldn’t open the remote screen window. Make sure the system WebView runtime is available.
+remote.debug.open:
+  zh-CN: 临时连接设备…
+  en: Temporary device…
+remote.debug.title:
+  zh-CN: 临时连接设备
+  en: Connect temporary device
+remote.debug.help:
+  zh-CN: 输入服务器地址、8 位设备短 ID（或完整设备 ID）和临时调试密钥，无需登录账号即可直接投屏。
+  en: Enter the server URL, 8-character short ID (or full device ID), and temporary debug key to mirror without signing in.
+remote.debug.device_id:
+  zh-CN: 设备 ID
+  en: Device ID
+remote.debug.key:
+  zh-CN: 临时调试密钥
+  en: Debug key
+remote.debug.connect:
+  zh-CN: 连接投屏
+  en: Connect screen
+remote.debug.required:
+  zh-CN: 请输入设备 ID 和临时调试密钥。
+  en: Enter both the device ID and the debug key.
+remote.register.open:
+  zh-CN: 注册账号…
+  en: Register account…
+remote.register.title:
+  zh-CN: 申请客户账号
+  en: Register customer account
+remote.register.help:
+  zh-CN: 提交后由平台管理员审核，审核通过后即可使用该账号登录远程管理。
+  en: Your request will be reviewed by a platform administrator. Once approved, you can sign in with this account.
+remote.register.name:
+  zh-CN: 客户名称
+  en: Customer name
+remote.register.name_placeholder:
+  zh-CN: 填写公司、团队或个人名称
+  en: Company, team, or personal name
+remote.register.username_placeholder:
+  zh-CN: 3–64 位字母、数字或 . _ -
+  en: 3–64 letters, digits, or . _ -
+remote.register.password_placeholder:
+  zh-CN: 至少 8 位密码
+  en: At least 8 characters
+remote.register.confirm_password:
+  zh-CN: 确认密码
+  en: Confirm password
+remote.register.confirm_placeholder:
+  zh-CN: 再次输入密码
+  en: Re-enter password
+remote.register.submit:
+  zh-CN: 提交注册
+  en: Register
+remote.register.invalid_name:
+  zh-CN: 请填写客户名称（不超过 100 字节）。
+  en: Enter a customer name (up to 100 bytes).
+remote.register.invalid_username:
+  zh-CN: 用户名需为 3–64 位字母、数字或 . _ -。
+  en: Username must be 3–64 letters, digits, or . _ -.
+remote.register.invalid_password:
+  zh-CN: 密码长度需为 8–128 字节。
+  en: Password must be 8–128 bytes.
+remote.register.password_mismatch:
+  zh-CN: 两次输入的密码不一致。
+  en: Passwords do not match.
+remote.register.submitted:
+  zh-CN: "账号 %{username} 的注册申请已提交，等待平台管理员审核。"
+  en: "Registration for %{username} submitted. Waiting for administrator approval."
+remote.error.debug_unavailable:
+  zh-CN: 设备 ID 或临时调试密钥无效、已过期，或设备未开启临时调试。
+  en: The device ID or debug key is invalid, expired, or temporary debug is not active.
+remote.error.rate_limited:
+  zh-CN: 尝试次数过多，请稍后再试。
+  en: Too many attempts. Try again later.
+remote.error.debug_busy:
+  zh-CN: 该设备的临时投屏连接数已达上限，请稍后再试。
+  en: Temporary debug connections for this device are at capacity. Try again later.
+remote.error.register_conflict:
+  zh-CN: 该用户名已存在或已在审核中，请更换用户名。
+  en: This username already exists or has a pending request.
+remote.error.invalid_params:
+  zh-CN: 提交的信息格式有误，请检查后重试。
+  en: Invalid input. Check the fields and try again.
 remote.diagnostic.check_network:
   zh-CN: 检测当前网络
   en: Check current network

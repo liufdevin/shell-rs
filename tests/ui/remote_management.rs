@@ -246,6 +246,51 @@ impl Backend for FakeRemote {
                     reply.logged_out = Some(id);
                 }
             }
+            Operation::OpenScreen(server, device) => {
+                self.calls
+                    .lock()
+                    .unwrap()
+                    .push(format!("screen:{server}:{device}"));
+                if self.offline.load(Ordering::SeqCst) {
+                    reply.error = Some("not_ready".into());
+                } else {
+                    reply.screen = Some(shellrs::remote::RemoteScreenSession {
+                        server_id: server,
+                        device_id: device.clone(),
+                        device_name: format!("开发板 ({device})"),
+                        url: format!("https://example.test/#device={device}&access=testtoken"),
+                        fallback_bearer: None,
+                    });
+                }
+            }
+            Operation::OpenDebugScreen { url, device_id, .. } => {
+                self.calls
+                    .lock()
+                    .unwrap()
+                    .push(format!("debug:{url}:{device_id}"));
+                if self.offline.load(Ordering::SeqCst) {
+                    reply.error = Some("debug_unavailable".into());
+                } else {
+                    reply.screen = Some(shellrs::remote::RemoteScreenSession {
+                        server_id: format!("debug:{url}"),
+                        device_id: "0123456789abcdef0123456789abcdef".into(),
+                        device_name: device_id,
+                        url: format!("{url}/#device=0123456789abcdef0123456789abcdef&access=dbg"),
+                        fallback_bearer: None,
+                    });
+                }
+            }
+            Operation::Register { url, username, .. } => {
+                self.calls
+                    .lock()
+                    .unwrap()
+                    .push(format!("register:{url}:{username}"));
+                if self.fail.load(Ordering::SeqCst) {
+                    reply.error = Some("conflict".into());
+                } else {
+                    reply.registered = Some(username);
+                }
+            }
             Operation::Refresh(server) => {
                 let mut active = self.active.lock().unwrap();
                 if let Some(active) = active.as_mut().filter(|active| active.server == server) {
@@ -1690,4 +1735,166 @@ async fn rejected_saved_login_opens_masked_retry_and_does_not_delete_password(
             .unwrap()
             .is_none()
     );
+}
+
+#[derive(Default)]
+struct FakeScreenViewer {
+    opened: Mutex<Vec<shellrs::remote::RemoteScreenSession>>,
+}
+
+impl shellrs::remote::ScreenViewer for FakeScreenViewer {
+    fn open(&self, session: shellrs::remote::RemoteScreenSession) -> anyhow::Result<()> {
+        self.opened.lock().unwrap().push(session);
+        Ok(())
+    }
+}
+
+#[gpui_kit::test]
+async fn remote_screen_opens_standalone_viewer_without_requiring_vpn(cx: &mut TestAppContext) {
+    let (handle, workspace) = open_workspace_with_store(cx, HostStore::empty());
+    cx.simulate_window_resize(handle.into(), size(px(1000.), px(750.)));
+    let backend = Arc::new(FakeRemote::default());
+    let viewer = Arc::new(FakeScreenViewer::default());
+    let server = Server::new(
+        "Test".into(),
+        "https://example.test".into(),
+        "operator".into(),
+    );
+    cx.update(|cx| {
+        workspace
+            .read(cx)
+            .remote_management()
+            .clone()
+            .update(cx, |service, cx| {
+                service.set_backend(backend.clone(), cx);
+                service.set_screen_viewer(viewer.clone(), cx);
+            });
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.click("show-remote-management", cx)
+    });
+    dispatch(
+        cx,
+        handle,
+        Command::SaveLogin(server.clone(), Secret::new("test password"), false),
+    );
+    cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
+        workspace
+            .read(cx)
+            .remote_management()
+            .read(cx)
+            .is_logged_in(&server.id)
+    })
+    .await;
+    dispatch(cx, handle, Command::Devices(server.id.clone()));
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window.try_find("remote-screen-board-00").is_some()
+    })
+    .await;
+    // Screen mirroring button is enabled even though no SSH VPN network is connected.
+    in_frame(cx, handle, |window, cx| {
+        assert!(enabled(&window.find("remote-screen-board-00")));
+        assert!(!enabled(&window.find("remote-ssh-board-00")));
+        window.click("remote-screen-board-00", cx);
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(3), |_, _| {
+        viewer.opened.lock().unwrap().len() == 1
+    })
+    .await;
+    {
+        let opened = viewer.opened.lock().unwrap();
+        assert_eq!(opened[0].device_id, "board-00");
+        assert_eq!(
+            opened[0].url,
+            "https://example.test/#device=board-00&access=testtoken"
+        );
+    }
+    // When the device is offline for screen mirroring, status reports the error clearly.
+    backend.offline.store(true, Ordering::SeqCst);
+    in_frame(cx, handle, |window, cx| {
+        window.click("remote-screen-board-00", cx);
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window.try_find("remote-status").is_some_and(|status| {
+            status
+                .label()
+                .is_some_and(|text| text.contains("未开启远程投屏"))
+        })
+    })
+    .await;
+}
+
+#[gpui_kit::test]
+async fn remote_debug_device_and_account_registration_work_without_signing_in(
+    cx: &mut TestAppContext,
+) {
+    let (handle, workspace) = open_workspace_with_store(cx, HostStore::empty());
+    cx.simulate_window_resize(handle.into(), size(px(1000.), px(750.)));
+    let backend = Arc::new(FakeRemote::default());
+    let viewer = Arc::new(FakeScreenViewer::default());
+    cx.update(|cx| {
+        workspace
+            .read(cx)
+            .remote_management()
+            .clone()
+            .update(cx, |service, cx| {
+                service.set_backend(backend.clone(), cx);
+                service.set_screen_viewer(viewer.clone(), cx);
+            });
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.click("show-remote-management", cx)
+    });
+    // 1. Temporary debug device dialog opens standalone WebView without login.
+    in_frame(cx, handle, |window, cx| {
+        window.click("remote-debug-open", cx)
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.click("remote-debug-url", cx);
+        window.input("https://remote.example.test:8180", cx);
+        window.click("remote-debug-device-id", cx);
+        window.input("7K9M-2R8X", cx);
+        window.click("remote-debug-key", cx);
+        window.input("5W3P-6T4H", cx);
+        window.click("remote-debug-connect", cx);
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(3), |_, _| {
+        viewer.opened.lock().unwrap().len() == 1
+    })
+    .await;
+    assert_eq!(viewer.opened.lock().unwrap()[0].device_name, "7K9M-2R8X");
+    // 2. Account registration dialog validates password match and submits pending request.
+    in_frame(cx, handle, |window, cx| {
+        window.click("remote-register-open", cx)
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.click("remote-register-url", cx);
+        window.input("https://remote.example.test:8180", cx);
+        window.click("remote-register-name", cx);
+        window.input("测试团队", cx);
+        window.click("remote-register-username", cx);
+        window.input("team_demo", cx);
+        window.click("remote-register-password", cx);
+        window.input("password123", cx);
+        window.click("remote-register-confirm", cx);
+        window.input("mismatch123", cx);
+        window.click("remote-register-submit", cx);
+    });
+    in_frame(cx, handle, |window, cx| {
+        assert!(window.find("remote-register-error").visible());
+        window.click("remote-register-confirm", cx);
+        window.press("secondary-a", cx);
+        window.input("password123", cx);
+        window.click("remote-register-submit", cx);
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window
+            .try_find("remote-global-status")
+            .is_some_and(|status| {
+                status
+                    .label()
+                    .is_some_and(|text| text.contains("team_demo") && text.contains("审核"))
+            })
+    })
+    .await;
 }

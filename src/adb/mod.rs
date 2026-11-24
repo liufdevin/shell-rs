@@ -1,6 +1,7 @@
 mod android;
 mod client;
 mod device_manager;
+mod identity;
 mod lan_proxy;
 mod mirror;
 use crate::shared::process;
@@ -16,6 +17,11 @@ pub use client::{
     AdbConnection, AdbDetection, AdbDetector, NoAdbDetector, SystemAdbDetector, canonical_boot_id,
 };
 pub use device_manager::{DeviceCommand, DeviceManager};
+pub use identity::BoardIdentity;
+pub(crate) use identity::{
+    NONCE_CLEAN_COMMAND, generate_nonce, is_network_adb_serial, nonce_write_command,
+    pick_preferred_match,
+};
 pub(crate) use lan_proxy::AdbProxy;
 
 pub(crate) fn run_usb_adb(

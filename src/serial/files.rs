@@ -157,7 +157,14 @@ pub fn parse_directory(
     })
 }
 
-pub const NETWORK_COMMAND: &str = "printf '@@boot_id\\n'; cat /proc/sys/kernel/random/boot_id 2>/dev/null; printf '@@user\\n'; id -un; printf '@@addresses\\n'; ip -o addr show scope global 2>/dev/null || hostname -I 2>/dev/null";
+pub const NETWORK_COMMAND: &str = concat!(
+    "printf '@@boot_id\\n'; cat /proc/sys/kernel/random/boot_id 2>/dev/null; ",
+    "printf '\\n@@machine_id\\n'; cat /etc/machine-id /var/lib/dbus/machine-id 2>/dev/null; ",
+    "printf '\\n@@hw_serial\\n'; cat /sys/class/sunxi_info/sys_info /sys/firmware/devicetree/base/serial-number 2>/dev/null; ",
+    "printf '\\n@@adb_serial\\n'; getprop ro.serialno 2>/dev/null || cat /sys/kernel/config/usb_gadget/*/strings/0x409/serialnumber /sys/class/android_usb/android0/iSerial 2>/dev/null; ",
+    "printf '\\n@@user\\n'; id -un; ",
+    "printf '@@addresses\\n'; ip -o addr show scope global 2>/dev/null || hostname -I 2>/dev/null"
+);
 
 pub fn network_candidates(output: &str) -> (String, Vec<IpAddr>) {
     let user = output

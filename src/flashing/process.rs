@@ -58,9 +58,15 @@ pub(super) enum RunEvent {
     },
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AdbDeviceCandidate {
+    pub serial: String,
+    pub label: String,
+}
+
 pub(super) enum AdbReboot {
     NoDevice,
-    MultipleDevices,
+    MultipleDevices(Vec<AdbDeviceCandidate>),
     Rebooted { serial: String, output: String },
 }
 
@@ -417,8 +423,8 @@ pub(super) fn decode(bytes: &[u8]) -> String {
     }
 }
 
-/// The serial numbers ADB currently sees as usable devices.
-fn adb_devices(program: &Path, stop: &AtomicBool) -> Result<Vec<String>, String> {
+/// The USB devices ADB currently sees as usable devices.
+fn adb_devices(program: &Path, stop: &AtomicBool) -> Result<Vec<AdbDeviceCandidate>, String> {
     let output = crate::adb::run_usb_adb(program.to_path_buf(), &["devices", "-l"], &mut || {
         stop.load(Ordering::Relaxed)
     })
@@ -444,7 +450,11 @@ fn adb_devices(program: &Path, stop: &AtomicBool) -> Result<Vec<String>, String>
                 .filter_map(|line| {
                     let mut fields = line.split_whitespace();
                     let candidate = fields.next()?;
-                    (candidate == serial && fields.next() == Some("device")).then(|| serial.clone())
+                    if candidate == serial && fields.next() == Some("device") {
+                        Some(build_candidate(candidate, fields))
+                    } else {
+                        None
+                    }
                 })
                 .collect())
         }
@@ -453,18 +463,41 @@ fn adb_devices(program: &Path, stop: &AtomicBool) -> Result<Vec<String>, String>
     }
 }
 
-fn parse_usb_devices(output: &str) -> Vec<String> {
+fn build_candidate<'a>(serial: &str, fields: impl Iterator<Item = &'a str>) -> AdbDeviceCandidate {
+    let mut model = None;
+    let mut product = None;
+    for field in fields {
+        if let Some(value) = field.strip_prefix("model:") {
+            model = Some(value);
+        } else if let Some(value) = field.strip_prefix("product:") {
+            product = Some(value);
+        }
+    }
+    let detail = model.or(product);
+    let label = match detail {
+        Some(detail) if !detail.is_empty() && detail != serial => {
+            format!("{serial} ({detail})")
+        }
+        _ => serial.to_string(),
+    };
+    AdbDeviceCandidate {
+        serial: serial.to_string(),
+        label,
+    }
+}
+
+fn parse_usb_devices(output: &str) -> Vec<AdbDeviceCandidate> {
     let mut devices = Vec::new();
     for line in output.lines() {
         let mut fields = line.split_whitespace();
         let Some(serial) = fields.next() else {
             continue;
         };
-        if fields.next() == Some("device")
-            && !serial.starts_with('-')
-            && fields.any(|field| field.starts_with("usb:"))
-        {
-            devices.push(serial.to_string());
+        if fields.next() == Some("device") && !serial.starts_with('-') {
+            let rest: Vec<_> = fields.collect();
+            if rest.iter().any(|field| field.starts_with("usb:")) {
+                devices.push(build_candidate(serial, rest.into_iter()));
+            }
         }
     }
     devices
@@ -473,7 +506,9 @@ fn parse_usb_devices(output: &str) -> Vec<String> {
 /// Check ADB only when the user asks for it. Polling ADB while PhoenixConsole
 /// owns the FES device makes device detection slower and can interfere with
 /// the flashing tool.
-pub(super) fn start_adb_reboot() -> (Run, Receiver<Result<AdbReboot, String>>) {
+pub(super) fn start_adb_reboot(
+    target_serial: Option<String>,
+) -> (Run, Receiver<Result<AdbReboot, String>>) {
     let stop = Arc::new(AtomicBool::new(false));
     let finished = Arc::new(AtomicBool::new(false));
     let run = Run {
@@ -483,19 +518,24 @@ pub(super) fn start_adb_reboot() -> (Run, Receiver<Result<AdbReboot, String>>) {
     let (sender, receiver) = mpsc::channel();
     std::thread::spawn(move || {
         let _completion = RunCompletion(finished);
-        let _ = sender.send(reboot_to_efex(&stop));
+        let _ = sender.send(reboot_to_efex(target_serial, &stop));
     });
     (run, receiver)
 }
 
-fn reboot_to_efex(stop: &AtomicBool) -> Result<AdbReboot, String> {
+fn reboot_to_efex(target_serial: Option<String>, stop: &AtomicBool) -> Result<AdbReboot, String> {
     let program =
         crate::adb::find_adb().ok_or_else(|| crate::i18n::t!("adb.missing").to_string())?;
-    let devices = adb_devices(&program, stop)?;
-    let serial = match devices.as_slice() {
-        [] => return Ok(AdbReboot::NoDevice),
-        [serial] => serial.clone(),
-        _ => return Ok(AdbReboot::MultipleDevices),
+    let serial = match target_serial {
+        Some(serial) => serial,
+        None => {
+            let devices = adb_devices(&program, stop)?;
+            match devices.as_slice() {
+                [] => return Ok(AdbReboot::NoDevice),
+                [device] => device.serial.clone(),
+                _ => return Ok(AdbReboot::MultipleDevices(devices)),
+            }
+        }
     };
     crate::adb::run_usb_adb(
         program,
@@ -562,11 +602,11 @@ mod tests {
 
     #[test]
     fn only_authorized_usb_devices_are_reboot_candidates() {
-        assert_eq!(
-            parse_usb_devices(
-                "List of devices attached\nboard device usb:1-2 product:board\nremote:5555 device product:board\nother unauthorized usb:1-3\n"
-            ),
-            ["board"]
+        let devices = parse_usb_devices(
+            "List of devices attached\nboard device usb:1-2 product:board model:T113\nremote:5555 device product:board\nother unauthorized usb:1-3\n",
         );
+        assert_eq!(devices.len(), 1);
+        assert_eq!(devices[0].serial, "board");
+        assert_eq!(devices[0].label, "board (T113)");
     }
 }

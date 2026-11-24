@@ -1,5 +1,8 @@
 use super::{Command, Server, Service};
-use crate::{app::RemoteAction, i18n::t};
+use crate::{
+    app::{CatalogIcon, RemoteAction},
+    i18n::t,
+};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     component::{
@@ -457,6 +460,19 @@ impl Render for CatalogDialog {
                                     busy || !allowed,
                                 )
                                 .ghost(),
+                            )
+                            .child(
+                                self.action(
+                                    format!("remote-screen-{}", device.device_id),
+                                    t!("remote.screen"),
+                                    Command::Screen {
+                                        server: self.server.id.clone(),
+                                        device: device.device_id.clone(),
+                                    },
+                                    busy,
+                                )
+                                .icon(CatalogIcon::Monitor)
+                                .outline(),
                             )
                             .child(
                                 self.action(

@@ -149,6 +149,13 @@ impl SourceState {
             _ => None,
         }
     }
+
+    pub(super) fn file_size(&self) -> Option<u64> {
+        match self.observation() {
+            Some(Observation::Present(stamp)) => Some(stamp.size),
+            _ => None,
+        }
+    }
 }
 
 #[cfg(test)]

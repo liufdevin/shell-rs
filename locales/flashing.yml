@@ -288,8 +288,14 @@ flashing.mode.all_unavailable:
   zh-CN: 此固件未提供全盘擦除所需的 usbtool 产品版本信息（1.0.0.1 或以上）；仍可选择保留数据或分区擦除
   en: Full erase requires firmware with usbtool product version 1.0.0.1 or later. Keep data and logical erase remain available.
 flashing.adb.multiple:
-  zh-CN: 检测到多台 USB ADB 设备；请只保留目标设备
-  en: Multiple USB ADB devices detected; leave only the target connected
+  zh-CN: 检测到多台 USB ADB 设备，请在弹窗中选择要重启到 efex 的目标设备。
+  en: Multiple USB ADB devices detected. Choose the target device to reboot to efex.
+flashing.adb.pick_title:
+  zh-CN: 选择要重启烧录的 ADB 设备
+  en: Choose ADB device to reboot
+flashing.adb.pick_hint:
+  zh-CN: "当前连接了多台 USB ADB 设备，点击目标设备发送 reboot efex："
+  en: "Multiple USB ADB devices are connected. Select one to send reboot efex:"
 flashing.tool.ready:
   zh-CN: 工具：%{path}
   en: "Tool: %{path}"
@@ -362,3 +368,114 @@ flashing.log.adb_no_device:
 flashing.log.adb_failed:
   zh-CN: ADB 命令失败：%{error}
   en: "ADB command failed: %{error}"
+flashing.tool.open:
+  zh-CN: 打开目录
+  en: Open folder
+flashing.tool.open_failed:
+  zh-CN: "无法打开工具目录：%{error}"
+  en: "Could not open tool folder: %{error}"
+flashing.tool.kill_button:
+  zh-CN: 结束冲突工具并重试
+  en: Terminate conflicting tools & retry
+flashing.tool.kill_title:
+  zh-CN: 结束冲突的烧录工具？
+  en: Terminate conflicting flashing tools?
+flashing.tool.kill_message:
+  zh-CN: "将强制结束以下正在运行的进程并重试：%{programs}"
+  en: "The following running processes will be terminated before retrying: %{programs}"
+flashing.tool.kill_confirm:
+  zh-CN: 强制结束
+  en: Terminate
+flashing.tool.killed:
+  zh-CN: "已结束 %{count} 个冲突进程，正在重试。"
+  en: "Terminated %{count} conflicting process(es); retrying."
+flashing.tool.kill_failed:
+  zh-CN: "无法结束冲突进程：%{error}"
+  en: "Could not terminate conflicting processes: %{error}"
+flashing.mode.label:
+  zh-CN: 烧录方式
+  en: Mode
+flashing.mode.keep_desc:
+  zh-CN: 保留用户数据区，仅更新系统镜像
+  en: Keep user data and update system images
+flashing.mode.logical_desc:
+  zh-CN: 擦除逻辑分区并写入完整固件
+  en: Erase logical partitions and write full firmware
+flashing.mode.all_desc:
+  zh-CN: 清空整块存储后重新烧录完整镜像
+  en: Wipe entire storage and flash full image
+flashing.mode.partitions_desc:
+  zh-CN: 仅烧录下方勾选的指定分区
+  en: Flash only the selected partitions below
+flashing.meta.size:
+  zh-CN: 文件大小
+  en: File size
+flashing.meta.partitions:
+  zh-CN: 分区数量
+  en: Partitions
+flashing.meta.status:
+  zh-CN: 固件状态
+  en: Firmware status
+flashing.meta.ready:
+  zh-CN: 已就绪
+  en: Ready
+flashing.meta.reading:
+  zh-CN: 读取中…
+  en: Reading…
+flashing.meta.none:
+  zh-CN: 未选择
+  en: Not selected
+flashing.partitions.overview_title:
+  zh-CN: 固件分区概览
+  en: Firmware partitions
+flashing.partitions.switch_to_custom:
+  zh-CN: 切换到按分区烧录
+  en: Select partitions to flash
+flashing.layout.reset:
+  zh-CN: 恢复默认布局
+  en: Reset layout
+flashing.recent:
+  zh-CN: 最近固件
+  en: Recent
+flashing.recent_clear:
+  zh-CN: 清空最近记录
+  en: Clear recent
+flashing.drop_hint:
+  zh-CN: 支持拖入 .img 固件文件
+  en: Drag and drop an .img file here
+flashing.firmware_parts_count:
+  zh-CN: "%{count} 分区"
+  en: "%{count} partitions"
+flashing.partitions.title:
+  zh-CN: 烧录分区
+  en: Partitions
+flashing.partitions.search_placeholder:
+  zh-CN: 筛选分区名或序号…
+  en: Filter partitions…
+flashing.partitions.invert:
+  zh-CN: 反选
+  en: Invert
+flashing.partitions.clear:
+  zh-CN: 清空
+  en: Clear
+flashing.partitions.no_match:
+  zh-CN: 没有匹配的分区。
+  en: No matching partitions.
+flashing.log.lines_filtered:
+  zh-CN: "%{shown} / %{total} 行"
+  en: "%{shown} / %{total} lines"
+flashing.log.search_placeholder:
+  zh-CN: 过滤日志关键字…
+  en: Filter log…
+flashing.log.errors_only:
+  zh-CN: 仅错误/结果
+  en: Errors & results
+flashing.log.save:
+  zh-CN: 保存日志…
+  en: Save log…
+flashing.log.saved:
+  zh-CN: "日志已保存到：%{path}"
+  en: "Log saved to: %{path}"
+flashing.log.save_failed:
+  zh-CN: "保存日志失败：%{error}"
+  en: "Could not save log: %{error}"

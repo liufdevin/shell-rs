@@ -2385,7 +2385,7 @@ impl Workspace {
         let subscription = cx.subscribe_in(
             &panel,
             window,
-            |this, _, event: &FlashingPanelEvent, window, cx| {
+            |this, panel_entity, event: &FlashingPanelEvent, window, cx| {
                 match event {
                     FlashingPanelEvent::Activated => {
                         this.set_active_tab(Some(CenterTab::Flashing), window, cx);
@@ -2394,6 +2394,59 @@ impl Workspace {
                         this.flashing_tab = None;
                         if this.active_tab == Some(CenterTab::Flashing) {
                             this.set_active_tab(None, window, cx);
+                        }
+                    }
+                    FlashingPanelEvent::PickAdbDevice(devices) => {
+                        if !window.has_active_dialog(cx) {
+                            use gpui_kit::component::button::Button;
+                            let panel_handle = panel_entity.clone();
+                            let devices = devices.clone();
+                            window.open_dialog(cx, move |dialog, _, cx| {
+                                let panel_handle = panel_handle.clone();
+                                dialog
+                                    .title(t!("flashing.adb.pick_title"))
+                                    .width(px(420.))
+                                    .child(
+                                        v_flex()
+                                            .gap_2()
+                                            .child(
+                                                div()
+                                                    .text_sm()
+                                                    .text_color(cx.theme().muted_foreground)
+                                                    .child(t!("flashing.adb.pick_hint")),
+                                            )
+                                            .children(devices.iter().enumerate().map(
+                                                |(index, device)| {
+                                                    let panel_handle = panel_handle.clone();
+                                                    let serial = device.serial.clone();
+                                                    Button::new(("flashing-adb-device", index))
+                                                        .outline()
+                                                        .w_full()
+                                                        .icon(crate::app::CatalogIcon::Zap)
+                                                        .label(device.label.clone())
+                                                        .on_click(move |_, window, cx| {
+                                                            window.close_dialog(cx);
+                                                            panel_handle.update(cx, |panel, cx| {
+                                                                panel.command(
+                                                                    crate::flashing::FlashingCommand::StartViaAdbTarget(
+                                                                        serial.clone(),
+                                                                    ),
+                                                                    cx,
+                                                                );
+                                                            });
+                                                        })
+                                                },
+                                            )),
+                                    )
+                                    .footer(
+                                        Button::new("flashing-adb-cancel")
+                                            .outline()
+                                            .label(t!("action.cancel"))
+                                            .on_click(|_, window, cx| {
+                                                window.close_dialog(cx);
+                                            }),
+                                    )
+                            });
                         }
                     }
                 }
@@ -2427,6 +2480,22 @@ impl Workspace {
                     t!("flashing.stop_title"),
                     Some(t!("flashing.interruption")),
                     t!("flashing.stop"),
+                    Rc::new(move |_, cx| {
+                        panel.update(cx, |panel, cx| panel.command(command.clone(), cx))
+                    }),
+                    window,
+                    cx,
+                );
+            }
+            return;
+        }
+        if command == crate::flashing::FlashingCommand::KillConflictingTools {
+            if !window.has_active_dialog(cx) {
+                let programs = panel.read(cx).conflicting_tools_summary();
+                confirm_danger(
+                    t!("flashing.tool.kill_title"),
+                    Some(t!("flashing.tool.kill_message", programs = programs)),
+                    t!("flashing.tool.kill_confirm"),
                     Rc::new(move |_, cx| {
                         panel.update(cx, |panel, cx| panel.command(command.clone(), cx))
                     }),

@@ -86,12 +86,11 @@ impl Workspace {
                 .ok();
                 return;
             }
-            let boot_id = result
+            let board_id = result
                 .as_ref()
                 .and_then(|result| result.as_ref().ok())
-                .and_then(|output| output.split_once("@@boot_id\n"))
-                .and_then(|(_, output)| output.lines().next())
-                .and_then(crate::adb::canonical_boot_id);
+                .map(|output| crate::adb::BoardIdentity::parse(output))
+                .unwrap_or_default();
             let (user, addresses) = match result {
                 Some(Ok(output)) => network_candidates(&output),
                 result => {
@@ -108,9 +107,9 @@ impl Workspace {
                     return;
                 }
             };
-            let (adb, address) = cx
+            let (mut adb, mut address) = cx
                 .background_spawn(async move {
-                    let adb = detector.detect(boot_id.as_deref());
+                    let adb = detector.detect_identity(&board_id);
                     let address = if matches!(adb, AdbDetection::Matched(_)) {
                         None
                     } else {
@@ -119,6 +118,69 @@ impl Workspace {
                     (adb, address)
                 })
                 .await;
+            // Fallback nonce challenge-response when static identity factors
+            // (boot_id / chipid / machine-id / unique serialno) were unavailable
+            // and candidate ADB devices exist.
+            if address.is_none()
+                && matches!(adb, AdbDetection::Choose(ref devices) if !devices.is_empty())
+            {
+                let nonce = crate::adb::generate_nonce();
+                let write_reply = this
+                    .read_with(cx, |this, cx| {
+                        this.serial_file_target(id, cx)
+                            .filter(|current| {
+                                *current == view && current.read(cx).generation(cx) == generation
+                            })
+                            .and_then(|current| {
+                                current
+                                    .read(cx)
+                                    .exec(crate::adb::nonce_write_command(&nonce), cx)
+                            })
+                    })
+                    .ok()
+                    .flatten();
+                if let Some(reply) = write_reply
+                    && exec_answer(reply, cx)
+                        .await
+                        .is_some_and(|res| res.is_ok_and(|out| out.contains("@@nonce_ok")))
+                {
+                    let candidates =
+                        match std::mem::replace(&mut adb, AdbDetection::Unavailable(String::new()))
+                        {
+                            AdbDetection::Choose(devices) => devices,
+                            _ => Vec::new(),
+                        };
+                    let fallback = candidates.clone();
+                    let matched = cx
+                        .background_spawn(async move {
+                            let cancel = std::sync::atomic::AtomicBool::new(false);
+                            AdbConnection::match_nonce(candidates, &nonce, &cancel)
+                        })
+                        .await;
+                    if let Some(device) = matched {
+                        adb = AdbDetection::Matched(device);
+                        address = None;
+                    } else {
+                        adb = AdbDetection::Choose(fallback);
+                    }
+                    // Best-effort cleanup over serial in case no ADB matched.
+                    if !matches!(adb, AdbDetection::Matched(_)) {
+                        let clean = this
+                            .read_with(cx, |this, cx| {
+                                this.serial_file_target(id, cx).and_then(|current| {
+                                    current
+                                        .read(cx)
+                                        .exec(crate::adb::NONCE_CLEAN_COMMAND.into(), cx)
+                                })
+                            })
+                            .ok()
+                            .flatten();
+                        if let Some(reply) = clean {
+                            let _ = exec_answer(reply, cx).await;
+                        }
+                    }
+                }
+            }
             this.update_in(cx, |this, window, cx| {
                 let valid = this.serial_file_target(id, cx).is_some_and(|current| {
                     current == view && current.read(cx).generation(cx) == generation

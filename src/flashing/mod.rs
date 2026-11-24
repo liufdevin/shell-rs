@@ -17,4 +17,5 @@ pub(crate) use mark::FlashingMark;
 pub use model::EraseMode;
 use model::{Completion, FlashProgress, ParsedLine, Phase, parse_line};
 pub use panel::{FlashingCommand, FlashingPanel, FlashingPanelEvent};
+pub use process::AdbDeviceCandidate;
 use process::{Run, RunEvent, start_wait, tool_dir};

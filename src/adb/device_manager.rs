@@ -1,18 +1,22 @@
 use super::{
     AdbConnection, AdbDetection, AdbDetector, AndroidApp, AndroidCapabilities, AndroidTools,
 };
-use crate::{app::AdbDeviceAction, i18n::t};
+use crate::{
+    app::{AdbDeviceAction, CatalogIcon},
+    i18n::t,
+};
 use anyhow::Result;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     component::{
-        ActiveTheme as _, Disableable as _, Sizable as _,
-        button::Button,
+        ActiveTheme as _, Disableable as _, Icon, Sizable as _,
+        button::{Button, ButtonVariants as _},
         checkbox::Checkbox,
         h_flex,
         input::{Input, InputEvent, InputState},
         searchable_list::SearchableListItem,
         select::{Select, SelectEvent, SelectState},
+        spinner::Spinner,
         v_flex,
     },
     *,
@@ -83,6 +87,19 @@ impl Drop for Cancellation {
         self.0.store(true, Ordering::Release);
     }
 }
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum JobKind {
+    Installing(SharedString),
+    LoadingApps,
+    Launching(SharedString),
+}
+
+struct ActiveJob {
+    kind: JobKind,
+    _cancel: Cancellation,
+}
+
 struct MirrorState {
     id: u64,
     _cancel: Cancellation,
@@ -109,7 +126,7 @@ pub struct DeviceManager {
     revision: u64,
     mirror_id: u64,
     scan: Option<Cancellation>,
-    job: Option<Cancellation>,
+    job: Option<ActiveJob>,
     mirrors: HashMap<String, MirrorState>,
     mirror_workers: Vec<std::thread::JoinHandle<()>>,
     scrcpy: Option<PathBuf>,
@@ -287,7 +304,9 @@ impl DeviceManager {
                     return;
                 }
                 let package = self.package.read(cx).value().trim().to_owned();
+                let kind = JobKind::Launching(package.clone().into());
                 self.start_job(
+                    kind,
                     false,
                     move |tools, device, cancel| tools.launch(device, &package, cancel),
                     cx,
@@ -375,7 +394,14 @@ impl DeviceManager {
         {
             return;
         }
+        let file_name: SharedString = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| path.display().to_string())
+            .into();
         self.start_job(
+            JobKind::Installing(file_name),
             true,
             move |tools, device, cancel| tools.install(device, &path, cancel),
             cx,
@@ -383,6 +409,7 @@ impl DeviceManager {
     }
     fn start_job(
         &mut self,
+        kind: JobKind,
         install: bool,
         run: impl FnOnce(&dyn AndroidTools, &AdbConnection, &AtomicBool) -> Result<()> + Send + 'static,
         cx: &mut Context<Self>,
@@ -394,7 +421,10 @@ impl DeviceManager {
         self.status = None;
         let token = Cancellation::new();
         let cancel = token.0.clone();
-        self.job = Some(token);
+        self.job = Some(ActiveJob {
+            kind,
+            _cancel: token,
+        });
         let tools = self.tools.clone();
         let sender = self.sender.clone();
         let revision = self.revision;
@@ -428,7 +458,10 @@ impl DeviceManager {
         let revision = self.revision;
         let token = Cancellation::new();
         let cancel = token.0.clone();
-        self.job = Some(token);
+        self.job = Some(ActiveJob {
+            kind: JobKind::LoadingApps,
+            _cancel: token,
+        });
         self.error = None;
         self.status = None;
         if let Err(error) = std::thread::Builder::new()
@@ -460,6 +493,47 @@ impl DeviceManager {
             return;
         }
         let revision = self.revision;
+        #[cfg(windows)]
+        if !scrcpy && let Some(hwnd) = native_hwnd(window) {
+            let title = t!("android.install").to_string();
+            let filter = t!("android.apk_filter").to_string();
+            cx.spawn_in(window, async move |this, cx| {
+                let picked = cx
+                    .background_spawn(async move { pick_apk_windows(hwnd, &title, &filter) })
+                    .await;
+                this.update_in(cx, |this, window, cx| {
+                    if this.revision != revision || this.job.is_some() || this.scan.is_some() {
+                        return;
+                    }
+                    match picked {
+                        Ok(Some(path)) => {
+                            let dispatch = this.dispatch.clone();
+                            let manager = cx.entity().downgrade();
+                            window.defer(cx, move |window, cx| {
+                                if manager
+                                    .upgrade()
+                                    .is_some_and(|manager| manager.read(cx).revision == revision)
+                                {
+                                    dispatch.dispatch_action(
+                                        &AdbDeviceAction(DeviceCommand::InstallApkPath(path)),
+                                        window,
+                                        cx,
+                                    );
+                                }
+                            });
+                        }
+                        Ok(None) => {}
+                        Err(error) => {
+                            this.error = Some(error.into());
+                            cx.notify();
+                        }
+                    }
+                })
+                .ok();
+            })
+            .detach();
+            return;
+        }
         let receiver = cx.prompt_for_paths(PathPromptOptions {
             files: true,
             directories: false,
@@ -719,6 +793,55 @@ impl DeviceManager {
     }
 }
 
+#[cfg(windows)]
+fn native_hwnd(window: &Window) -> Option<isize> {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    match HasWindowHandle::window_handle(window).map(|handle| handle.as_raw()) {
+        Ok(RawWindowHandle::Win32(handle)) => Some(handle.hwnd.get()),
+        _ => None,
+    }
+}
+
+#[cfg(windows)]
+fn pick_apk_windows(hwnd: isize, title: &str, filter: &str) -> Result<Option<PathBuf>, String> {
+    use std::ffi::OsString;
+    use std::os::windows::ffi::OsStringExt as _;
+    use windows_sys::Win32::UI::Controls::Dialogs::{
+        CommDlgExtendedError, GetOpenFileNameW, OFN_EXPLORER, OFN_FILEMUSTEXIST, OFN_NOCHANGEDIR,
+        OFN_PATHMUSTEXIST, OPENFILENAMEW,
+    };
+
+    let title: Vec<u16> = title.encode_utf16().chain([0]).collect();
+    let filter: Vec<u16> = format!("{filter}\0*.apk\0\0").encode_utf16().collect();
+    let extension: Vec<u16> = "apk\0".encode_utf16().collect();
+    let mut path = vec![0u16; 32768];
+    let mut options = OPENFILENAMEW {
+        lStructSize: std::mem::size_of::<OPENFILENAMEW>() as u32,
+        hwndOwner: hwnd as _,
+        lpstrFilter: filter.as_ptr(),
+        nFilterIndex: 1,
+        lpstrFile: path.as_mut_ptr(),
+        nMaxFile: path.len() as u32,
+        lpstrTitle: title.as_ptr(),
+        lpstrDefExt: extension.as_ptr(),
+        Flags: OFN_EXPLORER | OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR,
+        ..unsafe { std::mem::zeroed() }
+    };
+    if unsafe { GetOpenFileNameW(&mut options) } != 0 {
+        let length = path
+            .iter()
+            .position(|value| *value == 0)
+            .unwrap_or(path.len());
+        return Ok(Some(PathBuf::from(OsString::from_wide(&path[..length]))));
+    }
+    let error = unsafe { CommDlgExtendedError() };
+    if error == 0 {
+        Ok(None)
+    } else {
+        Err(format!("Windows file dialog error: {error:#x}"))
+    }
+}
+
 fn device_label(device: &AdbConnection) -> SharedString {
     if device.display_name() == device.serial() {
         device.serial().to_owned().into()
@@ -731,11 +854,86 @@ fn device_label(device: &AdbConnection) -> SharedString {
     }
 }
 
+fn sdk_label(sdk: u32) -> Option<SharedString> {
+    if sdk == 0 {
+        return None;
+    }
+    let version = match sdk {
+        36 => Some("16"),
+        35 => Some("15"),
+        34 => Some("14"),
+        33 => Some("13"),
+        32 => Some("12L"),
+        31 => Some("12"),
+        30 => Some("11"),
+        29 => Some("10"),
+        28 => Some("9"),
+        26..=27 => Some("8"),
+        24..=25 => Some("7"),
+        23 => Some("6"),
+        21..=22 => Some("5"),
+        _ => None,
+    };
+    Some(match version {
+        Some(ver) => format!("Android {ver} · API {sdk}").into(),
+        None => format!("API {sdk}").into(),
+    })
+}
+
+fn section_card(cx: &App) -> Div {
+    v_flex()
+        .gap_2()
+        .p_3()
+        .rounded_md()
+        .border_1()
+        .border_color(cx.theme().border)
+        .bg(cx.theme().group_box)
+}
+
+fn section_header(icon: CatalogIcon, title: SharedString, cx: &App) -> Div {
+    h_flex()
+        .items_center()
+        .gap_1p5()
+        .child(
+            Icon::new(icon)
+                .xsmall()
+                .text_color(cx.theme().muted_foreground),
+        )
+        .child(
+            div()
+                .text_sm()
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(cx.theme().group_box_foreground)
+                .child(title),
+        )
+}
+
 impl Render for DeviceManager {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let choice = self.selected();
         let caps = choice.map(|device| device.capabilities).unwrap_or_default();
         let busy = self.job.is_some() || self.scan.is_some();
+        let installing_apk = match self.job.as_ref().map(|job| &job.kind) {
+            Some(JobKind::Installing(name)) => Some(name.clone()),
+            _ => None,
+        };
+        let is_installing = installing_apk.is_some();
+        let is_loading_apps = matches!(
+            self.job.as_ref().map(|job| &job.kind),
+            Some(JobKind::LoadingApps)
+        );
+        let is_launching = matches!(
+            self.job.as_ref().map(|job| &job.kind),
+            Some(JobKind::Launching(_))
+        );
+        let working_label = self.job.as_ref().map(|job| match &job.kind {
+            JobKind::Installing(name) => t!("android.installing_apk", name = name),
+            JobKind::LoadingApps => t!("android.loading_apps"),
+            JobKind::Launching(package) if !package.is_empty() => {
+                t!("android.launching_app", package = package)
+            }
+            JobKind::Launching(_) => t!("android.working"),
+        });
         let action = |id: &'static str, label: SharedString, command: DeviceCommand| {
             let dispatch = self.dispatch.clone();
             Button::new(id)
@@ -754,35 +952,110 @@ impl Render for DeviceManager {
             .gap_3()
             .w_full()
             .child(
-                h_flex()
-                    .gap_2()
+                v_flex()
+                    .gap_1p5()
                     .child(
-                        div().flex_1().min_w_0().child(
-                            Select::new(&self.picker)
-                                .id("android-device-select")
-                                .small()
-                                .placeholder(t!("android.select"))
+                        h_flex()
+                            .items_center()
+                            .gap_2()
+                            .child(
+                                div().flex_1().min_w_0().child(
+                                    Select::new(&self.picker)
+                                        .id("android-device-select")
+                                        .small()
+                                        .placeholder(t!("android.select"))
+                                        .disabled(self.scan.is_some()),
+                                ),
+                            )
+                            .child(
+                                action(
+                                    "android-refresh",
+                                    t!("android.refresh"),
+                                    DeviceCommand::Refresh,
+                                )
+                                .outline()
+                                .icon(CatalogIcon::RefreshCw)
+                                .loading(self.scan.is_some())
                                 .disabled(self.scan.is_some()),
-                        ),
+                            ),
                     )
-                    .child(
-                        action(
-                            "android-refresh",
-                            t!("android.refresh"),
-                            DeviceCommand::Refresh,
-                        )
-                        .disabled(self.scan.is_some()),
+                    .when_some(
+                        choice.filter(|_| self.scan.is_none() && caps.is_supported()),
+                        |bar, device| {
+                            let sdk = sdk_label(caps.sdk());
+                            bar.child(
+                                h_flex()
+                                    .items_center()
+                                    .gap_2()
+                                    .px_1()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(
+                                        div()
+                                            .font_family(cx.theme().mono_font_family.clone())
+                                            .truncate()
+                                            .child(device.device.serial().to_owned()),
+                                    )
+                                    .when_some(sdk, |row, sdk| {
+                                        row.child(div().child("·")).child(div().child(sdk))
+                                    }),
+                            )
+                        },
                     ),
             )
             .when(self.scan.is_some(), |view| {
                 view.child(
-                    div()
+                    h_flex()
                         .id("android-scanning")
                         .test_support()
+                        .items_center()
+                        .gap_2()
+                        .px_3()
+                        .py_2()
+                        .rounded_md()
+                        .border_1()
+                        .border_color(cx.theme().border)
+                        .bg(cx.theme().muted)
                         .text_sm()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(Spinner::new().xsmall())
                         .child(t!("android.scanning")),
                 )
             })
+            .when(
+                self.scan.is_none() && self.devices.is_empty() && self.error.is_none(),
+                |view| {
+                    view.child(
+                        v_flex()
+                            .items_center()
+                            .justify_center()
+                            .gap_1p5()
+                            .py_6()
+                            .px_4()
+                            .rounded_md()
+                            .border_1()
+                            .border_color(cx.theme().border)
+                            .bg(cx.theme().group_box)
+                            .text_center()
+                            .child(
+                                Icon::new(CatalogIcon::Unplug)
+                                    .text_color(cx.theme().muted_foreground),
+                            )
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .child(t!("android.no_devices")),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(t!("android.no_devices_hint")),
+                            ),
+                    )
+                },
+            )
             .when_some(choice.filter(|_| self.scan.is_none()), |view, device| {
                 view.when(!caps.is_supported(), |view| {
                     let reason = device
@@ -790,42 +1063,101 @@ impl Render for DeviceManager {
                         .clone()
                         .unwrap_or_else(|| t!("android.unsupported").to_string());
                     view.child(
-                        div()
+                        h_flex()
                             .id("android-unsupported")
                             .test_support()
                             .aria_label(reason.clone())
+                            .items_start()
+                            .gap_2()
+                            .p_3()
+                            .rounded_md()
+                            .border_1()
+                            .border_color(cx.theme().border)
+                            .bg(cx.theme().muted)
                             .text_sm()
-                            .child(reason),
+                            .child(
+                                Icon::new(CatalogIcon::CircleAlert)
+                                    .small()
+                                    .text_color(cx.theme().muted_foreground),
+                            )
+                            .child(div().flex_1().min_w_0().child(reason)),
                     )
                 })
             })
             .when(caps.is_mirrorable() && self.scan.is_none(), |view| {
-                let section = v_flex()
-                    .gap_2()
-                    .child(div().text_sm().child(t!("android.mirror")))
+                let mirror_btn = action(
+                    "android-mirror",
+                    if mirror.is_some() {
+                        t!("android.stop_mirror")
+                    } else {
+                        t!("android.start_mirror")
+                    },
+                    if mirror.is_some() {
+                        DeviceCommand::StopMirror
+                    } else {
+                        DeviceCommand::StartMirror
+                    },
+                )
+                .map(|btn| {
+                    if mirror.is_some() {
+                        btn.outline().icon(CatalogIcon::Square)
+                    } else {
+                        btn.primary().icon(CatalogIcon::Play)
+                    }
+                })
+                .disabled(mirror.is_none() && self.scrcpy.is_none())
+                .tooltip(t!("android.mirror_note"));
+                let section = section_card(cx)
                     .child(
                         h_flex()
+                            .items_center()
+                            .justify_between()
                             .gap_2()
-                            .child(
-                                action(
-                                    "android-mirror",
-                                    if mirror.is_some() {
-                                        t!("android.stop_mirror")
-                                    } else {
-                                        t!("android.start_mirror")
-                                    },
-                                    if mirror.is_some() {
-                                        DeviceCommand::StopMirror
-                                    } else {
-                                        DeviceCommand::StartMirror
-                                    },
+                            .child(section_header(
+                                CatalogIcon::Monitor,
+                                t!("android.mirror"),
+                                cx,
+                            ))
+                            .when_some(mirror, |header, state| {
+                                let status_text = if state.running {
+                                    t!("android.mirroring")
+                                } else {
+                                    t!("android.starting")
+                                };
+                                header.child(
+                                    h_flex()
+                                        .id("android-mirror-status")
+                                        .test_support()
+                                        .items_center()
+                                        .gap_1()
+                                        .text_xs()
+                                        .text_color(if state.running {
+                                            cx.theme().success
+                                        } else {
+                                            cx.theme().muted_foreground
+                                        })
+                                        .aria_label(status_text.clone())
+                                        .when(!state.running, |badge| {
+                                            badge.child(Spinner::new().xsmall())
+                                        })
+                                        .when(state.running, |badge| {
+                                            badge
+                                                .child(Icon::new(CatalogIcon::CircleCheck).xsmall())
+                                        })
+                                        .child(status_text),
                                 )
-                                .disabled(mirror.is_none() && self.scrcpy.is_none())
-                                .tooltip(t!("android.mirror_note")),
-                            )
+                            }),
+                    )
+                    .child(
+                        h_flex()
+                            .items_center()
+                            .gap_2p5()
+                            .flex_wrap()
+                            .child(mirror_btn)
                             .child(
                                 Checkbox::new("android-mirror-audio")
                                     .small()
+                                    .w_auto()
                                     .label(t!("android.audio"))
                                     .checked(audio)
                                     .disabled(mirror.is_some() || caps.sdk() < 30)
@@ -845,6 +1177,7 @@ impl Render for DeviceManager {
                                         t!("android.choose_scrcpy"),
                                         DeviceCommand::ChooseScrcpy,
                                     )
+                                    .outline()
                                     .disabled(busy || mirror.is_some()),
                                 )
                             }),
@@ -854,49 +1187,76 @@ impl Render for DeviceManager {
                             div()
                                 .id("android-scrcpy-missing")
                                 .test_support()
-                                .text_sm()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
                                 .child(t!("android.scrcpy_missing")),
                         )
                     })
-                    .when_some(mirror, |view, state| {
+                    .when(self.scrcpy.is_some(), |view| {
                         view.child(
                             div()
-                                .id("android-mirror-status")
-                                .test_support()
-                                .text_sm()
-                                .aria_label(if state.running {
-                                    t!("android.mirroring")
-                                } else {
-                                    t!("android.starting")
-                                })
-                                .child(if state.running {
-                                    t!("android.mirroring")
-                                } else {
-                                    t!("android.starting")
-                                }),
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(t!("android.mirror_note")),
                         )
                     });
                 view.child(section)
             })
             .when(caps.is_installable() && self.scan.is_none(), |view| {
                 view.child(
-                    h_flex().child(
-                        action(
-                            "android-install",
-                            t!("android.install"),
-                            DeviceCommand::InstallApk,
+                    section_card(cx)
+                        .child(section_header(
+                            CatalogIcon::Upload,
+                            t!("android.apk_section"),
+                            cx,
+                        ))
+                        .child(
+                            h_flex()
+                                .items_center()
+                                .gap_2()
+                                .child(
+                                    action(
+                                        "android-install",
+                                        if is_installing {
+                                            t!("android.installing")
+                                        } else {
+                                            t!("android.install")
+                                        },
+                                        DeviceCommand::InstallApk,
+                                    )
+                                    .outline()
+                                    .icon(CatalogIcon::Upload)
+                                    .loading(is_installing)
+                                    .disabled(busy),
+                                )
+                                .when_some(installing_apk, |row, file_name| {
+                                    row.child(
+                                        div()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .truncate()
+                                            .text_xs()
+                                            .font_family(cx.theme().mono_font_family.clone())
+                                            .text_color(cx.theme().muted_foreground)
+                                            .child(file_name),
+                                    )
+                                }),
                         )
-                        .disabled(busy),
-                    ),
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(t!("android.apk_hint")),
+                        ),
                 )
             })
             .when(caps.is_launchable() && self.scan.is_none(), |view| {
                 view.child(
-                    v_flex()
-                        .gap_2()
-                        .child(div().text_sm().child(t!("android.apps")))
+                    section_card(cx)
+                        .child(section_header(CatalogIcon::Layers, t!("android.apps"), cx))
                         .child(
                             h_flex()
+                                .items_center()
                                 .gap_2()
                                 .child(
                                     div().flex_1().min_w_0().child(
@@ -913,17 +1273,22 @@ impl Render for DeviceManager {
                                         t!("android.load_apps"),
                                         DeviceCommand::RefreshApps,
                                     )
+                                    .outline()
+                                    .icon(CatalogIcon::RefreshCw)
+                                    .loading(is_loading_apps)
                                     .disabled(busy),
                                 ),
                         )
                         .child(
                             h_flex()
+                                .items_center()
                                 .gap_2()
                                 .child(
                                     div().flex_1().min_w_0().child(
                                         Input::new(&self.package)
                                             .id("android-package")
                                             .small()
+                                            .font_family(cx.theme().mono_font_family.clone())
                                             .disabled(busy),
                                     ),
                                 )
@@ -933,6 +1298,9 @@ impl Render for DeviceManager {
                                         t!("android.launch"),
                                         DeviceCommand::Launch,
                                     )
+                                    .outline()
+                                    .icon(CatalogIcon::Play)
+                                    .loading(is_launching)
                                     .disabled(busy),
                                 ),
                         )
@@ -944,43 +1312,79 @@ impl Render for DeviceManager {
                         ),
                 )
             })
-            .when(self.job.is_some(), |view| {
+            .when_some(working_label, |view, label| {
                 view.child(
                     h_flex()
+                        .items_center()
                         .gap_2()
+                        .px_3()
+                        .py_2()
+                        .rounded_md()
+                        .border_1()
+                        .border_color(cx.theme().border)
+                        .bg(cx.theme().muted)
+                        .child(Spinner::new().xsmall())
                         .child(
                             div()
                                 .id("android-working")
                                 .test_support()
+                                .aria_label(label.clone())
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
                                 .text_sm()
-                                .child(t!("android.working")),
+                                .child(label),
                         )
-                        .child(action(
-                            "android-cancel",
-                            t!("common.cancel"),
-                            DeviceCommand::Cancel,
-                        )),
+                        .child(
+                            action("android-cancel", t!("common.cancel"), DeviceCommand::Cancel)
+                                .xsmall()
+                                .outline(),
+                        ),
                 )
             })
             .when_some(self.status.clone(), |view, status| {
                 view.child(
-                    div()
-                        .id("android-result")
-                        .test_support()
-                        .text_sm()
-                        .aria_label(status.clone())
-                        .child(status),
+                    h_flex()
+                        .items_center()
+                        .gap_1p5()
+                        .px_1()
+                        .child(
+                            Icon::new(CatalogIcon::CircleCheck)
+                                .xsmall()
+                                .text_color(cx.theme().success),
+                        )
+                        .child(
+                            div()
+                                .id("android-result")
+                                .test_support()
+                                .text_sm()
+                                .aria_label(status.clone())
+                                .child(status),
+                        ),
                 )
             })
             .when_some(self.error.clone(), |view, error| {
                 view.child(
-                    div()
-                        .id("android-error")
-                        .test_support()
-                        .text_sm()
-                        .aria_label(error.clone())
-                        .text_color(cx.theme().danger)
-                        .child(error),
+                    h_flex()
+                        .items_start()
+                        .gap_1p5()
+                        .px_1()
+                        .child(
+                            Icon::new(CatalogIcon::CircleAlert)
+                                .xsmall()
+                                .text_color(cx.theme().danger),
+                        )
+                        .child(
+                            div()
+                                .id("android-error")
+                                .test_support()
+                                .flex_1()
+                                .min_w_0()
+                                .text_sm()
+                                .aria_label(error.clone())
+                                .text_color(cx.theme().danger)
+                                .child(error),
+                        ),
                 )
             })
     }

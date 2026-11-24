@@ -7,7 +7,10 @@ use std::{
 };
 
 use crate::{
-    adb::{AdbConnection, AdbDetection, AdbDetector, canonical_boot_id},
+    adb::{
+        AdbConnection, AdbDetection, AdbDetector, BoardIdentity, is_network_adb_serial,
+        pick_preferred_match,
+    },
     host::{HostLogin, MonitorChannel, MonitorSettings},
     i18n::t,
     ssh::{SshConnectionConfig, SshConnector, SshHandle, SshPrompts, run_exec},
@@ -58,30 +61,52 @@ impl SystemMonitorConnector {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn boot_identity(output: &str) -> Option<String> {
     output
         .split_once("@@boot_id\n")
         .and_then(|(_, tail)| tail.lines().next())
-        .and_then(canonical_boot_id)
+        .and_then(crate::adb::canonical_boot_id)
 }
 
+#[cfg(test)]
 fn select_adb(detection: AdbDetection, boot: Option<&str>, serial: &str) -> Option<AdbConnection> {
+    select_adb_identity(detection, &BoardIdentity::from_boot_id(boot), serial)
+}
+
+fn select_adb_identity(
+    detection: AdbDetection,
+    identity: &BoardIdentity,
+    serial: &str,
+) -> Option<AdbConnection> {
     let devices = match detection {
         AdbDetection::Matched(device) => vec![device],
         AdbDetection::Choose(devices) => devices,
         AdbDetection::Unavailable(_) => return None,
     };
-    let mut matches = devices.into_iter().filter(|device| {
-        if !serial.is_empty() && device.serial() != serial {
-            return false;
-        }
-        match boot {
-            Some(boot) => device.boot_id() == Some(boot),
-            None => !serial.is_empty(),
-        }
-    });
-    let selected = matches.next()?;
-    matches.next().is_none().then_some(selected)
+    let mut serial_counts = std::collections::HashMap::new();
+    for device in &devices {
+        *serial_counts.entry(device.serial().to_owned()).or_insert(0) += 1;
+    }
+    let matches: Vec<AdbConnection> = devices
+        .into_iter()
+        .filter(|device| {
+            if !serial.is_empty() && device.serial() != serial {
+                return false;
+            }
+            if !identity.is_empty() {
+                let unique_serial = serial_counts.get(device.serial()).copied().unwrap_or(0) == 1;
+                identity.matches(device.serial(), device.board_identity(), unique_serial)
+            } else {
+                !serial.is_empty()
+            }
+        })
+        .collect();
+    pick_preferred_match(
+        matches,
+        |device| is_network_adb_serial(device.serial()),
+        |left, right| left.board_identity().same_board(right.board_identity()),
+    )
 }
 
 impl MonitorConnector for SystemMonitorConnector {
@@ -92,7 +117,8 @@ impl MonitorConnector for SystemMonitorConnector {
         candidates: &[(String, HostLogin)],
         cancel: &AtomicBool,
     ) -> Result<Option<Box<dyn MonitorLink>>, String> {
-        let boot = boot_identity(identity);
+        let board_id = BoardIdentity::parse(identity);
+        let boot = board_id.boot_id.clone();
         if cancel.load(Ordering::Acquire) {
             return Ok(None);
         }
@@ -131,16 +157,18 @@ impl MonitorConnector for SystemMonitorConnector {
             return Ok(None);
         }
         if matches!(settings.channel, MonitorChannel::Auto | MonitorChannel::Adb) {
-            let detection = self.adb.detect(boot.as_deref());
+            let detection = self.adb.detect_identity(&board_id);
             let adb_problem = match detection {
                 AdbDetection::Unavailable(reason) if !reason.is_empty() => reason,
-                detection => match select_adb(detection, boot.as_deref(), &settings.adb_serial) {
-                    Some(device) => match device.monitor_command(":", cancel) {
-                        Ok(_) => return Ok(Some(Box::new(device))),
-                        Err(error) => error.to_string(),
-                    },
-                    None => t!("monitor.route.adb_unmatched").to_string(),
-                },
+                detection => {
+                    match select_adb_identity(detection, &board_id, &settings.adb_serial) {
+                        Some(device) => match device.monitor_command(":", cancel) {
+                            Ok(_) => return Ok(Some(Box::new(device))),
+                            Err(error) => error.to_string(),
+                        },
+                        None => t!("monitor.route.adb_unmatched").to_string(),
+                    }
+                }
             };
             if settings.channel == MonitorChannel::Adb {
                 return Err(adb_problem);

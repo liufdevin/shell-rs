@@ -135,6 +135,9 @@ zmodem2 = "=0.7.3"
 # 显示或隐藏 ShellRS, the shortcut that works in any app: the system's
 # hot keys (Carbon on macOS, RegisterHotKey on Windows, X11 on Linux).
 global-hotkey = "0.9"
+# 远程开发板独立 WebView 投屏窗口（Windows WebView2 / macOS WKWebView / Linux WebKitGTK）。
+tao = "0.37"
+wry = "0.57"
 
 [target.'cfg(unix)'.dependencies]
 # `access(2)`: whether the folder ShellRS runs from can take its update.

@@ -18,6 +18,18 @@ pub enum Operation {
     Refresh(String),
     Diagnose(String, Vec<String>),
     Resolve(String, String, String, Option<u64>),
+    OpenScreen(String, String),
+    OpenDebugScreen {
+        url: String,
+        device_id: String,
+        key: crate::cli::Secret,
+    },
+    Register {
+        url: String,
+        name: String,
+        username: String,
+        password: crate::cli::Secret,
+    },
     Connect(String, String),
     Disconnect,
     Logout(String),
@@ -34,6 +46,8 @@ pub struct Reply {
     pub logged_out: Option<String>,
     pub error: Option<String>,
     pub resolved: Option<ResolvedSsh>,
+    pub screen: Option<super::RemoteScreenSession>,
+    pub registered: Option<String>,
     pub(super) prompt: Option<(Server, Option<crate::cli::Secret>)>,
     pub(super) forgotten: Option<String>,
     pub(super) keep_connection: bool,
@@ -200,6 +214,39 @@ impl State {
                     name: target.display_name.clone(),
                 });
             }
+            Operation::OpenScreen(server, device) => {
+                let account = self
+                    .accounts
+                    .get(&server)
+                    .ok_or_else(|| anyhow::anyhow!("login_required"))?;
+                let device_name = account
+                    .catalog
+                    .devices
+                    .iter()
+                    .find(|item| item.device_id == device)
+                    .map(|item| item.label().to_owned())
+                    .unwrap_or_else(|| device.clone());
+                let session = account.resolve_screen(&device, &device_name)?;
+                reply.screen = Some(session);
+            }
+            Operation::OpenDebugScreen {
+                url,
+                device_id,
+                key,
+            } => {
+                let session = super::api::connect_debug_screen(&url, &device_id, key.expose())?;
+                reply.screen = Some(session);
+            }
+            Operation::Register {
+                url,
+                name,
+                username,
+                password,
+            } => {
+                let registered =
+                    super::api::register_account(&url, &name, &username, password.expose())?;
+                reply.registered = Some(registered);
+            }
             Operation::Connect(server, network) => {
                 if self.running.as_ref().is_some_and(|running| {
                     running.info.server == server && running.info.network == network
@@ -358,6 +405,7 @@ impl Backend for SystemBackend {
             Operation::Refresh(id)
             | Operation::Connect(id, _)
             | Operation::Resolve(id, ..)
+            | Operation::OpenScreen(id, _)
             | Operation::Diagnose(id, _) => Some(id.clone()),
             Operation::Poll => state
                 .running
@@ -421,6 +469,7 @@ pub struct Service {
     pub(super) diagnostics: Option<super::DiagnosticReport>,
     pub(super) diagnosing: bool,
     pub(super) backend: Option<Arc<dyn Backend>>,
+    pub(super) screen_viewer: Arc<dyn super::ScreenViewer>,
     pub(super) catalogs: HashMap<String, Catalog>,
     pub(super) connection: Option<Connected>,
     busy: bool,
@@ -448,6 +497,7 @@ impl Service {
             diagnostics: None,
             diagnosing: false,
             backend: None,
+            screen_viewer: Arc::new(super::SystemScreenViewer::new()),
             catalogs: HashMap::new(),
             connection: None,
             busy: false,
@@ -482,6 +532,15 @@ impl Service {
 
     pub fn set_backend(&mut self, backend: Arc<dyn Backend>, cx: &mut Context<Self>) {
         self.backend = Some(backend);
+        cx.notify();
+    }
+
+    pub fn set_screen_viewer(
+        &mut self,
+        viewer: Arc<dyn super::ScreenViewer>,
+        cx: &mut Context<Self>,
+    ) {
+        self.screen_viewer = viewer;
         cx.notify();
     }
 
@@ -641,8 +700,10 @@ impl Service {
             | Operation::Connect(id, _)
             | Operation::Logout(id)
             | Operation::Forget(id)
-            | Operation::Resolve(id, ..) => Some(id.clone()),
+            | Operation::Resolve(id, ..)
+            | Operation::OpenScreen(id, _) => Some(id.clone()),
             Operation::Diagnose(id, _) => Some(id.clone()),
+            Operation::OpenDebugScreen { .. } | Operation::Register { .. } => None,
             _ => self.connection.as_ref().map(|active| active.server.clone()),
         };
         let network_progress = matches!(operation, Operation::Connect(..))
@@ -876,6 +937,33 @@ impl Service {
                 if let Some(resolved) = reply.resolved {
                     cx.emit(Event::SshReady(resolved));
                 }
+                if let Some(screen) = reply.screen {
+                    let server = screen.server_id.clone();
+                    match this.screen_viewer.open(screen) {
+                        Ok(()) => {
+                            this.status = crate::i18n::t!("remote.screen_opened").to_string();
+                            this.status_error = false;
+                        }
+                        Err(error) => {
+                            tracing::warn!(%error, "Failed to open remote screen viewer");
+                            this.status = crate::i18n::t!("remote.error.screen_open").to_string();
+                            this.status_error = true;
+                        }
+                    }
+                    this.statuses.insert(
+                        server,
+                        ServiceStatus {
+                            message: this.status.clone(),
+                            failed: this.status_error,
+                            progress: None,
+                        },
+                    );
+                }
+                if let Some(username) = reply.registered {
+                    this.status = crate::i18n::t!("remote.register.submitted", username = username)
+                        .to_string();
+                    this.status_error = false;
+                }
                 if changed {
                     cx.emit(Event::NetworkChanged);
                 }
@@ -915,6 +1003,7 @@ fn network_progress_message(progress: &NetworkProgress) -> String {
 
 impl Drop for Service {
     fn drop(&mut self) {
+        self.screen_viewer.close_all();
         if let Some(backend) = self.backend.take() {
             let _ = std::thread::Builder::new()
                 .name("shelllf-remote-stop".into())

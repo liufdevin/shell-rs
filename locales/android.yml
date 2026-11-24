@@ -59,6 +59,33 @@ android.mirror_not_ready:
 android.install:
   zh-CN: 安装 APK…
   en: Install APK…
+android.installing:
+  zh-CN: 安装中…
+  en: Installing…
+android.installing_apk:
+  zh-CN: "正在安装 %{name}…"
+  en: "Installing %{name}…"
+android.apk_section:
+  zh-CN: 安装应用
+  en: Install app
+android.apk_hint:
+  zh-CN: 仅显示 .apk 安装包；安装期间可随时取消等待。
+  en: Shows .apk packages only. You can stop waiting at any time.
+android.apk_filter:
+  zh-CN: Android 应用安装包 (*.apk)
+  en: Android package (*.apk)
+android.loading_apps:
+  zh-CN: 正在读取已安装应用列表…
+  en: Loading installed apps…
+android.launching_app:
+  zh-CN: "正在启动 %{package}…"
+  en: "Launching %{package}…"
+android.no_devices:
+  zh-CN: 未检测到 ADB 设备
+  en: No ADB devices detected
+android.no_devices_hint:
+  zh-CN: 连接设备并开启 USB 调试后，点击「检测设备」刷新。
+  en: Connect a device with USB debugging enabled, then choose Detect devices.
 android.apps:
   zh-CN: 启动应用
   en: Launch an app

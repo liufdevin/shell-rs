@@ -7,14 +7,16 @@ use std::{
 
 use gpui_kit::base::{SelectableText, TextSelection, TextSelectionEvent, TextSelectionHandle};
 use gpui_kit::component::{
-    ActiveTheme as _, Disableable as _, Sizable as _,
+    ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _,
     button::{Button, ButtonVariants as _},
     checkbox::Checkbox,
     dock::{BasePanel, Panel, PanelEvent, TabGroup},
     h_flex,
-    menu::PopupMenu,
+    input::{Input, InputEvent, InputState},
+    menu::{DropdownMenu as _, PopupMenu, PopupMenuItem},
     progress::Progress,
     radio::Radio,
+    resizable::{ResizablePanelEvent, ResizableState, h_resizable, resizable_panel},
     tooltip::Tooltip,
     v_flex,
 };
@@ -29,7 +31,9 @@ use crate::terminal::TerminalInteraction;
 
 use super::firmware::FirmwareCapabilities;
 use super::model::{DeviceProgress, FirmwarePartition};
-use super::process::{AdbReboot, FirmwareInfo, inspect_firmware, start_adb_reboot};
+use super::process::{
+    AdbDeviceCandidate, AdbReboot, FirmwareInfo, inspect_firmware, start_adb_reboot,
+};
 use super::source::{self, Observation, SourceState};
 use super::{
     Completion, EraseMode, FlashProgress, ParsedLine, Phase, Run, RunEvent, start_wait, tool_dir,
@@ -37,21 +41,34 @@ use super::{
 
 const MAX_LOG_LINES: usize = 4000;
 const DEVICE_CLAIM_NOTICE: Duration = Duration::from_secs(15);
+const DEFAULT_LOG_WIDTH: f32 = 380.;
+const MIN_LOG_WIDTH: f32 = 260.;
+const MAX_LOG_WIDTH: f32 = 760.;
 
 /// The page's commands. Buttons dispatch these to the workspace, which owns
 /// the panel and gives them back to it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FlashingCommand {
     ChooseToolDirectory,
+    OpenToolDirectory,
     ChooseFirmware,
+    SelectFirmwarePath(PathBuf),
+    ClearRecentFirmwares,
     StartViaAdb,
+    StartViaAdbTarget(String),
     Stop,
     ClearLog,
+    SaveLog,
     ToggleFollow,
+    ToggleLogErrorsOnly,
     SetMode(EraseMode),
     SelectPartitionMode,
     TogglePartition(u32),
     SelectAllPartitions,
+    InvertPartitions,
+    ClearPartitions,
+    KillConflictingTools,
+    ResetLayout,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -66,12 +83,14 @@ enum Tone {
 struct LogLine {
     at: Duration,
     text: String,
+    tone: Tone,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FlashingPanelEvent {
     Activated,
     Closed,
+    PickAdbDevice(Vec<AdbDeviceCandidate>),
 }
 
 pub struct FlashingPanel {
@@ -85,6 +104,8 @@ pub struct FlashingPanel {
     partitions: Vec<FirmwarePartition>,
     selected_partitions: BTreeSet<u32>,
     partition_error: Option<String>,
+    partition_search_input: Option<Entity<InputState>>,
+    partition_filter: String,
     capabilities: Option<FirmwareCapabilities>,
     inspection: Option<Run>,
     inspection_receiver: Option<Receiver<Result<FirmwareInfo, String>>>,
@@ -100,6 +121,10 @@ pub struct FlashingPanel {
     logs: VecDeque<LogLine>,
     log_selection: TextSelectionHandle,
     pending_log_copy: bool,
+    log_search_input: Option<Entity<InputState>>,
+    log_filter: String,
+    log_errors_only: bool,
+    conflicting_tools: Vec<String>,
     follow: bool,
     scroll: ScrollHandle,
     started: Instant,
@@ -124,6 +149,9 @@ pub struct FlashingPanel {
     unread_output: bool,
     shown_second: u64,
     tab_group: Option<WeakEntity<TabGroup>>,
+    split: Entity<ResizableState>,
+    _split_subscription: Subscription,
+    _input_subscriptions: Vec<Subscription>,
     _ticks: Task<()>,
 }
 
@@ -155,6 +183,7 @@ impl FlashingPanel {
                 cx,
             )
             .detach();
+        let (split, split_subscription) = Self::create_split(cx);
         let mut panel = Self {
             dispatch,
             settings,
@@ -166,6 +195,8 @@ impl FlashingPanel {
             partitions: Vec::new(),
             selected_partitions: BTreeSet::new(),
             partition_error: None,
+            partition_search_input: None,
+            partition_filter: String::new(),
             capabilities: None,
             inspection: None,
             inspection_receiver: None,
@@ -181,6 +212,10 @@ impl FlashingPanel {
             logs: VecDeque::new(),
             log_selection,
             pending_log_copy: false,
+            log_search_input: None,
+            log_filter: String::new(),
+            log_errors_only: false,
+            conflicting_tools: Vec::new(),
             follow: true,
             scroll: ScrollHandle::new(),
             started: Instant::now(),
@@ -205,6 +240,9 @@ impl FlashingPanel {
             unread_output: false,
             shown_second: 0,
             tab_group: None,
+            split,
+            _split_subscription: split_subscription,
+            _input_subscriptions: Vec::new(),
             _ticks: Task::ready(()),
         };
         panel.append(t!("flashing.log.ready"), Tone::Muted, Instant::now());
@@ -296,6 +334,10 @@ impl FlashingPanel {
         self.listening && self.phase.is_waiting() && !self.is_rebooting()
     }
 
+    pub(crate) fn conflicting_tools_summary(&self) -> String {
+        self.conflicting_tools.join(", ")
+    }
+
     pub fn command(&mut self, command: FlashingCommand, cx: &mut Context<Self>) {
         if self.closed {
             return;
@@ -305,18 +347,34 @@ impl FlashingPanel {
         }
         match command {
             FlashingCommand::ChooseToolDirectory => self.choose_tool_directory(cx),
+            FlashingCommand::OpenToolDirectory => self.open_tool_directory(),
             FlashingCommand::ChooseFirmware => self.choose_firmware(cx),
-            FlashingCommand::StartViaAdb => self.start_via_adb(cx),
+            FlashingCommand::SelectFirmwarePath(path)
+                if self.tool_dir.is_some() && self.can_configure() =>
+            {
+                self.select_firmware(path, cx);
+            }
+            FlashingCommand::ClearRecentFirmwares => {
+                self.settings.update(cx, |store, cx| {
+                    store.update(|settings| settings.flashing_recent_firmwares.clear(), cx);
+                });
+            }
+            FlashingCommand::StartViaAdb => self.start_via_adb(None, cx),
+            FlashingCommand::StartViaAdbTarget(serial) => self.start_via_adb(Some(serial), cx),
             FlashingCommand::Stop => self.stop(cx),
             FlashingCommand::ClearLog => {
                 self.logs.clear();
                 self.append(t!("flashing.log.cleared"), Tone::Muted, Instant::now());
             }
+            FlashingCommand::SaveLog => self.save_log(cx),
             FlashingCommand::ToggleFollow => {
                 self.follow = !self.follow;
                 if self.follow {
                     self.scroll.scroll_to_bottom();
                 }
+            }
+            FlashingCommand::ToggleLogErrorsOnly => {
+                self.log_errors_only = !self.log_errors_only;
             }
             FlashingCommand::SetMode(mode) => {
                 if !self.can_configure() || !self.supports_mode(mode) {
@@ -348,6 +406,7 @@ impl FlashingPanel {
                 {
                     self.selected_partitions.insert(index);
                 }
+                self.persist_selected_partitions(cx);
                 self.configure_wait();
             }
             FlashingCommand::SelectAllPartitions if self.can_configure() => {
@@ -357,13 +416,208 @@ impl FlashingPanel {
                     self.selected_partitions =
                         self.partitions.iter().map(|part| part.index).collect();
                 }
+                self.persist_selected_partitions(cx);
                 self.configure_wait();
             }
-            FlashingCommand::SelectPartitionMode
+            FlashingCommand::InvertPartitions if self.can_configure() => {
+                let next: BTreeSet<_> = self
+                    .partitions
+                    .iter()
+                    .map(|part| part.index)
+                    .filter(|index| !self.selected_partitions.contains(index))
+                    .collect();
+                self.selected_partitions = next;
+                self.persist_selected_partitions(cx);
+                self.configure_wait();
+            }
+            FlashingCommand::ClearPartitions if self.can_configure() => {
+                self.selected_partitions.clear();
+                self.persist_selected_partitions(cx);
+                self.configure_wait();
+            }
+            FlashingCommand::KillConflictingTools => self.kill_conflicting_tools(cx),
+            FlashingCommand::ResetLayout => {
+                self.settings.update(cx, |store, cx| {
+                    store.update(|settings| settings.flashing_log_width = None, cx);
+                });
+                let (split, subscription) = Self::create_split(cx);
+                self.split = split;
+                self._split_subscription = subscription;
+            }
+            FlashingCommand::SelectFirmwarePath(_)
+            | FlashingCommand::SelectPartitionMode
             | FlashingCommand::TogglePartition(_)
-            | FlashingCommand::SelectAllPartitions => {}
+            | FlashingCommand::SelectAllPartitions
+            | FlashingCommand::InvertPartitions
+            | FlashingCommand::ClearPartitions => {}
         }
         cx.notify();
+    }
+
+    fn create_split(cx: &mut Context<Self>) -> (Entity<ResizableState>, Subscription) {
+        let split = cx.new(|_| ResizableState::default());
+        let subscription = cx.subscribe(&split, |this, state, event: &ResizablePanelEvent, cx| {
+            if matches!(event, ResizablePanelEvent::Resized)
+                && let Some(&log_width) = state.read(cx).sizes().get(1)
+            {
+                let width = f32::from(log_width).clamp(MIN_LOG_WIDTH, MAX_LOG_WIDTH);
+                this.settings.update(cx, |store, cx| {
+                    store.update(|settings| settings.flashing_log_width = Some(width), cx);
+                });
+            }
+        });
+        (split, subscription)
+    }
+
+    fn persist_selected_partitions(&self, cx: &mut Context<Self>) {
+        let names: Vec<String> = self
+            .partitions
+            .iter()
+            .filter(|part| self.selected_partitions.contains(&part.index))
+            .map(|part| part.name.clone())
+            .collect();
+        self.settings.update(cx, |store, cx| {
+            store.update(|settings| settings.flashing_selected_partitions = names, cx);
+        });
+    }
+
+    fn open_tool_directory(&mut self) {
+        let Some(dir) = &self.tool_dir else {
+            return;
+        };
+        #[cfg(windows)]
+        {
+            if let Err(error) = std::process::Command::new("explorer").arg(dir).spawn() {
+                self.append(
+                    t!("flashing.tool.open_failed", error = error.to_string()),
+                    Tone::Danger,
+                    Instant::now(),
+                );
+            }
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = dir;
+        }
+    }
+
+    fn save_log(&mut self, cx: &mut Context<Self>) {
+        let content = self.full_log_text();
+        if content.trim().is_empty() {
+            return;
+        }
+        let filename = format!(
+            "flashing-{}.log",
+            chrono::Local::now().format("%Y%m%d-%H%M%S")
+        );
+        let chosen = cx.prompt_for_new_path(
+            &dirs::download_dir().unwrap_or_else(std::env::temp_dir),
+            Some(&filename),
+        );
+        cx.spawn(async move |panel, cx| {
+            let result = chosen.await;
+            let message = match result {
+                Ok(Ok(Some(path))) => {
+                    let display = path.display().to_string();
+                    match cx
+                        .background_spawn(async move { std::fs::write(path, content) })
+                        .await
+                    {
+                        Ok(()) => Some((t!("flashing.log.saved", path = display), Tone::Success)),
+                        Err(error) => Some((
+                            t!("flashing.log.save_failed", error = error.to_string()),
+                            Tone::Danger,
+                        )),
+                    }
+                }
+                Ok(Err(error)) => Some((
+                    t!("flashing.log.save_failed", error = error.to_string()),
+                    Tone::Danger,
+                )),
+                _ => None,
+            };
+            if let Some((text, tone)) = message {
+                let _ = panel.update(cx, |panel, cx| {
+                    panel.append(text, tone, Instant::now());
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
+    }
+
+    fn kill_conflicting_tools(&mut self, cx: &mut Context<Self>) {
+        cx.spawn(async move |panel, cx| {
+            let result = cx
+                .background_spawn(async { super::tool_conflict::terminate_conflicts() })
+                .await;
+            let _ = panel.update(cx, |panel, cx| {
+                match result {
+                    Ok(count) => {
+                        panel.conflicting_tools.clear();
+                        panel.append(
+                            t!("flashing.tool.killed", count = count),
+                            Tone::Success,
+                            Instant::now(),
+                        );
+                        panel.partition_error = None;
+                        panel.source_retry_at = None;
+                        if panel.firmware.is_some() && panel.tool_dir.is_some() {
+                            if panel.partitions.is_empty() {
+                                panel.phase = Phase::ReadingFirmware;
+                            } else {
+                                panel.configure_wait();
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        panel.append(
+                            t!("flashing.tool.kill_failed", error = error),
+                            Tone::Danger,
+                            Instant::now(),
+                        );
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn refresh_conflicts(&mut self) {
+        if let Ok(conflicts) = super::tool_conflict::conflict_names() {
+            self.conflicting_tools = conflicts;
+        }
+    }
+
+    fn ensure_inputs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.partition_search_input.is_none() {
+            let input = cx.new(|cx| {
+                InputState::new(window, cx)
+                    .placeholder(t!("flashing.partitions.search_placeholder"))
+            });
+            let sub = cx.subscribe_in(&input, window, |this, state, event: &InputEvent, _, cx| {
+                if matches!(event, InputEvent::Change) {
+                    this.partition_filter = state.read(cx).value().trim().to_lowercase();
+                    cx.notify();
+                }
+            });
+            self.partition_search_input = Some(input);
+            self._input_subscriptions.push(sub);
+        }
+        if self.log_search_input.is_none() {
+            let input = cx.new(|cx| {
+                InputState::new(window, cx).placeholder(t!("flashing.log.search_placeholder"))
+            });
+            let sub = cx.subscribe_in(&input, window, |this, state, event: &InputEvent, _, cx| {
+                if matches!(event, InputEvent::Change) {
+                    this.log_filter = state.read(cx).value().trim().to_lowercase();
+                    cx.notify();
+                }
+            });
+            self.log_search_input = Some(input);
+            self._input_subscriptions.push(sub);
+        }
     }
 
     fn choose_tool_directory(&mut self, cx: &mut Context<Self>) {
@@ -491,7 +745,14 @@ impl FlashingPanel {
         self.firmware = Some(path.clone());
         self.settings.update(cx, |store, cx| {
             store.update(
-                |settings| settings.flashing_firmware_path = Some(path.clone()),
+                |settings| {
+                    settings.flashing_firmware_path = Some(path.clone());
+                    settings
+                        .flashing_recent_firmwares
+                        .retain(|existing| existing != &path);
+                    settings.flashing_recent_firmwares.insert(0, path.clone());
+                    settings.flashing_recent_firmwares.truncate(8);
+                },
                 cx,
             );
         });
@@ -598,6 +859,7 @@ impl FlashingPanel {
     fn firmware_ready(&mut self, info: FirmwareInfo, cx: &mut Context<Self>) {
         self.partitions = info.partitions;
         self.partition_error = None;
+        self.conflicting_tools.clear();
         self.source_retry_at = None;
         if let Some(names) = self.source_partition_names.take() {
             let selected: BTreeSet<_> = self
@@ -615,6 +877,21 @@ impl FlashingPanel {
                     Tone::Muted,
                     Instant::now(),
                 );
+            }
+        } else {
+            let saved_names = self
+                .settings
+                .read(cx)
+                .settings()
+                .flashing_selected_partitions
+                .clone();
+            if !saved_names.is_empty() {
+                self.selected_partitions = self
+                    .partitions
+                    .iter()
+                    .filter(|part| saved_names.iter().any(|name| name == &part.name))
+                    .map(|part| part.index)
+                    .collect();
             }
         }
         self.capabilities = Some(info.capabilities);
@@ -683,7 +960,7 @@ impl FlashingPanel {
         cx.notify();
     }
 
-    fn start_via_adb(&mut self, cx: &mut Context<Self>) {
+    fn start_via_adb(&mut self, target_serial: Option<String>, cx: &mut Context<Self>) {
         if self.drain_run_events() {
             cx.notify();
         }
@@ -691,7 +968,7 @@ impl FlashingPanel {
             return;
         }
         self.append(t!("flashing.log.adb_checking"), Tone::Muted, Instant::now());
-        let (run, receiver) = start_adb_reboot();
+        let (run, receiver) = start_adb_reboot(target_serial);
         self.adb_run = Some(run);
         self.adb_trigger = Some(receiver);
         cx.notify();
@@ -923,6 +1200,7 @@ impl FlashingPanel {
                         Err(error) => {
                             let repeated = self.partition_error.as_ref() == Some(&error);
                             self.partition_error = Some(error.clone());
+                            self.refresh_conflicts();
                             self.phase = Phase::Failed;
                             self.source_retry_at = Some(Instant::now() + Duration::from_secs(5));
                             if !repeated {
@@ -966,9 +1244,10 @@ impl FlashingPanel {
                         Instant::now(),
                     );
                 }
-                Ok(Ok(AdbReboot::MultipleDevices)) => {
+                Ok(Ok(AdbReboot::MultipleDevices(devices))) => {
                     changed = true;
-                    self.append(t!("flashing.adb.multiple"), Tone::Danger, Instant::now());
+                    self.append(t!("flashing.adb.multiple"), Tone::Muted, Instant::now());
+                    cx.emit(FlashingPanelEvent::PickAdbDevice(devices));
                 }
                 Ok(Err(error)) => {
                     changed = true;
@@ -1142,6 +1421,7 @@ impl FlashingPanel {
                 if let Some(started) = self.burn_started.take() {
                     self.last_duration = Some(at.saturating_duration_since(started));
                 }
+                self.refresh_conflicts();
                 self.append(
                     t!("flashing.log.start_failed", error = error),
                     Tone::Danger,
@@ -1258,26 +1538,54 @@ impl FlashingPanel {
         }
     }
 
-    fn log_text(&self) -> String {
+    fn matches_log_filter(&self, line: &LogLine) -> bool {
+        if self.log_errors_only && !matches!(line.tone, Tone::Danger | Tone::Success) {
+            return false;
+        }
+        if !self.log_filter.is_empty() && !line.text.to_lowercase().contains(&self.log_filter) {
+            return false;
+        }
+        true
+    }
+
+    fn filtered_log_count(&self) -> usize {
         self.logs
             .iter()
-            .map(|line| {
-                let clock = self.log_clock(line.at);
-                format!(
-                    "{:02}:{:02} {}\n",
-                    clock.as_secs() / 60,
-                    clock.as_secs() % 60,
-                    line.text
-                )
-            })
+            .filter(|line| self.matches_log_filter(line))
+            .count()
+    }
+
+    fn format_log_line(&self, line: &LogLine) -> String {
+        let clock = self.log_clock(line.at);
+        format!(
+            "{:02}:{:02} {}\n",
+            clock.as_secs() / 60,
+            clock.as_secs() % 60,
+            line.text
+        )
+    }
+
+    fn full_log_text(&self) -> String {
+        self.logs
+            .iter()
+            .map(|line| self.format_log_line(line))
             .collect()
     }
 
-    fn append(&mut self, text: impl ToString, _tone: Tone, now: Instant) {
+    fn log_text(&self) -> String {
+        self.logs
+            .iter()
+            .filter(|line| self.matches_log_filter(line))
+            .map(|line| self.format_log_line(line))
+            .collect()
+    }
+
+    fn append(&mut self, text: impl ToString, tone: Tone, now: Instant) {
         let at = now.saturating_duration_since(self.started);
         self.logs.push_back(LogLine {
             at,
             text: text.to_string(),
+            tone,
         });
         while self.logs.len() > MAX_LOG_LINES {
             self.logs.pop_front();
@@ -1397,160 +1705,664 @@ impl FlashingPanel {
             })
     }
 
-    fn toolbar(&self) -> impl IntoElement {
+    fn firmware_actions(&self, recent_firmwares: Vec<PathBuf>) -> impl IntoElement {
         let adb_ready = self.can_reboot();
         let busy = self.running();
-        let mode_dispatch = self.dispatch.clone();
+        let configurable = self.can_configure();
+        let can_pick_firmware = self.tool_dir.is_some() && configurable;
+        let current_firmware = self.firmware.clone();
+        let recent_dispatch = self.dispatch.clone();
         h_flex()
             .gap_2()
             .flex_wrap()
-            .child(self.command_button(
-                "flashing-choose",
-                t!("flashing.choose"),
-                FlashingCommand::ChooseFirmware,
-                self.tool_dir.is_none() || !self.can_configure(),
-            ))
-            .child(
-                self.command_button(
-                    "flashing-start",
-                    t!("flashing.start"),
-                    FlashingCommand::StartViaAdb,
-                    !adb_ready,
-                )
-                .map(|button| {
-                    if adb_ready {
-                        button.primary()
-                    } else {
-                        button.outline()
-                    }
-                })
-                .tooltip(if adb_ready {
-                    t!("flashing.start_tooltip")
-                } else {
-                    t!("flashing.start_unavailable")
-                }),
-            )
-            .when(busy, |row| {
-                row.child(self.command_button(
-                    "flashing-stop",
-                    t!("flashing.stop"),
-                    FlashingCommand::Stop,
-                    self.is_rebooting(),
-                ))
-            })
+            .items_center()
+            .justify_between()
             .child(
                 h_flex()
-                    .ml_auto()
-                    .gap_3()
+                    .gap_2()
                     .flex_wrap()
+                    .items_center()
                     .child(
-                        Radio::new("flashing-mode-partitions")
-                            .label(t!("flashing.mode.partitions"))
-                            .small()
-                            .checked(self.partition_mode)
-                            .disabled(!self.can_configure())
-                            .on_click({
-                                let dispatch = mode_dispatch.clone();
-                                move |_, window, cx| {
-                                    dispatch.dispatch_action(
+                        self.command_button(
+                            "flashing-choose",
+                            t!("flashing.choose"),
+                            FlashingCommand::ChooseFirmware,
+                            !can_pick_firmware,
+                        )
+                        .outline()
+                        .icon(CatalogIcon::FolderRoot),
+                    )
+                    .when(!recent_firmwares.is_empty(), |row| {
+                        let items = recent_firmwares;
+                        let current = current_firmware;
+                        let dispatch = recent_dispatch;
+                        row.child(
+                            Button::new("flashing-recent")
+                                .outline()
+                                .icon(CatalogIcon::RotateCcwClock)
+                                .label(t!("flashing.recent"))
+                                .disabled(!can_pick_firmware)
+                                .dropdown_menu(move |mut menu, _, _| {
+                                    for path in &items {
+                                        let label = path
+                                            .file_name()
+                                            .map(|name| name.to_string_lossy().into_owned())
+                                            .unwrap_or_else(|| path.display().to_string());
+                                        let selected = current.as_ref() == Some(path);
+                                        let target = path.clone();
+                                        let dispatch = dispatch.clone();
+                                        menu = menu.item(
+                                            PopupMenuItem::new(label).checked(selected).on_click(
+                                                move |_, window, cx| {
+                                                    dispatch.dispatch_action(
+                                                        &FlashingAction(
+                                                            FlashingCommand::SelectFirmwarePath(
+                                                                target.clone(),
+                                                            ),
+                                                        ),
+                                                        window,
+                                                        cx,
+                                                    );
+                                                },
+                                            ),
+                                        );
+                                    }
+                                    let dispatch = dispatch.clone();
+                                    menu.separator().item(
+                                        PopupMenuItem::new(t!("flashing.recent_clear")).on_click(
+                                            move |_, window, cx| {
+                                                dispatch.dispatch_action(
+                                                    &FlashingAction(
+                                                        FlashingCommand::ClearRecentFirmwares,
+                                                    ),
+                                                    window,
+                                                    cx,
+                                                );
+                                            },
+                                        ),
+                                    )
+                                }),
+                        )
+                    }),
+            )
+            .child(
+                h_flex()
+                    .gap_2()
+                    .items_center()
+                    .child(
+                        self.command_button(
+                            "flashing-start",
+                            t!("flashing.start"),
+                            FlashingCommand::StartViaAdb,
+                            !adb_ready,
+                        )
+                        .icon(CatalogIcon::Zap)
+                        .map(|button| {
+                            if adb_ready {
+                                button.primary()
+                            } else {
+                                button.outline()
+                            }
+                        })
+                        .tooltip(if adb_ready {
+                            t!("flashing.start_tooltip")
+                        } else {
+                            t!("flashing.start_unavailable")
+                        }),
+                    )
+                    .when(busy, |row| {
+                        row.child(
+                            self.command_button(
+                                "flashing-stop",
+                                t!("flashing.stop"),
+                                FlashingCommand::Stop,
+                                self.is_rebooting(),
+                            )
+                            .danger()
+                            .icon(CatalogIcon::Square),
+                        )
+                    }),
+            )
+    }
+
+    fn mode_card(&self, cx: &App) -> impl IntoElement {
+        let configurable = self.can_configure();
+        let erase_tile = |mode: EraseMode| {
+            let dispatch = self.dispatch.clone();
+            let selected = !self.partition_mode && self.mode == mode;
+            let supported = self.supports_mode(mode);
+            let (label, desc) = match mode {
+                EraseMode::KeepData => (t!("flashing.mode.keep"), t!("flashing.mode.keep_desc")),
+                EraseMode::EraseLogical => (
+                    t!("flashing.mode.logical"),
+                    t!("flashing.mode.logical_desc"),
+                ),
+                EraseMode::EraseAll => (t!("flashing.mode.all"), t!("flashing.mode.all_desc")),
+            };
+            v_flex()
+                .flex_1()
+                .min_w_0()
+                .gap_1()
+                .p_3()
+                .rounded_md()
+                .border_1()
+                .border_color(if selected {
+                    cx.theme().primary.opacity(0.65)
+                } else {
+                    cx.theme().border
+                })
+                .bg(if selected {
+                    cx.theme().primary.opacity(0.08)
+                } else {
+                    cx.theme().background
+                })
+                .child(
+                    Radio::new(SharedString::from(format!("flashing-mode-{}", mode.flag())))
+                        .label(label)
+                        .checked(selected)
+                        .disabled(!configurable || !supported)
+                        .when(!supported, |button| {
+                            button.tooltip(t!("flashing.mode.all_unavailable"))
+                        })
+                        .on_click(move |_, window, cx| {
+                            dispatch.dispatch_action(
+                                &FlashingAction(FlashingCommand::SetMode(mode)),
+                                window,
+                                cx,
+                            )
+                        }),
+                )
+                .child(
+                    div()
+                        .pl_5()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(desc),
+                )
+        };
+        let partitions_dispatch = self.dispatch.clone();
+        let partitions_tile = v_flex()
+            .flex_1()
+            .min_w_0()
+            .gap_1()
+            .p_3()
+            .rounded_md()
+            .border_1()
+            .border_color(if self.partition_mode {
+                cx.theme().primary.opacity(0.65)
+            } else {
+                cx.theme().border
+            })
+            .bg(if self.partition_mode {
+                cx.theme().primary.opacity(0.08)
+            } else {
+                cx.theme().background
+            })
+            .child(
+                Radio::new("flashing-mode-partitions")
+                    .label(t!("flashing.mode.partitions"))
+                    .checked(self.partition_mode)
+                    .disabled(!configurable)
+                    .on_click(move |_, window, cx| {
+                        partitions_dispatch.dispatch_action(
+                            &FlashingAction(FlashingCommand::SelectPartitionMode),
+                            window,
+                            cx,
+                        );
+                    }),
+            )
+            .child(
+                div()
+                    .pl_5()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(t!("flashing.mode.partitions_desc")),
+            );
+
+        v_flex()
+            .gap_2p5()
+            .p_4()
+            .rounded_lg()
+            .border_1()
+            .border_color(cx.theme().border)
+            .bg(cx.theme().group_box)
+            .child(
+                div()
+                    .text_sm()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child(t!("flashing.mode.label")),
+            )
+            .child(
+                h_flex()
+                    .gap_2p5()
+                    .child(erase_tile(EraseMode::KeepData))
+                    .child(erase_tile(EraseMode::EraseLogical)),
+            )
+            .child(
+                h_flex()
+                    .gap_2p5()
+                    .child(erase_tile(EraseMode::EraseAll))
+                    .child(partitions_tile),
+            )
+    }
+
+    fn partition_overview_card(&self, cx: &App) -> impl IntoElement {
+        let configurable = self.can_configure();
+        let switch_dispatch = self.dispatch.clone();
+        v_flex()
+            .flex_1()
+            .min_h_0()
+            .gap_3()
+            .p_4()
+            .rounded_lg()
+            .border_1()
+            .border_color(cx.theme().border)
+            .bg(cx.theme().group_box)
+            .child(
+                h_flex()
+                    .gap_2()
+                    .items_center()
+                    .justify_between()
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .items_center()
+                            .child(
+                                Icon::new(CatalogIcon::Layers)
+                                    .small()
+                                    .text_color(cx.theme().primary),
+                            )
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child(t!("flashing.partitions.overview_title")),
+                            )
+                            .when(!self.partitions.is_empty(), |row| {
+                                row.child(
+                                    div()
+                                        .px_2()
+                                        .py_0p5()
+                                        .rounded_full()
+                                        .bg(cx.theme().muted)
+                                        .text_xs()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child(t!(
+                                            "flashing.firmware_parts_count",
+                                            count = self.partitions.len()
+                                        )),
+                                )
+                            }),
+                    )
+                    .when(!self.partitions.is_empty(), |row| {
+                        row.child(
+                            Button::new("flashing-switch-partitions")
+                                .xsmall()
+                                .outline()
+                                .label(t!("flashing.partitions.switch_to_custom"))
+                                .disabled(!configurable)
+                                .on_click(move |_, window, cx| {
+                                    switch_dispatch.dispatch_action(
                                         &FlashingAction(FlashingCommand::SelectPartitionMode),
                                         window,
                                         cx,
                                     );
-                                }
-                            }),
-                    )
-                    .children(EraseMode::ALL.into_iter().map(|mode| {
-                        let dispatch = mode_dispatch.clone();
-                        Radio::new(SharedString::from(format!("flashing-mode-{}", mode.flag())))
-                            .small()
-                            .label(match mode {
-                                EraseMode::KeepData => t!("flashing.mode.keep"),
-                                EraseMode::EraseLogical => t!("flashing.mode.logical"),
-                                EraseMode::EraseAll => t!("flashing.mode.all"),
-                            })
-                            .checked(!self.partition_mode && self.mode == mode)
-                            .disabled(!self.can_configure() || !self.supports_mode(mode))
-                            .when(!self.supports_mode(mode), |button| {
-                                button.tooltip(t!("flashing.mode.all_unavailable"))
-                            })
-                            .on_click(move |_, window, cx| {
-                                dispatch.dispatch_action(
-                                    &FlashingAction(FlashingCommand::SetMode(mode)),
-                                    window,
-                                    cx,
-                                )
-                            })
-                    })),
-            )
-    }
-
-    fn partitions_card(&self) -> impl IntoElement {
-        let dispatch = self.dispatch.clone();
-        let configurable = self.can_configure();
-        v_flex()
-            .gap_2()
-            .child(
-                h_flex()
-                    .gap_3()
-                    .child(
-                        Checkbox::new("flashing-partitions-all")
-                            .small()
-                            .label(t!("flashing.partitions.all"))
-                            .checked(
-                                !self.partitions.is_empty()
-                                    && self.selected_partitions.len() == self.partitions.len(),
-                            )
-                            .disabled(!configurable || self.partitions.is_empty())
-                            .on_click(move |_, window, cx| {
-                                dispatch.dispatch_action(
-                                    &FlashingAction(FlashingCommand::SelectAllPartitions),
-                                    window,
-                                    cx,
-                                );
-                            }),
-                    )
-                    .child(div().text_sm().child(t!(
-                        "flashing.partitions.selected",
-                        selected = self.selected_partitions.len(),
-                        total = self.partitions.len()
-                    ))),
-            )
-            .child(
-                v_flex()
-                    .id("flashing-partitions")
-                    .test_support()
-                    .max_h_40()
-                    .overflow_y_scroll()
-                    .gap_1()
-                    .children(self.partitions.iter().map(|partition| {
-                        let dispatch = self.dispatch.clone();
-                        let index = partition.index;
-                        Checkbox::new(SharedString::from(format!("flashing-partition-{index}")))
-                            .small()
-                            .label(format!("{} · {}", index, partition.name))
-                            .checked(self.selected_partitions.contains(&index))
-                            .disabled(!configurable)
-                            .on_click(move |_, window, cx| {
-                                dispatch.dispatch_action(
-                                    &FlashingAction(FlashingCommand::TogglePartition(index)),
-                                    window,
-                                    cx,
-                                );
-                            })
-                    })),
+                                }),
+                        )
+                    }),
             )
             .child(
                 div()
-                    .text_xs()
-                    .child(if self.phase == Phase::ReadingFirmware {
-                        t!("flashing.hint.reading")
-                    } else if self.partitions.is_empty() {
-                        t!("flashing.partitions.empty")
+                    .id("flashing-partition-overview")
+                    .flex_1()
+                    .min_h_24()
+                    .overflow_y_scroll()
+                    .child(if self.partitions.is_empty() {
+                        v_flex()
+                            .size_full()
+                            .min_h_24()
+                            .items_center()
+                            .justify_center()
+                            .gap_1p5()
+                            .rounded_md()
+                            .border_1()
+                            .border_color(cx.theme().border)
+                            .bg(cx.theme().background)
+                            .p_4()
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(if self.phase == Phase::ReadingFirmware {
+                                        t!("flashing.hint.reading")
+                                    } else {
+                                        t!("flashing.partitions.empty")
+                                    }),
+                            )
+                            .when(self.firmware.is_none(), |box_el| {
+                                box_el.child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child(t!("flashing.drop_hint")),
+                                )
+                            })
+                            .into_any_element()
                     } else {
-                        t!("flashing.partitions.hint")
+                        let cols = partition_grid_columns(self.partitions.len());
+                        let rows = self.partitions.len().div_ceil(cols);
+                        let fill = rows <= 4;
+                        v_flex()
+                            .w_full()
+                            .when(fill, |grid| grid.h_full())
+                            .gap_2p5()
+                            .children(self.partitions.chunks(cols).map(|chunk| {
+                                let padding = cols - chunk.len();
+                                h_flex()
+                                    .w_full()
+                                    .items_stretch()
+                                    .min_h(px(44.))
+                                    .when(fill, |row| row.flex_1())
+                                    .gap_2p5()
+                                    .children(chunk.iter().map(|part| {
+                                        h_flex()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .gap_2()
+                                            .items_center()
+                                            .justify_between()
+                                            .px_3p5()
+                                            .py_2()
+                                            .rounded_md()
+                                            .border_1()
+                                            .border_color(cx.theme().border)
+                                            .bg(cx.theme().background)
+                                            .child(
+                                                div()
+                                                    .truncate()
+                                                    .text_base()
+                                                    .font_weight(FontWeight::MEDIUM)
+                                                    .child(part.name.clone()),
+                                            )
+                                            .child(
+                                                div()
+                                                    .px_2()
+                                                    .py_0p5()
+                                                    .rounded_sm()
+                                                    .bg(cx.theme().muted)
+                                                    .font_family(
+                                                        cx.theme().mono_font_family.clone(),
+                                                    )
+                                                    .text_xs()
+                                                    .text_color(cx.theme().muted_foreground)
+                                                    .child(format!("#{:02}", part.index)),
+                                            )
+                                    }))
+                                    .children((0..padding).map(|_| div().flex_1().min_w_0()))
+                            }))
+                            .into_any_element()
                     }),
             )
+    }
+
+    fn partitions_card(&self, cx: &App) -> impl IntoElement {
+        let dispatch = self.dispatch.clone();
+        let configurable = self.can_configure();
+        let total = self.partitions.len();
+        let selected_count = self.selected_partitions.len();
+        let all_selected = total > 0 && selected_count == total;
+        let visible_partitions: Vec<_> = self
+            .partitions
+            .iter()
+            .filter(|part| {
+                if self.partition_filter.is_empty() {
+                    return true;
+                }
+                part.name.to_lowercase().contains(&self.partition_filter)
+                    || part.index.to_string().contains(&self.partition_filter)
+            })
+            .collect();
+        let count_color = if selected_count > 0 {
+            cx.theme().primary
+        } else {
+            cx.theme().warning
+        };
+
+        v_flex()
+            .flex_1()
+            .min_h_0()
+            .gap_3()
+            .p_4()
+            .rounded_lg()
+            .border_1()
+            .border_color(cx.theme().border)
+            .bg(cx.theme().group_box)
+            .child(
+                h_flex()
+                    .gap_2()
+                    .flex_wrap()
+                    .items_center()
+                    .justify_between()
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .items_center()
+                            .child(
+                                Icon::new(CatalogIcon::Layers)
+                                    .small()
+                                    .text_color(cx.theme().primary),
+                            )
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child(t!("flashing.partitions.title")),
+                            )
+                            .child(
+                                div()
+                                    .px_2()
+                                    .py_0p5()
+                                    .rounded_full()
+                                    .bg(count_color.opacity(0.14))
+                                    .text_color(count_color)
+                                    .text_xs()
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .child(t!(
+                                        "flashing.partitions.selected",
+                                        selected = selected_count,
+                                        total = total
+                                    )),
+                            ),
+                    )
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .flex_wrap()
+                            .items_center()
+                            .when_some(self.partition_search_input.as_ref(), |row, input| {
+                                row.child(
+                                    div().w(px(168.)).child(
+                                        Input::new(input).xsmall().cleanable(true).prefix(
+                                            Icon::new(IconName::Search)
+                                                .xsmall()
+                                                .text_color(cx.theme().muted_foreground),
+                                        ),
+                                    ),
+                                )
+                            })
+                            .child(
+                                Checkbox::new("flashing-partitions-all")
+                                    .small()
+                                    .label(t!("flashing.partitions.all"))
+                                    .checked(all_selected)
+                                    .disabled(!configurable || total == 0)
+                                    .on_click({
+                                        let dispatch = dispatch.clone();
+                                        move |_, window, cx| {
+                                            dispatch.dispatch_action(
+                                                &FlashingAction(
+                                                    FlashingCommand::SelectAllPartitions,
+                                                ),
+                                                window,
+                                                cx,
+                                            );
+                                        }
+                                    }),
+                            )
+                            .child(
+                                Button::new("flashing-partitions-invert")
+                                    .xsmall()
+                                    .ghost()
+                                    .label(t!("flashing.partitions.invert"))
+                                    .disabled(!configurable || total == 0)
+                                    .on_click({
+                                        let dispatch = dispatch.clone();
+                                        move |_, window, cx| {
+                                            dispatch.dispatch_action(
+                                                &FlashingAction(FlashingCommand::InvertPartitions),
+                                                window,
+                                                cx,
+                                            );
+                                        }
+                                    }),
+                            )
+                            .child(
+                                Button::new("flashing-partitions-clear")
+                                    .xsmall()
+                                    .ghost()
+                                    .label(t!("flashing.partitions.clear"))
+                                    .disabled(!configurable || selected_count == 0)
+                                    .on_click(move |_, window, cx| {
+                                        dispatch.dispatch_action(
+                                            &FlashingAction(FlashingCommand::ClearPartitions),
+                                            window,
+                                            cx,
+                                        );
+                                    }),
+                            ),
+                    ),
+            )
+            .child(
+                div()
+                    .id("flashing-partitions")
+                    .test_support()
+                    .flex_1()
+                    .min_h_24()
+                    .overflow_y_scroll()
+                    .child(if visible_partitions.is_empty() {
+                        div()
+                            .py_3()
+                            .px_2()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(if self.phase == Phase::ReadingFirmware {
+                                t!("flashing.hint.reading")
+                            } else if total == 0 {
+                                t!("flashing.partitions.empty")
+                            } else {
+                                t!("flashing.partitions.no_match")
+                            })
+                            .into_any_element()
+                    } else {
+                        let cols = partition_grid_columns(visible_partitions.len());
+                        let rows = visible_partitions.len().div_ceil(cols);
+                        let fill = rows <= 4;
+                        v_flex()
+                            .w_full()
+                            .when(fill, |grid| grid.h_full())
+                            .gap_2p5()
+                            .children(visible_partitions.chunks(cols).map(|chunk| {
+                                let padding = cols - chunk.len();
+                                h_flex()
+                                    .w_full()
+                                    .items_stretch()
+                                    .min_h(px(46.))
+                                    .when(fill, |row| row.flex_1())
+                                    .gap_2p5()
+                                    .children(chunk.iter().map(|partition| {
+                                        let dispatch = self.dispatch.clone();
+                                        let index = partition.index;
+                                        let checked = self.selected_partitions.contains(&index);
+                                        h_flex()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .items_center()
+                                            .justify_between()
+                                            .gap_2()
+                                            .px_3p5()
+                                            .py_2()
+                                            .rounded_md()
+                                            .border_1()
+                                            .border_color(if checked {
+                                                cx.theme().primary.opacity(0.65)
+                                            } else {
+                                                cx.theme().border
+                                            })
+                                            .bg(if checked {
+                                                cx.theme().primary.opacity(0.10)
+                                            } else {
+                                                cx.theme().background
+                                            })
+                                            .when(configurable && !checked, |chip| {
+                                                chip.hover(|style| {
+                                                    style.border_color(
+                                                        cx.theme().primary.opacity(0.4),
+                                                    )
+                                                })
+                                            })
+                                            .child(
+                                                Checkbox::new(SharedString::from(format!(
+                                                    "flashing-partition-{index}"
+                                                )))
+                                                .flex_1()
+                                                .label(partition.name.clone())
+                                                .checked(checked)
+                                                .disabled(!configurable)
+                                                .on_click(move |_, window, cx| {
+                                                    dispatch.dispatch_action(
+                                                        &FlashingAction(
+                                                            FlashingCommand::TogglePartition(index),
+                                                        ),
+                                                        window,
+                                                        cx,
+                                                    );
+                                                }),
+                                            )
+                                            .child(
+                                                div()
+                                                    .px_2()
+                                                    .py_0p5()
+                                                    .rounded_sm()
+                                                    .bg(if checked {
+                                                        cx.theme().primary.opacity(0.16)
+                                                    } else {
+                                                        cx.theme().muted
+                                                    })
+                                                    .font_family(
+                                                        cx.theme().mono_font_family.clone(),
+                                                    )
+                                                    .text_xs()
+                                                    .text_color(if checked {
+                                                        cx.theme().primary
+                                                    } else {
+                                                        cx.theme().muted_foreground
+                                                    })
+                                                    .child(format!("#{:02}", index)),
+                                            )
+                                    }))
+                                    .children((0..padding).map(|_| div().flex_1().min_w_0()))
+                            }))
+                            .into_any_element()
+                    }),
+            )
+            .when(total > 0 && selected_count == 0, |card| {
+                card.child(
+                    div()
+                        .text_xs()
+                        .text_color(cx.theme().warning)
+                        .child(t!("flashing.partitions.hint")),
+                )
+            })
     }
 
     fn progress_card(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1575,12 +2387,12 @@ impl FlashingPanel {
             });
         let color = self.phase_color(cx);
         v_flex()
-            .gap_2()
-            .p_3()
-            .rounded_md()
+            .gap_2p5()
+            .p_4()
+            .rounded_lg()
             .border_1()
             .border_color(cx.theme().border)
-            .bg(cx.theme().background)
+            .bg(cx.theme().group_box)
             .child(
                 h_flex()
                     .gap_2()
@@ -1844,39 +2656,70 @@ impl FlashingPanel {
     fn log_card(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let dispatch = self.dispatch.clone();
         let log_text = self.log_text();
+        let total_lines = self.logs.len();
+        let filtered_lines = self.filtered_log_count();
+        let is_filtered = self.log_errors_only || !self.log_filter.is_empty();
+        let lines_label = if is_filtered {
+            t!(
+                "flashing.log.lines_filtered",
+                shown = filtered_lines,
+                total = total_lines
+            )
+        } else {
+            t!("flashing.log.lines", count = total_lines)
+        };
         v_flex()
             .flex_1()
             .min_h_0()
             .gap_2()
+            .p_3()
+            .rounded_lg()
+            .border_1()
+            .border_color(cx.theme().border)
+            .bg(cx.theme().group_box)
             .child(
                 h_flex()
                     .gap_2()
+                    .items_center()
+                    .justify_between()
                     .child(
-                        div()
-                            .text_sm()
-                            .font_weight(FontWeight::MEDIUM)
-                            .child(t!("flashing.log.title")),
-                    )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(t!("flashing.log.lines", count = self.logs.len())),
+                        h_flex()
+                            .gap_1p5()
+                            .items_center()
+                            .child(
+                                Icon::new(CatalogIcon::FileText)
+                                    .small()
+                                    .text_color(cx.theme().muted_foreground),
+                            )
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child(t!("flashing.log.title")),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(lines_label),
+                            ),
                     )
                     .child(
                         h_flex()
-                            .ml_auto()
-                            .gap_2()
+                            .gap_1p5()
+                            .items_center()
                             .child(
-                                Checkbox::new("flashing-follow")
-                                    .small()
-                                    .label(t!("flashing.log.follow"))
-                                    .checked(self.follow)
+                                Button::new("flashing-save-log")
+                                    .xsmall()
+                                    .ghost()
+                                    .icon(CatalogIcon::Save)
+                                    .label(t!("flashing.log.save"))
+                                    .disabled(total_lines == 0)
                                     .on_click({
                                         let dispatch = dispatch.clone();
                                         move |_, window, cx| {
                                             dispatch.dispatch_action(
-                                                &FlashingAction(FlashingCommand::ToggleFollow),
+                                                &FlashingAction(FlashingCommand::SaveLog),
                                                 window,
                                                 cx,
                                             )
@@ -1885,8 +2728,9 @@ impl FlashingPanel {
                             )
                             .child(
                                 Button::new("flashing-clear-log")
-                                    .small()
+                                    .xsmall()
                                     .ghost()
+                                    .icon(CatalogIcon::Trash)
                                     .label(t!("flashing.log.clear"))
                                     .on_click({
                                         let dispatch = dispatch.clone();
@@ -1902,18 +2746,74 @@ impl FlashingPanel {
                     ),
             )
             .child(
+                h_flex()
+                    .gap_1p5()
+                    .flex_wrap()
+                    .items_center()
+                    .when_some(self.log_search_input.as_ref(), |row, input| {
+                        row.child(
+                            div().flex_1().min_w(px(120.)).child(
+                                Input::new(input).xsmall().cleanable(true).prefix(
+                                    Icon::new(IconName::Search)
+                                        .xsmall()
+                                        .text_color(cx.theme().muted_foreground),
+                                ),
+                            ),
+                        )
+                    })
+                    .child(
+                        Button::new("flashing-log-errors-only")
+                            .xsmall()
+                            .icon(CatalogIcon::ListFilter)
+                            .label(t!("flashing.log.errors_only"))
+                            .map(|button| {
+                                if self.log_errors_only {
+                                    button.primary()
+                                } else {
+                                    button.ghost()
+                                }
+                            })
+                            .on_click({
+                                let dispatch = dispatch.clone();
+                                move |_, window, cx| {
+                                    dispatch.dispatch_action(
+                                        &FlashingAction(FlashingCommand::ToggleLogErrorsOnly),
+                                        window,
+                                        cx,
+                                    )
+                                }
+                            }),
+                    )
+                    .child(
+                        Checkbox::new("flashing-follow")
+                            .small()
+                            .label(t!("flashing.log.follow"))
+                            .checked(self.follow)
+                            .on_click({
+                                let dispatch = dispatch.clone();
+                                move |_, window, cx| {
+                                    dispatch.dispatch_action(
+                                        &FlashingAction(FlashingCommand::ToggleFollow),
+                                        window,
+                                        cx,
+                                    )
+                                }
+                            }),
+                    ),
+            )
+            .child(
                 div()
                     .id("flashing-log")
                     .test_support()
                     .flex_1()
                     .min_h_0()
-                    .p_3()
+                    .p_2p5()
                     .rounded_md()
                     .border_1()
                     .border_color(cx.theme().border)
                     .bg(cx.theme().muted)
                     .font_family(cx.theme().mono_font_family.clone())
-                    .text_sm()
+                    .text_xs()
                     .overflow_y_scroll()
                     .track_scroll(&self.scroll)
                     .capture_any_mouse_up(cx.listener(|panel, event: &MouseUpEvent, _, cx| {
@@ -2023,6 +2923,7 @@ impl Panel for FlashingPanel {
 
 impl Render for FlashingPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.ensure_inputs(window, cx);
         if std::mem::take(&mut self.pending_log_copy)
             && let Some(selection) = self.log_selection.snapshot(cx)
         {
@@ -2036,6 +2937,7 @@ impl Render for FlashingPanel {
                 }
             });
         }
+        let tool_ready = self.tool_dir.is_some();
         let tool_state = if let Some(dir) = &self.tool_dir {
             t!("flashing.tool.ready", path = dir.display())
         } else {
@@ -2046,6 +2948,12 @@ impl Render for FlashingPanel {
             .as_ref()
             .map(|path| SharedString::from(path.display().to_string()))
             .unwrap_or_else(|| t!("flashing.no_firmware"));
+        let firmware_name = self
+            .firmware
+            .as_ref()
+            .and_then(|path| path.file_name())
+            .map(|name| SharedString::from(name.to_string_lossy().into_owned()));
+        let firmware_size = self.source.file_size().map(format_bytes);
         let created = self.source.created_at().map(|created| {
             let local = chrono::DateTime::<chrono::Local>::from(created);
             t!(
@@ -2053,6 +2961,52 @@ impl Render for FlashingPanel {
                 time = local.format("%Y-%m-%d %H:%M:%S")
             )
         });
+        let (recent_firmwares, saved_log_width) = {
+            let settings = self.settings.read(cx).settings();
+            (
+                settings.flashing_recent_firmwares.clone(),
+                settings.flashing_log_width,
+            )
+        };
+        let log_width = saved_log_width.unwrap_or(DEFAULT_LOG_WIDTH);
+        let can_pick_firmware = tool_ready && self.can_configure();
+        let drop_dispatch = self.dispatch.clone();
+        let conflicts_summary = self.conflicting_tools_summary();
+        let has_conflicts = !self.conflicting_tools.is_empty();
+
+        let firmware_status = if self.firmware.is_none() {
+            t!("flashing.meta.none")
+        } else if self.phase == Phase::ReadingFirmware {
+            t!("flashing.meta.reading")
+        } else if let Some(hint) = self.source_hint() {
+            hint
+        } else {
+            t!("flashing.meta.ready")
+        };
+        let tile_border = cx.theme().border;
+        let tile_bg = cx.theme().background;
+        let tile_muted = cx.theme().muted_foreground;
+        let stat_tile = move |title: SharedString, value: SharedString| {
+            v_flex()
+                .flex_1()
+                .min_w_0()
+                .gap_0p5()
+                .px_3()
+                .py_2()
+                .rounded_md()
+                .border_1()
+                .border_color(tile_border)
+                .bg(tile_bg)
+                .child(div().text_xs().text_color(tile_muted).child(title))
+                .child(
+                    div()
+                        .truncate()
+                        .text_sm()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child(value),
+                )
+        };
+
         v_flex()
             .id("flashing")
             .test_support()
@@ -2062,30 +3016,97 @@ impl Render for FlashingPanel {
             .gap_3()
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
+            .drag_over::<ExternalPaths>(|style, _, _, cx| {
+                style.border_2().border_color(cx.theme().primary)
+            })
+            .on_drop(move |paths: &ExternalPaths, window, cx| {
+                if !can_pick_firmware {
+                    return;
+                }
+                if let Some(path) = paths.paths().iter().find(|path| {
+                    path.extension()
+                        .and_then(|ext| ext.to_str())
+                        .is_some_and(|ext| ext.eq_ignore_ascii_case("img"))
+                }) {
+                    drop_dispatch.dispatch_action(
+                        &FlashingAction(FlashingCommand::SelectFirmwarePath(path.clone())),
+                        window,
+                        cx,
+                    );
+                }
+            })
             .child(
-                v_flex()
-                    .gap_1()
+                h_flex()
+                    .gap_2()
+                    .items_center()
+                    .justify_between()
+                    .flex_wrap()
                     .child(
-                        div()
-                            .text_lg()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child(t!("flashing.title")),
+                        h_flex()
+                            .id("flashing-tool-directory")
+                            .test_support()
+                            .aria_label(tool_state.clone())
+                            .flex_1()
+                            .min_w_0()
+                            .px_2p5()
+                            .py_1()
+                            .rounded_md()
+                            .border_1()
+                            .border_color(if tool_ready {
+                                cx.theme().border
+                            } else {
+                                cx.theme().danger.opacity(0.45)
+                            })
+                            .bg(if tool_ready {
+                                cx.theme().muted
+                            } else {
+                                cx.theme().danger.opacity(0.10)
+                            })
+                            .gap_1p5()
+                            .items_center()
+                            .child(
+                                Icon::new(if tool_ready {
+                                    CatalogIcon::CircleCheck
+                                } else {
+                                    CatalogIcon::CircleAlert
+                                })
+                                .xsmall()
+                                .text_color(if tool_ready {
+                                    cx.theme().success
+                                } else {
+                                    cx.theme().danger
+                                }),
+                            )
+                            .child(
+                                div()
+                                    .min_w_0()
+                                    .truncate()
+                                    .text_xs()
+                                    .text_color(if tool_ready {
+                                        cx.theme().muted_foreground
+                                    } else {
+                                        cx.theme().danger
+                                    })
+                                    .child(tool_state),
+                            ),
                     )
                     .child(
                         h_flex()
-                            .gap_3()
-                            .child(
-                                div()
-                                    .id("flashing-tool-directory")
-                                    .test_support()
-                                    .aria_label(tool_state.clone())
-                                    .flex_1()
-                                    .min_w_0()
-                                    .truncate()
-                                    .text_sm()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child(tool_state),
-                            )
+                            .gap_2()
+                            .items_center()
+                            .when(tool_ready, |row| {
+                                row.child(
+                                    self.command_button(
+                                        "flashing-open-tool",
+                                        t!("flashing.tool.open"),
+                                        FlashingCommand::OpenToolDirectory,
+                                        false,
+                                    )
+                                    .xsmall()
+                                    .ghost()
+                                    .icon(CatalogIcon::ExternalLink),
+                                )
+                            })
                             .child(
                                 self.command_button(
                                     "flashing-choose-tool",
@@ -2093,86 +3114,259 @@ impl Render for FlashingPanel {
                                     FlashingCommand::ChooseToolDirectory,
                                     !self.can_choose_tool(),
                                 )
-                                .small()
+                                .xsmall()
                                 .outline()
                                 .icon(CatalogIcon::FolderRoot),
+                            )
+                            .child(
+                                self.command_button(
+                                    "flashing-reset-layout",
+                                    t!("flashing.layout.reset"),
+                                    FlashingCommand::ResetLayout,
+                                    false,
+                                )
+                                .xsmall()
+                                .ghost()
+                                .icon(CatalogIcon::RotateCcw),
                             ),
                     ),
             )
-            .child(
-                v_flex()
-                    .gap_2()
-                    .p_3()
-                    .rounded_md()
-                    .border_1()
-                    .border_color(cx.theme().border)
-                    .child(
-                        h_flex()
-                            .flex_wrap()
-                            .justify_between()
-                            .gap_3()
-                            .child(
-                                div()
-                                    .id("flashing-firmware-label")
-                                    .test_support()
-                                    .text_base()
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .child(t!("flashing.firmware")),
-                            )
-                            .when_some(created, |row, created| {
-                                row.child(
-                                    div()
-                                        .id("flashing-firmware-created")
-                                        .test_support()
-                                        .aria_label(created.clone())
-                                        .text_base()
-                                        .font_weight(FontWeight::SEMIBOLD)
-                                        .tooltip(|window, cx| {
-                                            Tooltip::new(t!("flashing.firmware_created_hint"))
-                                                .build(window, cx)
-                                        })
-                                        .child(created),
+            .when(has_conflicts, |panel| {
+                panel.child(
+                    h_flex()
+                        .gap_3()
+                        .items_center()
+                        .justify_between()
+                        .px_3()
+                        .py_2()
+                        .rounded_lg()
+                        .border_1()
+                        .border_color(cx.theme().danger.opacity(0.45))
+                        .bg(cx.theme().danger.opacity(0.08))
+                        .child(
+                            h_flex()
+                                .gap_2()
+                                .items_center()
+                                .min_w_0()
+                                .flex_1()
+                                .child(
+                                    Icon::new(CatalogIcon::CircleAlert)
+                                        .small()
+                                        .text_color(cx.theme().danger),
                                 )
-                            }),
-                    )
-                    .child(
-                        div()
-                            .id("flashing-firmware-path")
-                            .test_support()
-                            .aria_label(firmware.clone())
-                            .min_w_0()
-                            .truncate()
-                            .font_family(cx.theme().mono_font_family.clone())
-                            .text_base()
-                            .when(self.firmware.is_some(), |path| {
-                                let full_path = firmware.clone();
-                                path.tooltip(move |window, cx| {
-                                    Tooltip::new(full_path.clone()).build(window, cx)
-                                })
-                            })
-                            .child(firmware),
-                    )
-                    .when_some(
-                        self.source_hint().filter(|_| self.progress.has_active()),
-                        |panel, hint| {
-                            panel.child(
-                                div()
-                                    .id("flashing-source-status")
-                                    .test_support()
-                                    .aria_label(hint.clone())
-                                    .text_sm()
-                                    .text_color(cx.theme().warning)
-                                    .child(hint),
+                                .child(div().text_xs().text_color(cx.theme().danger).child(t!(
+                                    "flashing.tool.conflict",
+                                    programs = conflicts_summary.clone()
+                                ))),
+                        )
+                        .child(
+                            self.command_button(
+                                "flashing-kill-conflicts",
+                                t!("flashing.tool.kill_button"),
+                                FlashingCommand::KillConflictingTools,
+                                false,
                             )
-                        },
-                    )
-                    .child(self.toolbar()),
-            )
-            .when(self.partition_mode, |panel| {
-                panel.child(self.partitions_card())
+                            .xsmall()
+                            .danger(),
+                        ),
+                )
             })
-            .child(self.progress_card(cx))
-            .child(self.log_card(cx))
+            .child(
+                div().flex_1().min_h_0().min_w_0().child(
+                    h_resizable("flashing-split")
+                        .with_state(&self.split)
+                        .child(
+                            resizable_panel()
+                                .size_range(px(460.)..Pixels::MAX)
+                                .child(
+                                    v_flex()
+                                        .size_full()
+                                        .min_h_0()
+                                        .min_w_0()
+                                        .pr_2()
+                                        .gap_3()
+                                        .child(
+                                            div().flex_shrink_0().child(self.progress_card(cx)),
+                                        )
+                                        .child(
+                                            v_flex()
+                                                .flex_shrink_0()
+                                                .gap_3()
+                                                .p_4()
+                                                .rounded_lg()
+                                                .border_1()
+                                                .border_color(cx.theme().border)
+                                                .bg(cx.theme().group_box)
+                                                .child(
+                                                    h_flex()
+                                                        .flex_wrap()
+                                                        .items_center()
+                                                        .justify_between()
+                                                        .gap_3()
+                                                        .child(
+                                                            div()
+                                                                .id("flashing-firmware-label")
+                                                                .test_support()
+                                                                .text_xl()
+                                                                .font_weight(FontWeight::SEMIBOLD)
+                                                                .child(
+                                                                    firmware_name.unwrap_or_else(
+                                                                        || t!("flashing.firmware"),
+                                                                    ),
+                                                                ),
+                                                        )
+                                                        .when_some(created, |row, created| {
+                                                            row.child(
+                                                                div()
+                                                                    .id("flashing-firmware-created")
+                                                                    .test_support()
+                                                                    .aria_label(created.clone())
+                                                                    .text_base()
+                                                                    .font_weight(
+                                                                        FontWeight::SEMIBOLD,
+                                                                    )
+                                                                    .text_color(
+                                                                        cx.theme().foreground,
+                                                                    )
+                                                                    .tooltip(|window, cx| {
+                                                                        Tooltip::new(t!(
+                                                                            "flashing.firmware_created_hint"
+                                                                        ))
+                                                                        .build(window, cx)
+                                                                    })
+                                                                    .child(created),
+                                                            )
+                                                        }),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .id("flashing-firmware-path")
+                                                        .test_support()
+                                                        .aria_label(firmware.clone())
+                                                        .w_full()
+                                                        .min_w_0()
+                                                        .truncate()
+                                                        .px_3()
+                                                        .py_2()
+                                                        .rounded_md()
+                                                        .border_1()
+                                                        .border_color(cx.theme().border)
+                                                        .bg(cx.theme().background)
+                                                        .font_family(
+                                                            cx.theme().mono_font_family.clone(),
+                                                        )
+                                                        .text_sm()
+                                                        .text_color(
+                                                            cx.theme().foreground.opacity(0.88),
+                                                        )
+                                                        .when(self.firmware.is_some(), |path| {
+                                                            let full_path = firmware.clone();
+                                                            path.tooltip(move |window, cx| {
+                                                                Tooltip::new(full_path.clone())
+                                                                    .build(window, cx)
+                                                            })
+                                                        })
+                                                        .child(firmware),
+                                                )
+                                                .child(
+                                                    h_flex()
+                                                        .gap_2()
+                                                        .child(stat_tile(
+                                                            t!("flashing.meta.size"),
+                                                            firmware_size
+                                                                .map(SharedString::from)
+                                                                .unwrap_or_else(|| {
+                                                                    SharedString::from("—")
+                                                                }),
+                                                        ))
+                                                        .child(stat_tile(
+                                                            t!("flashing.meta.partitions"),
+                                                            if !self.partitions.is_empty() {
+                                                                t!(
+                                                                    "flashing.firmware_parts_count",
+                                                                    count = self.partitions.len()
+                                                                )
+                                                            } else if self.phase
+                                                                == Phase::ReadingFirmware
+                                                            {
+                                                                t!("flashing.meta.reading")
+                                                            } else {
+                                                                SharedString::from("—")
+                                                            },
+                                                        ))
+                                                        .child(stat_tile(
+                                                            t!("flashing.meta.status"),
+                                                            firmware_status,
+                                                        )),
+                                                )
+                                                .when_some(
+                                                    self.source_hint()
+                                                        .filter(|_| self.progress.has_active()),
+                                                    |panel, hint| {
+                                                        panel.child(
+                                                            div()
+                                                                .id("flashing-source-status")
+                                                                .test_support()
+                                                                .aria_label(hint.clone())
+                                                                .text_xs()
+                                                                .text_color(cx.theme().warning)
+                                                                .child(hint),
+                                                        )
+                                                    },
+                                                )
+                                                .child(div().h(px(1.)).bg(cx.theme().border))
+                                                .child(self.firmware_actions(recent_firmwares)),
+                                        )
+                                        .child(
+                                            div().flex_shrink_0().child(self.mode_card(cx)),
+                                        )
+                                        .child(if self.partition_mode {
+                                            self.partitions_card(cx).into_any_element()
+                                        } else {
+                                            self.partition_overview_card(cx).into_any_element()
+                                        }),
+                                ),
+                        )
+                        .child(
+                            resizable_panel()
+                                .size(px(log_width))
+                                .size_range(px(MIN_LOG_WIDTH)..px(MAX_LOG_WIDTH))
+                                .child(
+                                    v_flex()
+                                        .size_full()
+                                        .min_h_0()
+                                        .min_w_0()
+                                        .pl_2()
+                                        .child(self.log_card(cx)),
+                                ),
+                        ),
+                ),
+            )
+    }
+}
+
+fn partition_grid_columns(count: usize) -> usize {
+    match count {
+        0 | 1 => 1,
+        2..=6 => 2,
+        7..=12 => 3,
+        _ => 4,
+    }
+}
+
+fn format_bytes(bytes: u64) -> String {
+    const KB: f64 = 1024.0;
+    const MB: f64 = KB * 1024.0;
+    const GB: f64 = MB * 1024.0;
+    let value = bytes as f64;
+    if value >= GB {
+        format!("{:.2} GB", value / GB)
+    } else if value >= MB {
+        format!("{:.1} MB", value / MB)
+    } else if value >= KB {
+        format!("{:.0} KB", value / KB)
+    } else {
+        format!("{bytes} B")
     }
 }
 
@@ -3529,6 +4723,164 @@ mod tests {
             assert!(panel.inspection.is_none());
             assert!(panel.run.is_none());
             assert!(panel.burn_started.is_none());
+        });
+    }
+
+    #[gpui_kit::test]
+    fn recent_firmwares_partition_selection_and_log_filters_work(cx: &mut TestAppContext) {
+        let folder = tempfile::tempdir().unwrap();
+        let fw_a = folder.path().join("a.img");
+        let fw_b = folder.path().join("b.img");
+        std::fs::write(&fw_a, b"a").unwrap();
+        std::fs::write(&fw_b, b"b").unwrap();
+        let settings = cx.new(|_| crate::settings::SettingsStore::in_memory());
+        let panel = cx.new(|cx| FlashingPanel::new(cx.focus_handle(), settings.clone(), cx));
+        panel.update(cx, |panel, cx| {
+            panel.select_firmware(fw_a.clone(), cx);
+            panel.select_firmware(fw_b.clone(), cx);
+            panel.select_firmware(fw_a.clone(), cx);
+            assert_eq!(
+                settings.read(cx).settings().flashing_recent_firmwares,
+                vec![fw_a.clone(), fw_b.clone()]
+            );
+
+            panel.firmware_ready(
+                super::FirmwareInfo {
+                    partitions: vec![
+                        super::FirmwarePartition {
+                            index: 0,
+                            name: "boot".into(),
+                        },
+                        super::FirmwarePartition {
+                            index: 1,
+                            name: "rootfs".into(),
+                        },
+                        super::FirmwarePartition {
+                            index: 2,
+                            name: "env".into(),
+                        },
+                    ],
+                    capabilities: super::FirmwareCapabilities::default(),
+                },
+                cx,
+            );
+            panel.command(super::FlashingCommand::TogglePartition(1), cx);
+            assert_eq!(
+                settings.read(cx).settings().flashing_selected_partitions,
+                vec!["rootfs".to_string()]
+            );
+            panel.command(super::FlashingCommand::InvertPartitions, cx);
+            assert_eq!(
+                panel
+                    .selected_partitions
+                    .iter()
+                    .copied()
+                    .collect::<Vec<_>>(),
+                vec![0, 2]
+            );
+            panel.command(super::FlashingCommand::ClearPartitions, cx);
+            assert!(panel.selected_partitions.is_empty());
+
+            panel.command(super::FlashingCommand::TogglePartition(0), cx);
+            panel.append("normal detail", super::Tone::Normal, Instant::now());
+            panel.append("fatal write error", super::Tone::Danger, Instant::now());
+            let total = panel.logs.len();
+            panel.command(super::FlashingCommand::ToggleLogErrorsOnly, cx);
+            assert!(panel.log_text().contains("fatal write error"));
+            assert!(!panel.log_text().contains("normal detail"));
+            assert_eq!(panel.logs.len(), total);
+
+            panel.command(super::FlashingCommand::ClearRecentFirmwares, cx);
+            assert!(
+                settings
+                    .read(cx)
+                    .settings()
+                    .flashing_recent_firmwares
+                    .is_empty()
+            );
+        });
+
+        let reopened = cx.new(|cx| FlashingPanel::new(cx.focus_handle(), settings, cx));
+        reopened.update(cx, |panel, cx| {
+            panel.firmware_ready(
+                super::FirmwareInfo {
+                    partitions: vec![
+                        super::FirmwarePartition {
+                            index: 0,
+                            name: "boot".into(),
+                        },
+                        super::FirmwarePartition {
+                            index: 1,
+                            name: "rootfs".into(),
+                        },
+                    ],
+                    capabilities: super::FirmwareCapabilities::default(),
+                },
+                cx,
+            );
+            assert_eq!(
+                panel
+                    .selected_partitions
+                    .iter()
+                    .copied()
+                    .collect::<Vec<_>>(),
+                vec![0]
+            );
+        });
+    }
+
+    #[gpui_kit::test]
+    fn partition_checkboxes_progress_on_left_and_layout_reset_work(cx: &mut TestAppContext) {
+        use gpui_kit::{component::Root, px, size, test::TestWindowExt as _};
+
+        cx.update(gpui_kit::component::init);
+        let settings = cx.new(|_| crate::settings::SettingsStore::in_memory());
+        settings.update(cx, |store, cx| {
+            store.update(|settings| settings.flashing_log_width = Some(500.), cx);
+        });
+        let panel = cx.new(|cx| FlashingPanel::new(cx.focus_handle(), settings.clone(), cx));
+        panel.update(cx, |panel, cx| {
+            panel.partition_mode = true;
+            panel.partitions = vec![
+                super::FirmwarePartition {
+                    index: 0,
+                    name: "boot0".into(),
+                },
+                super::FirmwarePartition {
+                    index: 1,
+                    name: "uboot".into(),
+                },
+                super::FirmwarePartition {
+                    index: 5,
+                    name: "ROOTFS".into(),
+                },
+            ];
+            panel.phase = Phase::Ready;
+            cx.notify();
+        });
+        let handle = cx.open_window(size(px(1280.), px(800.)), |window, cx| {
+            Root::new(panel.clone(), window, cx)
+        });
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            let p0 = window.find("flashing-partition-0");
+            let p5 = window.find("flashing-partition-5");
+            assert!(p0.visible());
+            assert!(p5.visible());
+            assert!(p0.bounds().size.height > px(0.));
+            assert!(p5.bounds().size.height > px(0.));
+
+            let progress = window.find("flashing-primary-progress");
+            let log = window.find("flashing-log");
+            assert!(progress.bounds().right() <= log.bounds().left());
+        })
+        .unwrap();
+
+        panel.update(cx, |panel, cx| {
+            panel.command(super::FlashingCommand::ResetLayout, cx);
+        });
+        settings.read_with(cx, |store, _| {
+            assert_eq!(store.settings().flashing_log_width, None);
         });
     }
 }

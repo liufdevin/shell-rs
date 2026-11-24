@@ -45,6 +45,23 @@ pub enum Command {
         device: String,
         user: String,
     },
+    Screen {
+        server: String,
+        device: String,
+    },
+    DebugDialog(Option<String>),
+    OpenDebugScreen {
+        url: String,
+        device_id: String,
+        key: Secret,
+    },
+    RegisterDialog(Option<String>),
+    RegisterAccount {
+        url: String,
+        name: String,
+        username: String,
+        password: Secret,
+    },
 }
 
 pub struct RemotePanel {
@@ -123,14 +140,38 @@ impl RemotePanel {
     }
 
     pub fn toolbar_buttons(&self) -> Vec<Button> {
-        let dispatch = self.dispatch.clone();
+        let debug_dispatch = self.dispatch.clone();
+        let register_dispatch = self.dispatch.clone();
+        let add_dispatch = self.dispatch.clone();
         vec![
+            Button::new("remote-debug-open")
+                .icon(CatalogIcon::Monitor)
+                .tooltip(t!("remote.debug.open"))
+                .accessibility_label(t!("remote.debug.open"))
+                .on_click(move |_, window, cx| {
+                    debug_dispatch.dispatch_action(
+                        &RemoteAction(Command::DebugDialog(None)),
+                        window,
+                        cx,
+                    )
+                }),
+            Button::new("remote-register-open")
+                .icon(CatalogIcon::UserRoundKey)
+                .tooltip(t!("remote.register.open"))
+                .accessibility_label(t!("remote.register.open"))
+                .on_click(move |_, window, cx| {
+                    register_dispatch.dispatch_action(
+                        &RemoteAction(Command::RegisterDialog(None)),
+                        window,
+                        cx,
+                    )
+                }),
             Button::new("remote-add")
                 .icon(IconName::Plus)
                 .tooltip(t!("remote.add"))
                 .accessibility_label(t!("remote.add"))
                 .on_click(move |_, window, cx| {
-                    dispatch.dispatch_action(&RemoteAction(Command::Add), window, cx)
+                    add_dispatch.dispatch_action(&RemoteAction(Command::Add), window, cx)
                 }),
         ]
     }
@@ -147,6 +188,15 @@ impl RemotePanel {
             .remote_servers
             .into_iter()
             .find(|server| server.id == id)
+    }
+
+    fn default_server_url(&self, cx: &App) -> Option<String> {
+        let servers = self.settings.read(cx).settings().remote_servers;
+        self.selected
+            .as_deref()
+            .and_then(|id| servers.iter().find(|server| server.id == id))
+            .or_else(|| servers.first())
+            .map(|server| server.url.clone())
     }
 
     pub fn command(&mut self, command: Command, window: &mut Window, cx: &mut Context<Self>) {
@@ -296,6 +346,61 @@ impl RemotePanel {
                     self.service
                         .update(cx, |service, cx| service.run(Operation::Forget(id), cx));
                 }
+            }
+            Command::Screen { server, device } => {
+                if self.service.read(cx).is_logged_in(&server) {
+                    self.service.update(cx, |service, cx| {
+                        service.run(Operation::OpenScreen(server, device), cx)
+                    });
+                }
+            }
+            Command::DebugDialog(server_id) => {
+                let url = server_id
+                    .as_deref()
+                    .and_then(|id| self.server(id, cx).map(|server| server.url))
+                    .or_else(|| self.default_server_url(cx));
+                super::debug_dialog::open(url, self.dispatch.clone(), window, cx);
+            }
+            Command::OpenDebugScreen {
+                url,
+                device_id,
+                key,
+            } => {
+                self.service.update(cx, |service, cx| {
+                    service.run(
+                        Operation::OpenDebugScreen {
+                            url,
+                            device_id,
+                            key,
+                        },
+                        cx,
+                    )
+                });
+            }
+            Command::RegisterDialog(server_id) => {
+                let url = server_id
+                    .as_deref()
+                    .and_then(|id| self.server(id, cx).map(|server| server.url))
+                    .or_else(|| self.default_server_url(cx));
+                super::register_dialog::open(url, self.dispatch.clone(), window, cx);
+            }
+            Command::RegisterAccount {
+                url,
+                name,
+                username,
+                password,
+            } => {
+                self.service.update(cx, |service, cx| {
+                    service.run(
+                        Operation::Register {
+                            url,
+                            name,
+                            username,
+                            password,
+                        },
+                        cx,
+                    )
+                });
             }
             Command::Select(_) | Command::Ssh { .. } => {}
         }
@@ -505,6 +610,12 @@ impl Render for RemotePanel {
                     .child(t!("remote.no_matches")),
             );
         }
+        let global_status = (!service.status.is_empty()
+            && !service
+                .statuses
+                .values()
+                .any(|entry| entry.message == service.status))
+        .then(|| (service.status.clone(), service.status_error));
         v_flex()
             .id("remote-management")
             .test_support()
@@ -521,6 +632,24 @@ impl Render for RemotePanel {
                         .prefix(Icon::new(IconName::Search).small()),
                 ),
             )
+            .when_some(global_status, |view, (message, failed)| {
+                view.child(
+                    div()
+                        .id("remote-global-status")
+                        .test_support()
+                        .role(Role::Status)
+                        .aria_label(message.clone())
+                        .px_3()
+                        .pb_2()
+                        .text_xs()
+                        .text_color(if failed {
+                            cx.theme().danger
+                        } else {
+                            cx.theme().muted_foreground
+                        })
+                        .child(message),
+                )
+            })
             .child(
                 div()
                     .flex_1()
@@ -581,6 +710,17 @@ fn server_menu(
     }
     menu.separator()
         .item(item(
+            t!("remote.debug.open"),
+            Command::DebugDialog(Some(id.into())),
+            busy,
+        ))
+        .item(item(
+            t!("remote.register.open"),
+            Command::RegisterDialog(Some(id.into())),
+            busy,
+        ))
+        .separator()
+        .item(item(
             t!("remote.edit_login"),
             Command::Edit(id.into()),
             busy,
@@ -596,6 +736,12 @@ pub(super) fn describe(code: &str) -> SharedString {
         "client_address_pool_exhausted" => "remote.error.pool",
         "client_acl_not_configured" => "remote.error.acl",
         "network_disabled" | "no_authorized_devices" => "remote.no_networks",
+        "not_ready" => "remote.error.screen_not_ready",
+        "debug_unavailable" => "remote.error.debug_unavailable",
+        "rate_limited" => "remote.error.rate_limited",
+        "busy" => "remote.error.debug_busy",
+        "conflict" => "remote.error.register_conflict",
+        "invalid_params" => "remote.error.invalid_params",
         "missing_backend" | "backend_hash_mismatch" => "remote.error.backend",
         "route_conflict" => "remote.error.route",
         "network_launch_cancelled" | "network_cancelled" => "remote.error.cancelled",

@@ -624,3 +624,41 @@ async fn detection_failure_clears_old_devices_and_refresh_can_recover(cx: &mut T
         assert!(window.find("android-install").visible());
     });
 }
+
+#[gpui_kit::test]
+async fn apk_install_shows_installing_state_until_finished(cx: &mut TestAppContext) {
+    let tools = Arc::new(Tools::default());
+    tools.hold.store(true, Ordering::SeqCst);
+    let (handle, _workspace) = open(cx, vec![("android", "Helper A133")], tools.clone());
+    detected(cx, handle).await;
+    let dir = tempfile::tempdir().unwrap();
+    let apk = dir.path().join("demo-release.apk");
+    std::fs::write(&apk, "test APK").unwrap();
+    in_frame(cx, handle, |window, cx| window.click("android-install", cx));
+    cx.simulate_path_prompt_response(|options| {
+        assert!(options.files && !options.directories && !options.multiple);
+        Some(vec![apk.clone()])
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(5), |_, _| {
+        tools.count("install:android:") == 1
+    })
+    .await;
+    in_frame(cx, handle, |window, _| {
+        assert_eq!(window.find("android-install").label(), Some("安装中…"));
+        assert!(!enabled(&window.find("android-install")));
+        assert!(
+            window
+                .find("android-working")
+                .label()
+                .unwrap_or_default()
+                .contains("正在安装 demo-release.apk")
+        );
+    });
+    tools.hold.store(false, Ordering::SeqCst);
+    message(cx, handle, "android-result", "APK 安装成功").await;
+    in_frame(cx, handle, |window, _| {
+        assert_eq!(window.find("android-install").label(), Some("安装 APK…"));
+        assert!(enabled(&window.find("android-install")));
+        assert!(window.try_find("android-working").is_none());
+    });
+}

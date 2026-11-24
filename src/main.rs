@@ -11,6 +11,21 @@ use shellrs::settings::{SettingsProblem, SettingsStore};
 fn main() {
     let logging = shellrs::app::logging::init();
     let args = shellrs::cli::command_line_arguments().unwrap_or_default();
+    if args.len() == 1 && args[0] == shellrs::remote::REMOTE_SCREEN_ARG {
+        let (settings, _) = open_settings();
+        shellrs::i18n::set_locale(settings.settings().language.resolved());
+        let code = match shellrs::remote::run_screen_viewer_from_stdin() {
+            Ok(()) => 0,
+            Err(error) => {
+                tracing::error!(%error, "Remote screen viewer exited with error");
+                1
+            }
+        };
+        if let Some(logging) = &logging {
+            logging.flush();
+        }
+        std::process::exit(code);
+    }
     let admin_terminal = match shellrs::workspace::AdminTerminalRequest::parse_startup(&args) {
         Ok(request) => request,
         Err(error) => {
