@@ -296,7 +296,7 @@ fn the_application_page_omits_updates_privacy_and_the_website(cx: &mut TestAppCo
 fn open_about_settings(cx: &mut TestAppContext, handle: WindowHandle<Root>) {
     in_frame(cx, handle, |window, cx| window.click("open-settings", cx));
     in_frame(cx, handle, |window, cx| {
-        window.within("settings").click("0-7", cx)
+        window.within("settings").click("0-8", cx)
     });
 }
 

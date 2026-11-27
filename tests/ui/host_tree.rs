@@ -1305,17 +1305,20 @@ fn the_arrow_keys_move_through_the_host_tree(cx: &mut TestAppContext) {
     // The fixture's terminal takes the focus as its tab comes forward.
     in_frame(cx, handle, |_, _| {});
     in_frame(cx, handle, |window, cx| {
-        window.click(("host-row", WEB_01), cx)
+        window.click(("host-row", DB_01), cx)
     });
     in_frame(cx, handle, |window, cx| {
-        assert!(selected(window, ("host-row", WEB_01)));
+        assert!(selected(window, ("host-row", DB_01)));
         assert_eq!(window.find("host-tree").focused(), Some(true));
         window.press("down", cx);
     });
     in_frame(cx, handle, |window, cx| {
-        assert!(selected(window, ("host-row", WEB_02)));
-        assert!(!selected(window, ("host-row", WEB_01)));
+        assert!(selected(window, ("host-row", WEB_01)));
+        assert!(!selected(window, ("host-row", DB_01)));
         window.press("up", cx);
+    });
+    in_frame(cx, handle, |window, cx| {
+        assert!(selected(window, ("host-row", DB_01)));
         window.press("up", cx);
     });
     in_frame(cx, handle, |window, cx| {
@@ -1331,16 +1334,16 @@ fn the_arrow_keys_move_through_the_host_tree(cx: &mut TestAppContext) {
             window.find(("group-row", PRODUCTION)).expanded(),
             Some(false)
         );
-        assert!(window.try_find(("host-row", WEB_01)).is_none());
+        assert!(window.try_find(("host-row", DB_01)).is_none());
         // Folded already: Left again leaves it so.
         window.press("left", cx);
     });
     in_frame(cx, handle, |window, cx| {
-        assert!(window.try_find(("host-row", WEB_01)).is_none());
+        assert!(window.try_find(("host-row", DB_01)).is_none());
         window.press("right", cx);
     });
     in_frame(cx, handle, |window, cx| {
-        assert!(window.find(("host-row", WEB_01)).visible());
+        assert!(window.find(("host-row", DB_01)).visible());
         assert!(selected(window, ("group-row", PRODUCTION)));
         // Up from the first row goes round to the last.
         window.press("up", cx);

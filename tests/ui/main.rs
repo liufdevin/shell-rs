@@ -10,6 +10,7 @@ mod support;
 mod analytics;
 mod android;
 mod app_lock;
+mod assistant;
 mod cli;
 mod compose;
 mod connection;

@@ -451,10 +451,14 @@ async fn a_local_file_is_edited_on_this_machine(cx: &mut TestAppContext) {
     open_file(cx, handle, "local-pane", "文件 甲.txt");
     wait_for_editor(cx, handle, FIRST).await;
     assert_eq!(text_of(&workspace, FIRST, cx), "local\n");
+    let displayed_path = std::path::Path::new("/local/tester")
+        .join("文件 甲.txt")
+        .to_string_lossy()
+        .into_owned();
     in_frame(cx, handle, |window, _| {
         assert_eq!(
             window.find(("editor-path", FIRST.0)).label(),
-            Some(LOCAL_FILE)
+            Some(displayed_path.as_str())
         );
         assert_eq!(window.find("status-connection").label(), Some("本机文件"));
     });
@@ -475,7 +479,7 @@ async fn a_local_file_is_edited_on_this_machine(cx: &mut TestAppContext) {
             .calls
             .lock()
             .unwrap()
-            .contains(&format!("write {LOCAL_FILE}"))
+            .contains(&format!("write {displayed_path}"))
     );
     // Nothing went to the server.
     assert!(provider.writes.lock().unwrap().is_empty());

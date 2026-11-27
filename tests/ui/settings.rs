@@ -568,8 +568,9 @@ fn the_about_category_shows_the_current_version_in_both_languages(cx: &mut TestA
             assert!(window.within("settings").try_find("0-7").is_some());
             assert!(window.within("settings").try_find("0-8").is_some());
             assert!(window.within("settings").try_find("0-9").is_some());
-            assert!(window.within("settings").try_find("0-10").is_none());
-            window.within("settings").click("0-9", cx);
+            assert!(window.within("settings").try_find("0-10").is_some());
+            assert!(window.within("settings").try_find("0-11").is_none());
+            window.within("settings").click("0-10", cx);
             assert_eq!(
                 window.find("about-version").label(),
                 Some(format!("v{}", env!("CARGO_PKG_VERSION")).as_str())
@@ -1036,7 +1037,7 @@ fn the_window_settings_are_on_until_turned_off(cx: &mut TestAppContext) {
     };
     in_frame(cx, handle, |window, cx| window.click("open-settings", cx));
     in_frame(cx, handle, |window, cx| {
-        window.within("settings").click("0-7", cx)
+        window.within("settings").click("0-8", cx)
     });
     let switch = |item: usize| {
         move |window: &mut gpui_kit::Window| {
@@ -1068,7 +1069,7 @@ fn closing_to_the_tray_is_off_and_offered_only_on_windows(cx: &mut TestAppContex
     let (handle, workspace) = open_workspace(cx);
     in_frame(cx, handle, |window, cx| window.click("open-settings", cx));
     in_frame(cx, handle, |window, cx| {
-        window.within("settings").click("0-7", cx);
+        window.within("settings").click("0-8", cx);
     });
     in_frame(cx, handle, |window, _| {
         let offered = gpui_kit::base::test_support::snapshots(window)
