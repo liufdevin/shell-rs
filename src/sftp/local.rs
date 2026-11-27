@@ -438,7 +438,7 @@ mod tests {
         let stamp = write_local_text(
             &provider,
             &link,
-            &file.format().encode("new\n"),
+            &file.format().encode("new\n").unwrap(),
             Some(file.stamp()),
         )
         .unwrap();

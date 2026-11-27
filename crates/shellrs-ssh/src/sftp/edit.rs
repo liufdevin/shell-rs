@@ -9,8 +9,11 @@
 use super::{EditError, EntryKind, FileMetadata, Reason, RemotePath, client::RemoteFs};
 use crate::{Wrapped, wrap};
 use anyhow::{Result, anyhow, bail};
+use chardetng::{EncodingDetector, Iso2022JpDetection, Utf8Detection};
+use encoding_rs::{EncoderResult, Encoding, GB18030, GBK, UTF_8};
 use futures::{StreamExt as _, stream::FuturesUnordered};
 use std::{
+    borrow::Cow,
     error::Error,
     fmt,
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -58,15 +61,42 @@ impl FileStamp {
 
 /// How a text file is laid out on disk, kept so that a save writes it back
 /// the same way.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TextFormat {
+    /// UTF-8, or the encoding the file was found to be in, as GBK.
+    encoding: &'static Encoding,
     bom: bool,
     crlf: bool,
+    /// Some lines end in CRLF and others in LF: written back exactly as
+    /// they are.
+    mixed: bool,
+}
+
+impl Default for TextFormat {
+    /// A new file's: UTF-8 with LF.
+    fn default() -> Self {
+        Self::new(false, false)
+    }
 }
 
 impl TextFormat {
+    /// UTF-8, with or without a byte order mark.
     pub fn new(bom: bool, crlf: bool) -> Self {
-        Self { bom, crlf }
+        Self {
+            encoding: UTF_8,
+            bom,
+            crlf,
+            mixed: false,
+        }
+    }
+    /// The encoding's name as people write it: 「UTF-8」, 「GBK」,
+    /// 「GB18030」, 「Big5」, 「Shift_JIS」, 「windows-1252」.
+    pub fn encoding_name(&self) -> &'static str {
+        if self.encoding == GB18030 {
+            "GB18030"
+        } else {
+            self.encoding.name()
+        }
     }
     /// The file starts with a UTF-8 byte order mark.
     pub fn bom(&self) -> bool {
@@ -76,20 +106,100 @@ impl TextFormat {
     pub fn crlf(&self) -> bool {
         self.crlf
     }
-    /// The bytes to write for `text` as the editor holds it.
-    pub fn encode(&self, text: &str) -> Vec<u8> {
-        let mut bytes = Vec::with_capacity(text.len() + 3);
+    /// The bytes to write for `text` as the editor holds it, unless the
+    /// file's encoding has none for one of its characters.
+    pub fn encode(&self, text: &str) -> Result<Vec<u8>, Unencodable> {
+        let text: Cow<str> = if self.crlf {
+            // A CRLF pasted in stays one line break.
+            text.replace("\r\n", "\n").replace('\n', "\r\n").into()
+        } else if self.mixed {
+            text.into()
+        } else {
+            // A CRLF pasted in, as the Windows clipboard holds text, takes
+            // the file's LF: a shell script's `\` would not continue a line
+            // ending in CR (issue #129).
+            text.replace("\r\n", "\n").into()
+        };
+        if self.encoding != UTF_8 {
+            return encode_strictly(self.encoding, &text).map_err(|character| Unencodable {
+                character,
+                encoding: self.encoding_name(),
+            });
+        }
+        let mut bytes = Vec::with_capacity(text.len() + BOM.len());
         if self.bom {
             bytes.extend_from_slice(BOM);
         }
-        if self.crlf {
-            // A CRLF pasted in stays one line break.
-            bytes.extend_from_slice(text.replace("\r\n", "\n").replace('\n', "\r\n").as_bytes());
-        } else {
-            bytes.extend_from_slice(text.as_bytes());
-        }
-        bytes
+        bytes.extend_from_slice(text.as_bytes());
+        Ok(bytes)
     }
+}
+
+/// A character the file's encoding has no bytes for, as an emoji in a GBK
+/// file. Nothing is written: encoding_rs would put `&#128512;` in its place.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Unencodable {
+    character: char,
+    encoding: &'static str,
+}
+
+impl Unencodable {
+    pub fn character(&self) -> char {
+        self.character
+    }
+    /// As [`TextFormat::encoding_name`] gives it.
+    pub fn encoding_name(&self) -> &'static str {
+        self.encoding
+    }
+}
+
+impl fmt::Display for Unencodable {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} has no bytes for {:?}", self.encoding, self.character)
+    }
+}
+
+impl Error for Unencodable {}
+
+/// `text` in `encoding`, or the first character it has no bytes for.
+fn encode_strictly(encoding: &'static Encoding, text: &str) -> Result<Vec<u8>, char> {
+    let mut encoder = encoding.new_encoder();
+    let mut bytes = Vec::new();
+    let mut rest = text;
+    loop {
+        let room = encoder
+            .max_buffer_length_from_utf8_without_replacement(rest.len())
+            .unwrap_or(rest.len());
+        bytes.reserve(room);
+        let (result, read) =
+            encoder.encode_from_utf8_to_vec_without_replacement(rest, &mut bytes, true);
+        rest = &rest[read..];
+        match result {
+            EncoderResult::InputEmpty => return Ok(bytes),
+            EncoderResult::Unmappable(character) => return Err(character),
+            EncoderResult::OutputFull => {}
+        }
+    }
+}
+
+/// Text that is not UTF-8 in the encoding Firefox's detector takes it to
+/// be, as GBK in an old project's XML (issue #159), if that reads back to
+/// the very same bytes: a save then changes nothing the user did not.
+/// GB18030 is guessed as GBK; a file with characters GBK has none for is
+/// GB18030.
+fn legacy_text(bytes: &[u8]) -> Option<(String, &'static Encoding)> {
+    let mut detector = EncodingDetector::new(Iso2022JpDetection::Deny);
+    detector.feed(bytes, true);
+    let guess = detector.guess(None, Utf8Detection::Deny);
+    let candidates = if guess == GBK {
+        vec![GBK, GB18030]
+    } else {
+        vec![guess]
+    };
+    candidates.into_iter().find_map(|encoding| {
+        let text = encoding.decode_without_bom_handling_and_without_replacement(bytes)?;
+        (encode_strictly(encoding, &text).ok()? == bytes).then(|| (text.into_owned(), encoding))
+    })
 }
 
 /// A file read for editing.
@@ -101,9 +211,10 @@ pub struct TextFile {
 }
 
 impl TextFile {
-    /// UTF-8 text, with or without a byte order mark. A file whose lines all
-    /// end in CRLF is shown with LF and written back with CRLF; one with
-    /// mixed line ends is kept exactly as it is. Only refuses, so any kind of
+    /// UTF-8 text, with or without a byte order mark, or text in another
+    /// encoding that can be told, as GBK. A file whose lines all end in
+    /// CRLF is shown with LF and written back with CRLF; one with mixed
+    /// line ends is kept exactly as it is. Only refuses, so any kind of
     /// failure will do.
     pub fn decode<F>(mut bytes: Vec<u8>, stamp: FileStamp) -> Result<Self, ReadFailure<F>> {
         if bytes[..bytes.len().min(BINARY_PROBE)].contains(&0) {
@@ -113,9 +224,15 @@ impl TextFile {
         if bom {
             bytes.drain(..BOM.len());
         }
-        let text = String::from_utf8(bytes).map_err(|_| ReadFailure::NotText)?;
+        let (text, encoding) = match String::from_utf8(bytes) {
+            Ok(text) => (text, UTF_8),
+            // The mark says UTF-8: a byte that is not means a damaged file.
+            Err(_) if bom => return Err(ReadFailure::NotText),
+            Err(error) => legacy_text(error.as_bytes()).ok_or(ReadFailure::NotText)?,
+        };
         let crlf_count = text.matches("\r\n").count();
         let crlf = crlf_count > 0 && crlf_count == text.matches('\n').count();
+        let mixed = crlf_count > 0 && !crlf;
         let text = if crlf {
             text.replace("\r\n", "\n")
         } else {
@@ -123,7 +240,12 @@ impl TextFile {
         };
         Ok(Self {
             text,
-            format: TextFormat { bom, crlf },
+            format: TextFormat {
+                encoding,
+                bom,
+                crlf,
+                mixed,
+            },
             stamp,
         })
     }
@@ -159,7 +281,7 @@ pub enum ReadFailure<F> {
     NotFile,
     /// Larger than `EDIT_LIMIT`; the size in bytes.
     TooLarge(u64),
-    /// Binary, or text in an encoding other than UTF-8.
+    /// Binary, or text in an encoding that cannot be told.
     NotText,
     Failed(F),
 }
@@ -169,7 +291,7 @@ impl<F: fmt::Display> fmt::Display for ReadFailure<F> {
         match self {
             ReadFailure::NotFile => f.write_str("not a regular file"),
             ReadFailure::TooLarge(size) => write!(f, "file too large ({size} bytes)"),
-            ReadFailure::NotText => f.write_str("not a UTF-8 text file"),
+            ReadFailure::NotText => f.write_str("not a text file in an encoding that can be told"),
             ReadFailure::Failed(failure) => failure.fmt(f),
         }
     }
@@ -374,6 +496,64 @@ async fn read_all<F: RemoteFs>(fs: &F, handle: &str, size: u64, text: bool) -> R
     }
 }
 
+/// What [`read_file_start`] read: the start of a file, and how long it is.
+#[derive(Debug)]
+pub struct FileStart {
+    pub bytes: Vec<u8>,
+    pub size: u64,
+}
+
+/// The first `limit` bytes of a remote text file and its size, following
+/// links, on an SFTP channel `opener` opens beside a terminal's shell: for
+/// someone to read, such as the AI assistant, not to edit. `~` and a path
+/// that does not start at `/` are the home folder's. Refused as
+/// [`read_text`] refuses (a [`ReadFailure`] inside the error) when it is
+/// not a file or not text.
+pub async fn read_file_start(
+    opener: &dyn super::SftpChannelOpener,
+    path: &str,
+    limit: u64,
+) -> Result<FileStart> {
+    let client = super::client::SftpClient::on_channel(opener).await?;
+    read_start(&client, path, limit).await
+}
+
+pub(super) async fn read_start(
+    fs: &super::client::SftpClient,
+    path: &str,
+    limit: u64,
+) -> Result<FileStart> {
+    let path = if path.starts_with('/') {
+        RemotePath::new(path)?
+    } else {
+        let home = fs.canonicalize(&RemotePath::new(".")?).await?;
+        let rest = path
+            .strip_prefix('~')
+            .unwrap_or(path)
+            .trim_start_matches('/');
+        if rest.is_empty() {
+            home
+        } else {
+            RemotePath::new(format!("{}/{rest}", home.as_str().trim_end_matches('/')))?
+        }
+    };
+    let Some(metadata) = fs.stat(&path).await? else {
+        bail!(EditError::Missing);
+    };
+    if metadata.kind() != EntryKind::File {
+        return Err(Refusal::NotFile.into());
+    }
+    let handle = fs.open_read(&path).await?;
+    let bytes = read_all(fs, &handle, metadata.size().min(limit), true).await;
+    let close = fs.close(&handle).await;
+    let bytes = bytes?;
+    close?;
+    Ok(FileStart {
+        bytes,
+        size: metadata.size(),
+    })
+}
+
 /// Write `bytes` over a remote file in place, following links and creating
 /// it when it is gone. With `expected`, the file must still match it, or
 /// the save fails with `SaveFailure::Changed` and nothing is written; a
@@ -444,7 +624,10 @@ mod tests {
         let file = decode("a\nb\n中文").unwrap();
         assert_eq!(file.text(), "a\nb\n中文");
         assert_eq!(file.format(), TextFormat::default());
-        assert_eq!(file.format().encode(file.text()), "a\nb\n中文".as_bytes());
+        assert_eq!(
+            file.format().encode(file.text()).unwrap(),
+            "a\nb\n中文".as_bytes()
+        );
     }
 
     #[test]
@@ -452,9 +635,12 @@ mod tests {
         let file = decode(b"a\r\nb\r\n").unwrap();
         assert_eq!(file.text(), "a\nb\n");
         assert!(file.format().crlf());
-        assert_eq!(file.format().encode("a\nb\nc\n"), b"a\r\nb\r\nc\r\n");
+        assert_eq!(
+            file.format().encode("a\nb\nc\n").unwrap(),
+            b"a\r\nb\r\nc\r\n"
+        );
         // A CRLF pasted in does not become CR CR LF.
-        assert_eq!(file.format().encode("a\r\nb"), b"a\r\nb");
+        assert_eq!(file.format().encode("a\r\nb").unwrap(), b"a\r\nb");
     }
 
     #[test]
@@ -462,7 +648,29 @@ mod tests {
         let file = decode(b"a\r\nb\nc").unwrap();
         assert_eq!(file.text(), "a\r\nb\nc");
         assert!(!file.format().crlf());
-        assert_eq!(file.format().encode(file.text()), b"a\r\nb\nc");
+        assert_eq!(file.format().encode(file.text()).unwrap(), b"a\r\nb\nc");
+        assert_eq!(
+            file.format().encode("a\r\nb\nx\r\n").unwrap(),
+            b"a\r\nb\nx\r\n"
+        );
+    }
+
+    /// Text pasted from the Windows clipboard comes with CRLF; written into
+    /// a script as it is, its `\` would no longer continue the line
+    /// (issue #129).
+    #[test]
+    fn crlf_pasted_into_an_lf_file_takes_its_lf() {
+        let file = decode("ls \\\n  -l\n").unwrap();
+        assert_eq!(
+            file.format()
+                .encode("ls \\\n  -l\nbash run.sh \\\r\n  --master local\r\n")
+                .unwrap(),
+            b"ls \\\n  -l\nbash run.sh \\\n  --master local\n"
+        );
+        // A lone CR is no line end, and stays.
+        assert_eq!(file.format().encode("a\rb\n").unwrap(), b"a\rb\n");
+        // A new file is LF too.
+        assert_eq!(TextFormat::default().encode("a\r\nb").unwrap(), b"a\nb");
     }
 
     #[test]
@@ -470,15 +678,113 @@ mod tests {
         let file = decode(b"\xEF\xBB\xBFkey=1\r\n").unwrap();
         assert_eq!(file.text(), "key=1\n");
         assert_eq!(file.format(), TextFormat::new(true, true));
-        assert_eq!(file.format().encode("key=2\n"), b"\xEF\xBB\xBFkey=2\r\n");
+        assert_eq!(
+            file.format().encode("key=2\n").unwrap(),
+            b"\xEF\xBB\xBFkey=2\r\n"
+        );
     }
 
     #[test]
-    fn binary_and_other_encodings_are_not_text() {
+    fn binary_is_not_text() {
         assert_eq!(decode(b"PK\x03\x04\x00\x00"), Err(ReadFailure::NotText));
-        // 「中文」 in GBK.
-        assert_eq!(decode(b"\xD6\xD0\xCE\xC4"), Err(ReadFailure::NotText));
         assert_eq!(decode(Vec::new()).unwrap().text(), "");
+        // The mark says UTF-8, so 「中文」 in GBK after it is damage.
+        assert_eq!(
+            decode(b"\xEF\xBB\xBF\xD6\xD0\xCE\xC4"),
+            Err(ReadFailure::NotText)
+        );
+    }
+
+    /// `text` in `encoding`, as a file of an old project holds it.
+    fn legacy(encoding: &'static Encoding, text: &str) -> Vec<u8> {
+        let (bytes, _, unmappable) = encoding.encode(text);
+        assert!(!unmappable);
+        bytes.into_owned()
+    }
+
+    /// An old project's XML in GBK (issue #159) opens, and is written back
+    /// in GBK, untouched bytes as they were.
+    #[test]
+    fn gbk_is_read_and_written_back_as_gbk() {
+        let xml = "<?xml version=\"1.0\" encoding=\"GBK\"?>\r\n\
+                   <!-- 数据库连接配置，修改后需要重启服务 -->\r\n\
+                   <config name=\"订单系统\">\r\n</config>\r\n";
+        let bytes = legacy(GBK, xml);
+        let file = decode(bytes.clone()).unwrap();
+        assert_eq!(file.text(), xml.replace("\r\n", "\n"));
+        assert_eq!(file.format().encoding_name(), "GBK");
+        assert!(file.format().crlf());
+        assert!(!file.format().bom());
+        assert_eq!(file.format().encode(file.text()).unwrap(), bytes);
+        let edited = file.text().replace("订单系统", "库存系统");
+        assert_eq!(
+            file.format().encode(&edited).unwrap(),
+            legacy(GBK, &xml.replace("订单系统", "库存系统"))
+        );
+        // GB2312 is part of GBK.
+        let file = decode(legacy(GBK, "简体中文的说明文字，一共两行。\n第二行。\n")).unwrap();
+        assert_eq!(file.format().encoding_name(), "GBK");
+    }
+
+    /// GBK's A3 A0 reads as a private-use character that GBK writes no
+    /// bytes for: saving would change the file, so it does not open.
+    #[test]
+    fn what_would_not_be_written_back_the_same_does_not_open() {
+        let mut bytes = legacy(GBK, "中文配置");
+        bytes.extend_from_slice(b"\xA3\xA0\n");
+        assert!(
+            GBK.decode_without_bom_handling_and_without_replacement(&bytes)
+                .is_some()
+        );
+        assert_eq!(decode(bytes), Err(ReadFailure::NotText));
+    }
+
+    /// Nothing is written rather than `&#128512;` in place of what GBK has
+    /// no bytes for.
+    #[test]
+    fn what_the_encoding_cannot_hold_is_not_written() {
+        let file = decode(legacy(GBK, "# 服务器的启动参数和日志目录\n")).unwrap();
+        let failure = file.format().encode("# 启动参数 😀\n").unwrap_err();
+        assert_eq!(failure.character(), '😀');
+        assert_eq!(failure.encoding_name(), "GBK");
+        // UTF-8 holds everything.
+        assert!(TextFormat::default().encode("😀").is_ok());
+    }
+
+    /// GB18030 is guessed as GBK; characters GBK lacks make it GB18030,
+    /// written back as such.
+    #[test]
+    fn gb18030_beyond_gbk_stays_gb18030() {
+        let text = "数据库的连接配置文件，修改以后需要重启服务😀\n";
+        let bytes = legacy(GB18030, text);
+        let file = decode(bytes.clone()).unwrap();
+        assert_eq!(file.text(), text);
+        assert_eq!(file.format().encoding_name(), "GB18030");
+        assert_eq!(file.format().encode(text).unwrap(), bytes);
+    }
+
+    #[test]
+    fn other_encodings_are_told_too() {
+        for (encoding, text) in [
+            (
+                encoding_rs::BIG5,
+                "資料庫連線設定，修改之後需要重新啟動服務。\n",
+            ),
+            (
+                encoding_rs::SHIFT_JIS,
+                "データベースの接続設定です。変更後は再起動してください。\n",
+            ),
+            (
+                encoding_rs::WINDOWS_1252,
+                "Café crème, déjà vu et garçon à l'hôtel.\n",
+            ),
+        ] {
+            let bytes = legacy(encoding, text);
+            let file = decode(bytes.clone()).unwrap();
+            assert_eq!(file.text(), text, "{}", encoding.name());
+            assert_eq!(file.format().encoding_name(), encoding.name());
+            assert_eq!(file.format().encode(text).unwrap(), bytes);
+        }
     }
 
     #[test]

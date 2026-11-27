@@ -257,6 +257,75 @@ async fn crlf_and_a_byte_order_mark_are_written_back_as_they_were(cx: &mut TestA
     );
 }
 
+/// Text pasted from the Windows clipboard comes with CRLF; an LF script
+/// keeps its LF, or a `\` at a line's end would no longer continue it
+/// (issue #129).
+#[gpui_kit::test]
+async fn crlf_pasted_into_an_lf_file_is_saved_as_lf(cx: &mut TestAppContext) {
+    let (handle, workspace, provider) = open_server(cx, &[(REMOTE_FILE, b"echo done\n")]).await;
+    open_file(cx, handle, "remote-pane", "文件 甲.txt");
+    wait_for_editor(cx, handle, FIRST).await;
+
+    cx.update(|cx| {
+        cx.write_to_clipboard(ClipboardItem::new_string(
+            "bash run.sh \\\r\n  --master local\r\n".into(),
+        ))
+    });
+    in_frame(cx, handle, |window, cx| window.press("secondary-v", cx));
+    // The editor holds what was pasted as it came.
+    assert_eq!(
+        text_of(&workspace, FIRST, cx),
+        "bash run.sh \\\r\n  --master local\r\necho done\n"
+    );
+    in_frame(cx, handle, |window, cx| window.press("secondary-s", cx));
+    wait_for_writes(cx, &provider, 1).await;
+    assert_eq!(
+        provider.writes.lock().unwrap()[0].1,
+        b"bash run.sh \\\n  --master local\necho done\n"
+    );
+}
+
+/// An old project's XML in GBK opens, says so, and is saved in GBK
+/// (issue #159). What GBK cannot hold is not written.
+#[gpui_kit::test]
+async fn a_gbk_file_is_edited_and_saved_in_gbk(cx: &mut TestAppContext) {
+    // 「<!-- 数据库配置 -->」「<name>订单系统</name>」 in GBK.
+    let gbk: &[u8] = b"<!-- \xCA\xFD\xBE\xDD\xBF\xE2\xC5\xE4\xD6\xC3 -->\r\n\
+                       <name>\xB6\xA9\xB5\xA5\xCF\xB5\xCD\xB3</name>\r\n";
+    let (handle, workspace, provider) = open_server(cx, &[(REMOTE_FILE, gbk)]).await;
+    open_file(cx, handle, "remote-pane", "文件 甲.txt");
+    wait_for_editor(cx, handle, FIRST).await;
+    assert_eq!(
+        text_of(&workspace, FIRST, cx),
+        "<!-- 数据库配置 -->\n<name>订单系统</name>\n"
+    );
+    in_frame(cx, handle, |window, _| {
+        assert_eq!(
+            window.find("status-editor-format").label(),
+            Some("GBK · CRLF")
+        );
+    });
+
+    type_text(cx, handle, "<!-- 改 -->\n");
+    in_frame(cx, handle, |window, cx| window.press("secondary-s", cx));
+    wait_for_writes(cx, &provider, 1).await;
+    let mut expected = b"<!-- \xB8\xC4 -->\r\n".to_vec();
+    expected.extend_from_slice(gbk);
+    assert_eq!(provider.writes.lock().unwrap()[0].1, expected);
+
+    // GBK has no emoji: it says so, and writes nothing.
+    type_text(cx, handle, "😀");
+    in_frame(cx, handle, |window, cx| window.press("secondary-s", cx));
+    for _ in 0..5 {
+        cx.executor().advance_clock(Duration::from_millis(20));
+        cx.run_until_parked();
+    }
+    in_frame(cx, handle, |window, cx| {
+        assert_eq!(window.notifications(cx).len(), 1);
+    });
+    assert_eq!(provider.writes.lock().unwrap().len(), 1);
+}
+
 #[gpui_kit::test]
 async fn a_file_changed_on_the_server_is_overwritten_only_when_asked(cx: &mut TestAppContext) {
     let (handle, workspace, provider) = open_server(cx, &[(REMOTE_FILE, b"mine\n")]).await;
@@ -888,4 +957,47 @@ async fn an_image_that_cannot_be_decoded_says_so(cx: &mut TestAppContext) {
     in_frame(cx, handle, |window, _| {
         assert!(window.try_find("preview-picture").is_none())
     });
+}
+
+/// The highlighter goes by the whole path: nginx's `.conf` files are told
+/// apart by the folder they are in, and other `.conf` files stay text.
+#[gpui_kit::test]
+async fn an_nginx_file_is_highlighted_as_nginx_by_its_folder(cx: &mut TestAppContext) {
+    let (handle, workspace, _) = open_server(
+        cx,
+        &[
+            ("/etc/nginx/conf.d/site.conf", b"server { listen 80; }\n"),
+            ("/etc/redis/redis.conf", b"port 6379\n"),
+        ],
+    )
+    .await;
+    for (id, path, language) in [
+        (FIRST, "/etc/nginx/conf.d/site.conf", "nginx"),
+        (EditorId(2), "/etc/redis/redis.conf", "text"),
+    ] {
+        in_frame(cx, handle, |window, cx| {
+            window.dispatch_action(
+                Box::new(ExplorerAction::new(
+                    ExplorerId(SFTP_TAB),
+                    ExplorerCommand::Edit {
+                        remote: true,
+                        path: Some(path.into()),
+                    },
+                )),
+                cx,
+            );
+        });
+        wait_for_editor(cx, handle, id).await;
+        let chosen = cx.update(|cx| {
+            workspace
+                .read(cx)
+                .editor(id)
+                .expect("editor open")
+                .read(cx)
+                .state()
+                .read(cx)
+                .language_name()
+        });
+        assert_eq!(chosen.as_ref(), language, "{path}");
+    }
 }
