@@ -732,9 +732,6 @@ host.store.not_saved.save_ai_provider:
 host.store.not_saved.delete_ai_provider:
   zh-CN: 删除模型服务未能保存到本地数据库：%{error}
   en: "Couldn’t delete the model service from the local database: %{error}"
-host.store.not_saved.move_snippet_node:
-  zh-CN: 调整片段顺序未能保存到本地数据库：%{error}
-  en: "Couldn’t save the rearranged snippet list to the local database: %{error}"
 host.store.not_saved.batch:
   zh-CN: 这批改动未能保存到本地数据库：%{error}
   en: "Couldn’t save these changes to the local database: %{error}"
@@ -815,12 +812,6 @@ host.store.secret.proxy_write:
 host.store.secret.proxy_delete:
   zh-CN: 代理的密码未能从系统钥匙串删除：%{error}
   en: "Couldn’t delete the proxy’s password from the system keychain: %{error}"
-host.store.secret.totp_write:
-  zh-CN: 动态验证码的密钥未能写入系统钥匙串：%{error}
-  en: "Couldn’t save the OTP secret to the system keychain: %{error}"
-host.store.secret.totp_delete:
-  zh-CN: 动态验证码的密钥未能从系统钥匙串删除：%{error}
-  en: "Couldn’t delete the OTP secret from the system keychain: %{error}"
 host.store.secret.ai_key_write:
   zh-CN: 模型服务的 API Key 未能写入系统钥匙串：%{error}
   en: "Couldn’t save the model service’s API key to the system keychain: %{error}"
