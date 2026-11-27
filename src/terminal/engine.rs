@@ -585,6 +585,7 @@ impl TerminalEngine {
                 theme: theme.clone(),
                 interaction: TerminalInteraction::current(cx),
                 io: io.clone(),
+                replay: None,
             },
         );
         let channels = TerminalChannels::default();
@@ -932,6 +933,13 @@ impl TerminalEngine {
     }
 
     pub fn restart(&mut self, cx: &mut gpui_kit::Context<Self>) {
+        self.start_again(false, cx);
+    }
+
+    /// Start a new connection, in a new emulator. With `keep_output`, what
+    /// the old one shows is drawn in it first: a remote terminal connected
+    /// again in its tab (issue #162).
+    fn start_again(&mut self, keep_output: bool, cx: &mut gpui_kit::Context<Self>) {
         self.resize_frame.get_mut().take();
         self.resize_frame_task = None;
         self.reconnect_task = None;
@@ -939,11 +947,14 @@ impl TerminalEngine {
         self.output_revision = self.output_revision.wrapping_add(1);
         self.generation = self.generation.saturating_add(1);
         self.runtime.shutdown();
+        let replay = keep_output
+            .then(|| super::kept_output::output_for_reconnect(&mut self.runtime.term.lock()))
+            .flatten();
         self.lifecycle = TerminalLifecycle::Starting;
         self.title = None;
         self.latency = None;
         self.directory = None;
-        // The new emulator starts empty; matches in the old one mean nothing.
+        // Matches in the old emulator mean nothing in the new one.
         self.search.replace(None);
         self.runtime = TerminalRuntime::start(
             self.generation,
@@ -956,6 +967,7 @@ impl TerminalEngine {
                 theme: self.theme.clone(),
                 interaction: TerminalInteraction::current(cx),
                 io: self.io.clone(),
+                replay,
             },
         );
         self.channels.attach(self.runtime.commands.clone());
@@ -969,6 +981,17 @@ impl TerminalEngine {
     ) {
         self.factory = factory;
         self.restart(cx);
+    }
+
+    /// Connect again with `factory`, what the terminal shows kept; see
+    /// [`Self::start_again`].
+    pub fn reconnect_with_factory(
+        &mut self,
+        factory: SharedTerminalTransportFactory,
+        cx: &mut gpui_kit::Context<Self>,
+    ) {
+        self.factory = factory;
+        self.start_again(true, cx);
     }
 
     pub fn reply_to_prompt(&self, request_id: u64, reply: ConnectionPromptReply) {
@@ -1787,6 +1810,9 @@ struct RuntimeOptions {
     theme: SharedTheme,
     interaction: TerminalInteraction,
     io: Arc<SessionIo>,
+    /// Drawn in the new emulator before anything the transport sends,
+    /// and before it is first shown.
+    replay: Option<Vec<u8>>,
 }
 
 impl TerminalRuntime {
@@ -1803,6 +1829,7 @@ impl TerminalRuntime {
             theme,
             interaction,
             io,
+            replay,
         } = options;
         transport.set_encoding(encoding);
         let (commands, command_receiver) = mpsc::channel();
@@ -1860,6 +1887,11 @@ impl TerminalRuntime {
         ));
         let parser_command_group = command_group.clone();
         timestamps.lock().unwrap().enabled = io.timestamps_enabled.load(Ordering::Acquire);
+        // Here, not on the parser thread: no frame shows the new emulator
+        // empty.
+        if let Some(replay) = replay {
+            parser.processor.advance(&mut *term.lock(), &replay);
+        }
         thread::Builder::new()
             .name("shellrs-terminal-parser".into())
             .spawn(move || {
@@ -4166,6 +4198,7 @@ mod tests {
                 )),
                 interaction: TerminalInteraction::default(),
                 io,
+                replay: None,
             },
         )
     }
@@ -4254,6 +4287,36 @@ mod tests {
         ]);
         let screen = screen_once_it_shows(&runtime, "src\n$");
         assert!(screen.starts_with("$ ls\nsrc\n$"), "{screen}");
+    }
+
+    /// What a terminal connected again in its tab showed (issue #162) is
+    /// on its new screen from the start, the new shell below it.
+    #[test]
+    fn what_a_reconnected_terminal_showed_is_there_from_the_start() {
+        let (ui_events, _) = mpsc::channel();
+        let script = vec![
+            TerminalTransportEvent::Started,
+            TerminalTransportEvent::Output(b"new$ ".to_vec()),
+        ];
+        let runtime = TerminalRuntime::start(
+            2,
+            TerminalSize::new(40, 4, 8, 16),
+            Box::new(ScriptedTransport(script)),
+            ui_events,
+            RuntimeOptions {
+                encoding: TerminalEncoding::default(),
+                highlights: Arc::default(),
+                theme: Arc::new(Mutex::new(
+                    TerminalTheme::default_for(gpui_kit::component::ThemeMode::Light).clone(),
+                )),
+                interaction: TerminalInteraction::default(),
+                io: Arc::default(),
+                replay: Some(b"old$ ls\r\nsrc\r\n".to_vec()),
+            },
+        );
+        assert_eq!(line_text(&runtime.term.lock(), 1), "src");
+        let screen = screen_once_it_shows(&runtime, "new$");
+        assert!(screen.starts_with("old$ ls\nsrc\nnew$"), "{screen}");
     }
 
     #[test]
@@ -4355,6 +4418,7 @@ mod tests {
                 )),
                 interaction: TerminalInteraction::default(),
                 io: Arc::default(),
+                replay: None,
             },
         );
         events.send(TerminalTransportEvent::Started).unwrap();

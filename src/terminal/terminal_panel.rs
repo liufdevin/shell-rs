@@ -433,12 +433,13 @@ impl TerminalPanel {
         self.terminal.read(cx).status(cx)
     }
 
-    /// Connect again as the tab first did.
+    /// Connect again as the tab first did. What the terminal showed stays above
+    /// the new connection's output (issue #162).
     pub fn reconnect(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.revoke_serial_debug(cx);
         let factory = self.transports.factory_for(&self.connection);
         self.terminal.update(cx, |terminal, cx| {
-            terminal.restart_with_factory(factory, cx)
+            terminal.reconnect_with_factory(factory, cx)
         });
         let focus = self.terminal.read(cx).focus_handle();
         if !window.has_active_dialog(cx) {

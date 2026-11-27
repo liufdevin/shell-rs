@@ -935,9 +935,10 @@ async fn function_keys_reach_the_program_unless_find_or_paste_take_them(cx: &mut
         settings.update(cx, |store, cx| {
             store.update(
                 |settings| {
-                    settings
-                        .shortcuts
-                        .set(Shortcut::find("terminal-find-next").unwrap(), "f3".into())
+                    settings.shortcuts.set(
+                        shellrs::app::Shortcut::find("terminal-find-next").unwrap(),
+                        "f3".into(),
+                    )
                 },
                 cx,
             )

@@ -4,10 +4,7 @@
 
 use std::rc::Rc;
 
-use gpui_kit::component::{
-    WindowExt as _,
-    dock::{DockPlacement, panel_handle},
-};
+use gpui_kit::component::dock::{DockPlacement, panel_handle};
 use gpui_kit::*;
 
 use super::Workspace;
