@@ -571,6 +571,12 @@ settings.window.remember_position:
 settings.window.remember_position_description:
   zh-CN: 下次启动时把窗口放回上次所在的屏幕和位置；那块屏幕不在时放在主屏幕中间。
   en: The next launch puts the window back on the same screen and in the same place. If that screen is gone, it opens in the middle of the main screen.
+settings.window.confirm_quit:
+  zh-CN: 退出前确认
+  en: Confirm before quitting
+settings.window.confirm_quit_description:
+  zh-CN: 有打开的标签时，退出前先确认。没保存的文件总会询问。
+  en: Ask before quitting while any tab is open. Unsaved files are always asked about.
 settings.window.close_to_tray:
   zh-CN: 关闭窗口时最小化到托盘
   en: Minimize to tray on close

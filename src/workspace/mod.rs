@@ -22,6 +22,7 @@ mod local_terminal_options;
 mod local_terminal_window;
 mod notices;
 mod projects;
+mod quitting;
 mod recent_hosts;
 mod serial_files;
 mod sidebar;

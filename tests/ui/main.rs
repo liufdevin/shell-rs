@@ -34,6 +34,7 @@ mod monitor;
 mod netstat;
 mod processes;
 mod projects;
+mod quit;
 mod remote_management;
 mod serial;
 mod serial_maintenance;
