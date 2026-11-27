@@ -389,7 +389,7 @@ struct AdminTerminalWindow {
 }
 
 impl Render for AdminTerminalWindow {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         v_flex()
             .key_context("Workspace")
             .on_action(cx.listener(|this, _: &RestartLocalTerminal, window, cx| {
@@ -459,8 +459,6 @@ impl Render for AdminTerminalWindow {
                 ),
             )
             .child(div().flex_1().min_h_0().child(self.panel.clone()))
-            .children(Root::render_dialog_layer(window, cx))
-            .children(Root::render_notification_layer(window, cx))
     }
 }
 

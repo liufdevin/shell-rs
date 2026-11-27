@@ -173,7 +173,7 @@ impl<K: Copy + PartialEq + 'static> RowTooltipTrigger<K> {
         self.tooltips.owner.set(Some(self.key));
         let content = self.content.clone();
         let request = TooltipRequest::new(self.row_bounds(), move |window, cx| content(window, cx))
-            .placement(Placement::Right);
+            .with_placement(Placement::Right);
         self.tooltips
             .overlay
             .update(cx, |overlay, cx| overlay.request_show(request, window, cx));

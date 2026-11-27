@@ -15,7 +15,7 @@ async fn snippet_shortcuts_record_run_and_rebind_without_running_in_fields(
 ) {
     let (handle, workspace, factory) = open_snippets(cx, store_with_snippets()).await;
     let label = shellrs::app::key_text("ctrl-1", false);
-    dispatch_from_panel(cx, handle, EditSnippet(SnippetId(IMAGES)));
+    dispatch_from_panel(cx, handle, EditSnippet(SnippetId(IMAGES))).await;
     in_frame(cx, handle, |window, cx| {
         window.click("snippet-shortcut", cx)
     });
@@ -44,7 +44,7 @@ async fn snippet_shortcuts_record_run_and_rebind_without_running_in_fields(
     })
     .await;
 
-    dispatch_from_panel(cx, handle, EditSnippet(SnippetId(IMAGES)));
+    dispatch_from_panel(cx, handle, EditSnippet(SnippetId(IMAGES))).await;
     in_frame(cx, handle, |window, cx| {
         assert_eq!(
             window.find("snippet-shortcut").label(),
@@ -103,7 +103,7 @@ async fn snippet_shortcut_conflicts_are_refused_and_cancel_keeps_settings(cx: &m
             );
         });
     });
-    dispatch_from_panel(cx, handle, EditSnippet(SnippetId(DISK)));
+    dispatch_from_panel(cx, handle, EditSnippet(SnippetId(DISK))).await;
     in_frame(cx, handle, |window, cx| {
         window.click("snippet-shortcut", cx)
     });
@@ -186,14 +186,23 @@ async fn open_snippets(
 }
 
 /// A closed dialog leaves nothing focused, and an action dispatched from
-/// nothing goes nowhere: a click in the panel first, as a user would.
-fn dispatch_from_panel(
+/// nothing goes nowhere: a click in the panel first, as a user would, once
+/// the last dialog has faded out and no longer covers it. On its empty
+/// foot, below the rows: a press on text starts a selection instead.
+async fn dispatch_from_panel(
     cx: &mut TestAppContext,
     handle: WindowHandle<Root>,
     action: impl gpui_kit::Action,
 ) {
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, _| {
+        window.find_all("dialog").is_empty()
+    })
+    .await;
     in_frame(cx, handle, |window, cx| {
-        window.click("snippets-summary", cx)
+        let panel = window.find("snippets").bounds();
+        let foot = point(px(20.), panel.size.height - px(20.));
+        window.click_at("snippets", foot, cx);
+        assert_eq!(window.find("snippets").focused(), Some(true));
     });
     in_frame(cx, handle, |window, cx| {
         window.dispatch_action(Box::new(action), cx)
@@ -360,7 +369,7 @@ async fn a_snippet_is_made_edited_and_deleted(cx: &mut TestAppContext) {
     });
 
     // Edited in the same dialog, where a click is told only to type it.
-    dispatch_from_panel(cx, handle, EditSnippet(SnippetId(1)));
+    dispatch_from_panel(cx, handle, EditSnippet(SnippetId(1))).await;
     in_frame(cx, handle, |window, cx| {
         window.press("secondary-a", cx);
         window.input("监听端口", cx);
@@ -375,7 +384,7 @@ async fn a_snippet_is_made_edited_and_deleted(cx: &mut TestAppContext) {
     assert!(!runs);
 
     // Deleted once confirmed.
-    dispatch_from_panel(cx, handle, DeleteSnippet(SnippetId(1)));
+    dispatch_from_panel(cx, handle, DeleteSnippet(SnippetId(1))).await;
     in_frame(cx, handle, |window, cx| window.click("ok", cx));
     assert!(names(&workspace, cx).is_empty());
     in_frame(cx, handle, |window, _| {
@@ -416,7 +425,7 @@ async fn a_category_is_made_renamed_and_deleted_with_its_snippets(cx: &mut TestA
     .await;
 
     // A snippet made from its menu goes in it.
-    dispatch_from_panel(cx, handle, NewSnippetIn(SnippetCategoryId(3)));
+    dispatch_from_panel(cx, handle, NewSnippetIn(SnippetCategoryId(3))).await;
     in_frame(cx, handle, |window, cx| {
         window.input("发布", cx);
         window.click("snippet-command", cx);
@@ -430,7 +439,7 @@ async fn a_category_is_made_renamed_and_deleted_with_its_snippets(cx: &mut TestA
     })
     .await;
 
-    dispatch_from_panel(cx, handle, RenameSnippetCategory(SnippetCategoryId(LOGS)));
+    dispatch_from_panel(cx, handle, RenameSnippetCategory(SnippetCategoryId(LOGS))).await;
     in_frame(cx, handle, |window, cx| {
         window.press("secondary-a", cx);
         window.input("日志查看", cx);
@@ -444,7 +453,7 @@ async fn a_category_is_made_renamed_and_deleted_with_its_snippets(cx: &mut TestA
     .await;
 
     // Deleting Docker takes its two snippets.
-    dispatch_from_panel(cx, handle, DeleteSnippetCategory(SnippetCategoryId(DOCKER)));
+    dispatch_from_panel(cx, handle, DeleteSnippetCategory(SnippetCategoryId(DOCKER))).await;
     in_frame(cx, handle, |window, cx| window.click("ok", cx));
     assert_eq!(names(&workspace, cx), ["系统日志", "磁盘", "发布"]);
     in_frame(cx, handle, |window, _| {

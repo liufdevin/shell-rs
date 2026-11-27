@@ -86,11 +86,12 @@ async fn background_image_controls_follow_appearance_and_preserve_originals(
         in_frame(cx, handle, |window, cx| {
             let page = window.find("settings").bounds();
             window.dispatch_event(
-                gpui_kit::ScrollWheelEvent {
+                gpui_kit::ScrollEvent {
                     position: point(page.center().x, page.top() + px(60.)),
                     delta: gpui_kit::ScrollDelta::Pixels(point(px(0.), px(-500.))),
                     modifiers: Default::default(),
                     touch_phase: gpui_kit::TouchPhase::Moved,
+                    source: gpui_kit::ScrollSource::Pointer,
                 }
                 .to_platform_input(),
                 cx,
@@ -204,11 +205,12 @@ async fn default_start_folder_can_be_chosen_and_reset_from_settings(cx: &mut Tes
     for _ in 0..5 {
         in_frame(cx, handle, |window, cx| {
             window.dispatch_event(
-                gpui_kit::ScrollWheelEvent {
+                gpui_kit::ScrollEvent {
                     position,
                     delta: gpui_kit::ScrollDelta::Pixels(point(px(0.), px(-550.))),
                     modifiers: gpui_kit::Modifiers::default(),
                     touch_phase: gpui_kit::TouchPhase::Moved,
+                    source: gpui_kit::ScrollSource::Pointer,
                 }
                 .to_platform_input(),
                 cx,
@@ -268,11 +270,12 @@ async fn cmder_settings_choose_a_directory_and_return_to_auto_detection(cx: &mut
     for _ in 0..5 {
         in_frame(cx, handle, |window, cx| {
             window.dispatch_event(
-                gpui_kit::ScrollWheelEvent {
+                gpui_kit::ScrollEvent {
                     position,
                     delta: gpui_kit::ScrollDelta::Pixels(point(px(0.), px(-550.))),
                     modifiers: gpui_kit::Modifiers::default(),
                     touch_phase: gpui_kit::TouchPhase::Moved,
+                    source: gpui_kit::ScrollSource::Pointer,
                 }
                 .to_platform_input(),
                 cx,
@@ -334,11 +337,12 @@ fn tab_output_indicator_can_be_changed_from_terminal_notifications(cx: &mut Test
     for _ in 0..3 {
         in_frame(cx, handle, |window, cx| {
             window.dispatch_event(
-                gpui_kit::ScrollWheelEvent {
+                gpui_kit::ScrollEvent {
                     position,
                     delta: gpui_kit::ScrollDelta::Pixels(point(px(0.), px(-550.))),
                     modifiers: gpui_kit::Modifiers::default(),
                     touch_phase: gpui_kit::TouchPhase::Moved,
+                    source: gpui_kit::ScrollSource::Pointer,
                 }
                 .to_platform_input(),
                 cx,
@@ -523,11 +527,12 @@ fn global_settings_do_not_store_per_host_reconnection(cx: &mut TestAppContext) {
     for _ in 0..8 {
         in_frame(cx, handle, |window, cx| {
             window.dispatch_event(
-                gpui_kit::ScrollWheelEvent {
+                gpui_kit::ScrollEvent {
                     position,
                     delta: gpui_kit::ScrollDelta::Pixels(point(px(0.), px(-500.))),
                     modifiers: gpui_kit::Modifiers::default(),
                     touch_phase: gpui_kit::TouchPhase::Moved,
+                    source: gpui_kit::ScrollSource::Pointer,
                 }
                 .to_platform_input(),
                 cx,
@@ -1147,11 +1152,12 @@ fn terminal_cursor_settings_apply_to_open_and_restarted_terminals(cx: &mut TestA
     in_frame(cx, handle, |window, cx| {
         let position = window.find("terminal-font-preview").bounds().center();
         window.dispatch_event(
-            gpui_kit::ScrollWheelEvent {
+            gpui_kit::ScrollEvent {
                 position,
                 delta: gpui_kit::ScrollDelta::Pixels(point(px(0.), px(-450.))),
                 modifiers: gpui_kit::Modifiers::default(),
                 touch_phase: gpui_kit::TouchPhase::Moved,
+                source: gpui_kit::ScrollSource::Pointer,
             }
             .to_platform_input(),
             cx,
@@ -1332,13 +1338,14 @@ fn the_sftp_page_says_how_many_files_move_at_once(cx: &mut TestAppContext) {
         window.within("settings").click("0-2", cx)
     });
     let shown = |window: &mut gpui_kit::Window| {
-        window
-            .within("settings")
-            .within("group-0")
-            .within("item-0")
-            .find("btn")
-            .label()
-            .map(str::to_string)
+        dropdown_value(
+            window
+                .within("settings")
+                .within("group-0")
+                .within("item-0")
+                .find("btn")
+                .label(),
+        )
     };
     in_frame(cx, handle, |window, _| {
         assert_eq!(shown(window).as_deref(), Some("3（默认）"))
@@ -1380,11 +1387,12 @@ fn scroll_to_highlight_rules(cx: &mut TestAppContext, handle: WindowHandle<Root>
     in_frame(cx, handle, |window, cx| {
         let position = window.find("highlight-preview").bounds().center();
         window.dispatch_event(
-            gpui_kit::ScrollWheelEvent {
+            gpui_kit::ScrollEvent {
                 position,
                 delta: gpui_kit::ScrollDelta::Pixels(point(px(0.), px(-600.))),
                 modifiers: gpui_kit::Modifiers::default(),
                 touch_phase: gpui_kit::TouchPhase::Moved,
+                source: gpui_kit::ScrollSource::Pointer,
             }
             .to_platform_input(),
             cx,

@@ -250,11 +250,12 @@ async fn snippet_command_groups_are_edited_and_sent_in_order(cx: &mut TestAppCon
     in_frame(cx, handle, |window, cx| {
         let position = window.find("snippet-type").bounds().center();
         window.dispatch_event(
-            gpui_kit::ScrollWheelEvent {
+            gpui_kit::ScrollEvent {
                 position,
                 delta: gpui_kit::ScrollDelta::Pixels(point(px(0.), px(-400.))),
                 modifiers: gpui_kit::Modifiers::default(),
                 touch_phase: gpui_kit::TouchPhase::Moved,
+                source: gpui_kit::ScrollSource::Pointer,
             }
             .to_platform_input(),
             cx,
@@ -274,11 +275,12 @@ async fn snippet_command_groups_are_edited_and_sent_in_order(cx: &mut TestAppCon
     in_frame(cx, handle, |window, cx| {
         let position = window.find(("snippet-step-wait", 2_u64)).bounds().center();
         window.dispatch_event(
-            gpui_kit::ScrollWheelEvent {
+            gpui_kit::ScrollEvent {
                 position,
                 delta: gpui_kit::ScrollDelta::Pixels(point(px(0.), px(-200.))),
                 modifiers: gpui_kit::Modifiers::default(),
                 touch_phase: gpui_kit::TouchPhase::Moved,
+                source: gpui_kit::ScrollSource::Pointer,
             }
             .to_platform_input(),
             cx,

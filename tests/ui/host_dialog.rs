@@ -382,11 +382,12 @@ async fn a_host_behind_a_proxy_keeps_the_proxys_password_in_the_keychain(cx: &mu
         // The proxy's login is below the window's fold.
         let position = window.find("host-proxy-port").bounds().center();
         window.dispatch_event(
-            gpui_kit::ScrollWheelEvent {
+            gpui_kit::ScrollEvent {
                 position,
                 delta: gpui_kit::ScrollDelta::Pixels(point(px(0.), px(-300.))),
                 modifiers: gpui_kit::Modifiers::default(),
                 touch_phase: gpui_kit::TouchPhase::Moved,
+                source: gpui_kit::ScrollSource::Pointer,
             }
             .to_platform_input(),
             cx,

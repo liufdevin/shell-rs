@@ -272,11 +272,12 @@ fn the_application_page_omits_updates_privacy_and_the_website(cx: &mut TestAppCo
     for _ in 0..6 {
         in_frame(cx, handle, |window, cx| {
             window.dispatch_event(
-                gpui_kit::ScrollWheelEvent {
+                gpui_kit::ScrollEvent {
                     position,
                     delta: gpui_kit::ScrollDelta::Pixels(point(px(0.), px(-600.))),
                     modifiers: gpui_kit::Modifiers::default(),
                     touch_phase: gpui_kit::TouchPhase::Moved,
+                    source: gpui_kit::ScrollSource::Pointer,
                 }
                 .to_platform_input(),
                 cx,

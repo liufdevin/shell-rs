@@ -1858,7 +1858,7 @@ impl TerminalView {
 
     fn zoom_with_wheel(
         &mut self,
-        event: &ScrollWheelEvent,
+        event: &ScrollEvent,
         line_height: Pixels,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -2376,22 +2376,20 @@ impl Render for TerminalView {
             .flex_shrink_0()
             .w(timestamp_width)
             .overflow_hidden()
-            .on_scroll_wheel(
-                cx.listener(move |this, event: &ScrollWheelEvent, window, cx| {
-                    if !this.zoom_with_wheel(event, row_height, window, cx)
-                        && !this.engine.read(cx).mode().contains(TermMode::ALT_SCREEN)
-                    {
-                        let lines = this.scroll_accumulator.consume(
-                            event.delta,
-                            row_height,
-                            ScrollTarget::History,
-                        );
-                        this.engine
-                            .update(cx, |engine, cx| engine.scroll(lines, cx));
-                    }
-                    cx.stop_propagation();
-                }),
-            )
+            .on_scroll(cx.listener(move |this, event: &ScrollEvent, window, cx| {
+                if !this.zoom_with_wheel(event, row_height, window, cx)
+                    && !this.engine.read(cx).mode().contains(TermMode::ALT_SCREEN)
+                {
+                    let lines = this.scroll_accumulator.consume(
+                        event.delta,
+                        row_height,
+                        ScrollTarget::History,
+                    );
+                    this.engine
+                        .update(cx, |engine, cx| engine.scroll(lines, cx));
+                }
+                cx.stop_propagation();
+            }))
             .on_key_down(|_, _, cx| cx.stop_propagation())
             .children(stamps.into_iter().map(|stamp| {
                 div().h(row_height).children(stamp.map(|stamp| {
@@ -2968,7 +2966,7 @@ impl TerminalView {
                     .flex_1()
                     .min_h_0()
                     .min_w_0()
-                    .on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, window, cx| {
+                    .on_scroll(cx.listener(|this, event: &ScrollEvent, window, cx| {
                         let line_height = TerminalFont::current(cx).row_height(window);
                         if this.zoom_with_wheel(event, line_height, window, cx) {
                             cx.stop_propagation();
@@ -3060,14 +3058,6 @@ struct PreeditPaintCell {
     bounds: Bounds<Pixels>,
     line: ShapedLine,
     background: PaintQuad,
-}
-
-impl IntoElement for TerminalElement {
-    type Element = Self;
-
-    fn into_element(self) -> Self::Element {
-        self
-    }
 }
 
 impl Element for TerminalElement {
@@ -3563,7 +3553,7 @@ impl Element for TerminalElement {
 
         let hitbox = state.hitbox.clone();
         let view = self.view.clone();
-        window.on_mouse_event(move |event: &ScrollWheelEvent, phase, window, cx| {
+        window.on_mouse_event(move |event: &ScrollEvent, phase, window, cx| {
             if !phase.bubble() || !hitbox.should_handle_scroll(window) {
                 return;
             }
@@ -4138,7 +4128,7 @@ mod tests {
     };
 
     fn key(source: &str) -> Keystroke {
-        Keystroke::parse(source).unwrap()
+        crate::app::parse_keys(source).unwrap()
     }
 
     #[test]

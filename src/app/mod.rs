@@ -4,6 +4,7 @@ mod actions;
 mod app_icon;
 mod assets;
 mod computer;
+mod keystrokes;
 pub mod logging;
 mod paths;
 mod quit;
@@ -19,6 +20,7 @@ pub use actions::*;
 pub use app_icon::show_logo_when_unbundled;
 pub use assets::{ADB_ICON, AppAssets, CatalogIcon, DOCKER_ICON, FLASHING_ICON, SERIAL_ICON};
 pub use computer::computer_name;
+pub use keystrokes::{parse_keys, unparse_keys};
 pub use paths::{
     PORTABLE_BIN, PORTABLE_DATA, SETUP_UNINSTALLER, analytics_path, cli_endpoint, cli_socket_path,
     data_dir, database_path, keys_dir, portable_root, settings_path, terminal_output_dir,

@@ -7,7 +7,7 @@ use std::{
 };
 
 use gpui_kit::component::{
-    ActiveTheme as _, Root, Sizable as _, TitleBar, WindowExt as _,
+    ActiveTheme as _, Sizable as _, TitleBar, WindowExt as _,
     button::ButtonVariant,
     dialog::DialogButtonProps,
     dock::{DockArea, DockEvent, DockLayout, DockPlacement, PanelId, TabGroup, panel_handle},
@@ -116,12 +116,6 @@ const DOCK_ID: &str = "shellrs-dock";
 const DOCK_VERSION: usize = 1;
 /// How far the zoom keys move 界面字号 a press, in pixels.
 const INTERFACE_ZOOM_STEP: f32 = 2.;
-/// Paint order of the notification layer. gpui-base draws a dialog, backdrop
-/// and all, deferred at priority `10 + its layer` (the dock skin's start page
-/// at 0); anything lower lands under the backdrop, dimmed, and a click on it
-/// hits the backdrop. Just below popups (`POPUP_PRIORITY`) keeps a
-/// notification above any stack of dialogs without covering an open menu.
-const NOTIFICATION_PRIORITY: usize = gpui_kit::base::POPUP_PRIORITY - 1;
 /// Show a notification from code that runs while the window is still being
 /// built: loading what is on disk, starting the services.
 ///
@@ -4539,6 +4533,14 @@ fn new_local_terminal_panel(
     (panel, subscription)
 }
 
+/// The workspace's own region, where its commands are handled: an owner
+/// outside its dispatch path, such as a dialog, sends them here.
+impl Focusable for Workspace {
+    fn focus_handle(&self, _: &App) -> FocusHandle {
+        self.focus_handle.clone()
+    }
+}
+
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.render_window(None, window, cx)
@@ -4868,7 +4870,7 @@ impl Workspace {
     pub(super) fn render_window(
         &mut self,
         detached: Option<super::detached::DetachedContent>,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let status = match self.active_tab {
@@ -5254,12 +5256,6 @@ impl Workspace {
                     .child(status)
                 }
             })
-            .children(Root::render_sheet_layer(window, cx))
-            .children(Root::render_dialog_layer(window, cx))
-            .children(
-                Root::render_notification_layer(window, cx)
-                    .map(|layer| deferred(layer).with_priority(NOTIFICATION_PRIORITY)),
-            )
             .into_any_element()
     }
 

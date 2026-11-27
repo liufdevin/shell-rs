@@ -410,11 +410,12 @@ fn serial_maintenance_entry_is_in_application_settings_and_opens_without_scannin
             }
             let bounds = window.find("settings").bounds();
             window.dispatch_event(
-                gpui_kit::ScrollWheelEvent {
+                gpui_kit::ScrollEvent {
                     position: point(bounds.right() - px(50.), bounds.center().y),
                     delta: gpui_kit::ScrollDelta::Pixels(point(px(0.), px(-600.))),
                     modifiers: Default::default(),
                     touch_phase: gpui_kit::TouchPhase::Moved,
+                    source: gpui_kit::ScrollSource::Pointer,
                 }
                 .to_platform_input(),
                 cx,

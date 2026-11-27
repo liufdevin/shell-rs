@@ -22,7 +22,12 @@ pub fn note_renderer(window: &Window, cx: &mut App) {
     SOFTWARE.store(software, Ordering::Relaxed);
     tracing::info!(software_rendering = software, "Window renderer initialized");
     if software {
-        cx.set_reduce_motion(true);
+        // Not `cx.set_reduce_motion`: gpui-kit follows the system's setting
+        // too (live on Linux), and would turn motion back on with it.
+        gpui_kit::base::set_reduce_motion_preference(
+            gpui_kit::base::ReduceMotionPreference::Reduce,
+            cx,
+        );
     }
 }
 

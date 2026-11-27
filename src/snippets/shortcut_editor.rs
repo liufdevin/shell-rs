@@ -6,7 +6,7 @@ use gpui_kit::component::{
 };
 use gpui_kit::*;
 
-use crate::app::{Refusal, SnippetShortcut, check_snippet, key_text};
+use crate::app::{Refusal, SnippetShortcut, check_snippet, key_text, parse_keys, unparse_keys};
 use crate::i18n::t;
 use crate::settings::SettingsStore;
 
@@ -63,7 +63,7 @@ impl SnippetShortcutEditor {
             return Ok(());
         };
         let settings = self.settings.read(cx).settings();
-        let keystroke = Keystroke::parse(keys).map_err(|error| error.to_string())?;
+        let keystroke = parse_keys(keys).map_err(|error| error.to_string())?;
         check_snippet(
             &keystroke,
             self.editing.as_deref(),
@@ -139,7 +139,7 @@ impl SnippetShortcutEditor {
     ) {
         window.push_notification(
             crate::shared::form_error_notification(
-                refusal.message(&key_text(&key.unparse(), false)),
+                refusal.message(&key_text(&unparse_keys(key), false)),
             ),
             cx,
         );

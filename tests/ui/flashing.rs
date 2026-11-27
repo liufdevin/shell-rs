@@ -62,11 +62,12 @@ async fn flashing_driver_check_is_manual_read_only_and_can_be_retried(cx: &mut T
         in_frame(cx, handle, |window, cx| {
             let bounds = window.find("settings").bounds();
             window.dispatch_event(
-                gpui_kit::ScrollWheelEvent {
+                gpui_kit::ScrollEvent {
                     position: point(bounds.right() - px(50.), bounds.center().y),
                     delta: gpui_kit::ScrollDelta::Pixels(point(px(0.), px(-600.))),
                     modifiers: Default::default(),
                     touch_phase: gpui_kit::TouchPhase::Moved,
+                    source: gpui_kit::ScrollSource::Pointer,
                 }
                 .to_platform_input(),
                 cx,
@@ -146,11 +147,12 @@ fn flashing_is_hidden_until_enabled_in_application_settings(cx: &mut TestAppCont
         in_frame(cx, handle, |window, cx| {
             let bounds = window.find("settings").bounds();
             window.dispatch_event(
-                gpui_kit::ScrollWheelEvent {
+                gpui_kit::ScrollEvent {
                     position: point(bounds.right() - px(50.), bounds.center().y),
                     delta: gpui_kit::ScrollDelta::Pixels(point(px(0.), px(-600.))),
                     modifiers: Default::default(),
                     touch_phase: gpui_kit::TouchPhase::Moved,
+                    source: gpui_kit::ScrollSource::Pointer,
                 }
                 .to_platform_input(),
                 cx,

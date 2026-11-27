@@ -1,9 +1,9 @@
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, rc::Rc};
 
-use gpui_kit::{Global, KeyBinding, Keystroke};
+use gpui_kit::{App, Global, KeyBinding, KeyBindingContextPredicate};
 use serde::{Deserialize, Deserializer, Serialize};
 
-use super::InsertSnippet;
+use super::{InsertSnippet, parse_keys};
 use crate::terminal::TERMINAL_KEY_CONTEXT;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -40,7 +40,7 @@ impl<'de> Deserialize<'de> for SnippetShortcuts {
                 .into_iter()
                 .filter_map(|(id, value)| {
                     let shortcut: SnippetShortcut = serde_json::from_value(value).ok()?;
-                    Keystroke::parse(shortcut.keys()).ok()?;
+                    parse_keys(shortcut.keys()).ok()?;
                     Some((id, shortcut))
                 })
                 .collect(),
@@ -62,26 +62,33 @@ impl SnippetShortcuts {
     }
 
     pub fn uses(&self, keys: &str, except: Option<&str>) -> bool {
-        let Ok(pressed) = Keystroke::parse(keys) else {
+        let Ok(pressed) = parse_keys(keys) else {
             return false;
         };
         self.0.iter().any(|(id, shortcut)| {
             Some(id.as_str()) != except
-                && Keystroke::parse(shortcut.keys()).is_ok_and(|taken| {
+                && parse_keys(shortcut.keys()).is_ok_and(|taken| {
                     pressed.modifiers == taken.modifiers && pressed.key == taken.key
                 })
         })
     }
 
-    pub(super) fn bindings(&self) -> Vec<KeyBinding> {
+    pub(super) fn bindings(&self, cx: &App) -> Vec<KeyBinding> {
+        let predicate = KeyBindingContextPredicate::parse(TERMINAL_KEY_CONTEXT)
+            .ok()
+            .map(Rc::new);
         self.0
             .iter()
-            .map(|(id, shortcut)| {
-                KeyBinding::new(
+            .filter_map(|(id, shortcut)| {
+                KeyBinding::load(
                     shortcut.keys(),
-                    InsertSnippet(id.clone()),
-                    Some(TERMINAL_KEY_CONTEXT),
+                    Box::new(InsertSnippet(id.clone())),
+                    predicate.clone(),
+                    false,
+                    None,
+                    cx,
                 )
+                .ok()
             })
             .collect()
     }
