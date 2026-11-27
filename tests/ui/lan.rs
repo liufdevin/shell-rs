@@ -972,6 +972,7 @@ fn settings_search_finds_lan_and_exposes_its_status_to_assistive_technology(
                     && element.path().contains(&ElementId::from("settings"))
             })
             .expect("settings search");
+        assert!(search.bounds().size.width > px(0.));
         window.within("settings").click("input-state", cx);
         window.input("局域网协作", cx);
     });

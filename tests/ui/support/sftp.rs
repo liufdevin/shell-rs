@@ -304,6 +304,8 @@ impl SftpTransport for FakeSftpTransport {
 /// `fake_listing`, and changes are recorded, never made.
 #[derive(Clone, Default)]
 pub struct FakeLocalDirectory {
+    /// Return an empty directory for blank list-space interactions.
+    pub empty: bool,
     pub calls: Arc<Mutex<Vec<String>>>,
     /// The files the editor reads and writes, in memory.
     pub files: Arc<Mutex<std::collections::BTreeMap<std::path::PathBuf, Vec<u8>>>>,
@@ -329,7 +331,11 @@ impl LocalDirectoryProvider for FakeLocalDirectory {
     }
     fn list(&self, path: &std::path::Path) -> anyhow::Result<DirectoryListing> {
         self.listed.lock().unwrap().push(path.to_path_buf());
-        Ok(fake_listing(path.to_str().unwrap()))
+        Ok(if self.empty {
+            DirectoryListing::new(path.to_string_lossy().as_ref(), vec![])
+        } else {
+            fake_listing(path.to_str().unwrap())
+        })
     }
     fn places(&self) -> Vec<(shellrs::sftp::Place, std::path::PathBuf)> {
         self.places.lock().unwrap().clone()

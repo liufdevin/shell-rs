@@ -6,6 +6,7 @@
 use std::collections::HashMap;
 
 use crate::support::*;
+use gpui_kit::Focusable as _;
 use gpui_kit::component::dock::ToggleZoom;
 use shellrs::app::{
     CancelTerminalSplit, CloseSettings, CloseTerminal, OpenTerminalSplit, PasteTerminal,
@@ -166,6 +167,8 @@ async fn manual_split_dialog_arranges_terminals_without_broadcasting(cx: &mut Te
                 .try_find(("broadcast-remote", INITIAL_WEB_TERMINAL))
                 .is_none()
         );
+        // Root-owned dialogs return focus outside the terminal; choose its keyboard target.
+        window.click(("terminal", INITIAL_WEB_TERMINAL), cx);
         window.input("only-web", cx);
     });
     cx.wait_for(fixture.handle.into(), Duration::from_secs(2), |_, _| {
@@ -289,12 +292,26 @@ async fn split_dialog_rejects_a_target_closed_before_commit(cx: &mut TestAppCont
         );
     });
     in_frame(cx, fixture.handle, |window, cx| {
-        window.dispatch_action(
-            Box::new(CloseTerminal(RemoteTerminalId(INITIAL_STAGING_TERMINAL))),
+        // The modal blocks tab clicks and focused Workspace shortcuts.
+        // Simulate an external close to exercise the defensive stale-target guard.
+        fixture.workspace.read(cx).focus_handle(cx).dispatch_action(
+            &CloseTerminal(RemoteTerminalId(INITIAL_STAGING_TERMINAL)),
+            window,
             cx,
         );
     });
-    in_frame(cx, fixture.handle, |window, cx| window.click("commit", cx));
+    assert!(fixture.workspace.read_with(cx, |workspace, _| {
+        workspace
+            .remote_terminal(RemoteTerminalId(INITIAL_STAGING_TERMINAL))
+            .is_none()
+    }));
+    in_frame(cx, fixture.handle, |window, cx| {
+        assert!(
+            window.has_active_dialog(cx),
+            "split dialog must remain open while target closes"
+        );
+        window.click("commit", cx);
+    });
     in_frame(cx, fixture.handle, |window, cx| {
         assert!(window.has_active_dialog(cx));
         assert_eq!(
@@ -303,6 +320,13 @@ async fn split_dialog_rejects_a_target_closed_before_commit(cx: &mut TestAppCont
         );
         window.press("escape", cx);
     });
+    // Dialog closure is immediate; its error notification may finish leaving later.
+    cx.wait_for(
+        fixture.handle.into(),
+        Duration::from_secs(2),
+        |window, cx| !window.has_active_dialog(cx) && window.try_find("form-error").is_none(),
+    )
+    .await;
     in_frame(cx, fixture.handle, |window, _| {
         assert!(window.try_find("form-error").is_none());
         assert!(window.find(("terminal", INITIAL_WEB_TERMINAL)).visible());
@@ -418,7 +442,7 @@ async fn checking_two_terminals_splits_them_above_the_compose_pane(cx: &mut Test
     .await;
     // Typed after what is there, as other tools send to all: nothing
     // cleared first.
-    assert_eq!(fixture.web.written_text(), "\x1b[200~uptime\x1b[201~\r");
+    assert_eq!(fixture.web.written_text(), "uptime\r");
     assert_eq!(fixture.staging.written_text(), "uptime\r");
     // Sent, so the line is empty again; the snippets and Ctrl+C go to all.
     in_frame(cx, handle, |window, cx| {

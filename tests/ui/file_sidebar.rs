@@ -551,6 +551,7 @@ async fn files_go_down_and_come_back_with_their_terminal(cx: &mut TestAppContext
 #[gpui_kit::test]
 async fn closing_a_terminal_whose_files_download_asks_first(cx: &mut TestAppContext) {
     let fixture = open(cx, FakeSftpProvider::default());
+    let download_target = std::env::temp_dir().join("shellrs-downloads");
     show_files(cx, &fixture, INITIAL_WEB_TERMINAL, FILES).await;
     in_frame(cx, fixture.handle, |window, cx| {
         window
@@ -563,6 +564,11 @@ async fn closing_a_terminal_whose_files_download_asks_first(cx: &mut TestAppCont
             window.find("download-target").value(),
             Some("/local/tester/Downloads")
         );
+        // The injected default is POSIX-shaped; downloads require a native
+        // absolute local path on every platform.
+        window.click("download-target", cx);
+        window.press("secondary-a", cx);
+        window.input(download_target.to_string_lossy().as_ref(), cx);
         window.click("download-confirm", cx);
     });
     cx.wait_for(

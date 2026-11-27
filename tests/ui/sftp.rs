@@ -865,7 +865,16 @@ async fn sftp_path_label_opens_ancestors_and_the_open_directory_dialog(cx: &mut 
     cx.run_until_parked();
     assert_eq!(
         cx.read_from_clipboard().and_then(|item| item.text()),
-        Some("/local/tester/目录\n/local/tester/文件 甲.txt".into())
+        Some(
+            ["目录", "文件 甲.txt"]
+                .map(|name| {
+                    std::path::Path::new("/local/tester")
+                        .join(name)
+                        .to_string_lossy()
+                        .into_owned()
+                })
+                .join("\n")
+        )
     );
 }
 
@@ -975,6 +984,9 @@ async fn sftp_bookmark_dialog_adds_orders_removes_and_opens(cx: &mut TestAppCont
     })
     .unwrap();
 
+    // Local directories use the native platform's absolute path syntax.
+    let picked = std::env::temp_dir().join("shellrs-picked");
+    let picked_text = picked.to_string_lossy().into_owned();
     // Local directories can be picked with the system dialog.
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
@@ -992,18 +1004,21 @@ async fn sftp_bookmark_dialog_adds_orders_removes_and_opens(cx: &mut TestAppCont
     cx.run_until_parked();
     cx.simulate_path_prompt_response(|options| {
         assert!(options.directories && !options.files && !options.multiple);
-        Some(vec!["/picked".into()])
+        Some(vec![picked.clone()])
     });
     cx.run_until_parked();
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
-        assert_eq!(window.find("open-directory-path").value(), Some("/picked"));
+        assert_eq!(
+            window.find("open-directory-path").value(),
+            Some(picked_text.as_str())
+        );
         window.click("open-directory-confirm", cx);
     })
     .unwrap();
     cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
         window.render_frame(cx);
-        window.find("local-path").value() == Some("/picked")
+        window.find("local-path").value() == Some(picked_text.as_str())
     })
     .await;
 }
@@ -1465,7 +1480,10 @@ async fn sftp_file_commands_confirm_validate_and_send_one_operation(cx: &mut Tes
     .await;
     assert_eq!(
         local.calls.lock().unwrap()[0],
-        r#"trash ["/local/tester/文件 乙.txt"]"#
+        format!(
+            "trash {:?}",
+            vec![std::path::Path::new("/local/tester").join("文件 乙.txt")]
+        )
     );
 
     // 重命名 checks the name against the listing before sending anything.
@@ -1997,10 +2015,29 @@ async fn the_sftp_tab_can_be_renamed_and_follow_the_host_again(cx: &mut TestAppC
 
 #[gpui_kit::test]
 async fn sftp_clicking_empty_list_space_makes_that_pane_current_at_once(cx: &mut TestAppContext) {
-    use gpui_kit::{MouseDownEvent, MouseUpEvent};
     let provider = Arc::new(FakeSftpProvider::default());
-    let (handle, _) = open_workspace_with_sftp(cx, provider);
-    open_test_explorer(cx, handle).await;
+    let local = FakeLocalDirectory {
+        empty: true,
+        ..Default::default()
+    };
+    let (handle, workspace) = open_workspace_with_services(cx, provider, local);
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.dispatch_action(Box::new(OpenExplorer(HostId(DB_01))), cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        window.render_frame(cx);
+        window
+            .within(("remote-pane", SFTP_TAB))
+            .try_find("file:文件 甲.txt")
+            .is_some()
+            && window
+                .within(("local-pane", SFTP_TAB))
+                .try_find("name:..")
+                .is_some()
+    })
+    .await;
     // Focus events only reach an active window.
     cx.update_window(handle.into(), |_, window, _| window.activate_window())
         .unwrap();
@@ -2009,42 +2046,50 @@ async fn sftp_clicking_empty_list_space_makes_that_pane_current_at_once(cx: &mut
         window.render_frame(cx);
         assert_eq!(window.find("remote-path").selected(), Some(true));
         assert_eq!(window.find("local-path").selected(), Some(false));
-        // Below the last row of the local list: only the table takes focus.
+        // The empty directory has only its parent row. Click the blank
+        // body, clear of that row and the scrollbar tracks at the edges.
         let table = window
             .within(("local-pane", SFTP_TAB))
             .find("table")
             .bounds();
-        let position = point(table.center().x, table.bottom() - px(8.));
-        window.dispatch_event(
-            MouseDownEvent {
-                button: MouseButton::Left,
-                position,
-                modifiers: Default::default(),
-                click_count: 1,
-                first_mouse: false,
-            }
-            .to_platform_input(),
-            cx,
+        let parent = window
+            .within(("local-pane", SFTP_TAB))
+            .find("name:..")
+            .bounds();
+        let center = table.center();
+        let track = gpui_kit::component::scroll::Scrollbar::width();
+        assert!(center.y > parent.bottom(), "click must be below every row");
+        assert!(
+            center.y < table.bottom() - track,
+            "click must be above the horizontal scrollbar"
         );
-        window.dispatch_event(
-            MouseUpEvent {
-                button: MouseButton::Left,
-                position,
-                modifiers: Default::default(),
-                click_count: 1,
-            }
-            .to_platform_input(),
-            cx,
+        assert!(
+            center.x < table.right() - track,
+            "click must be left of the vertical scrollbar"
         );
+        window
+            .within(("local-pane", SFTP_TAB))
+            .click_at("table", center - table.origin, cx);
     })
     .unwrap();
     cx.run_until_parked();
-    // No render of our own: only the frames the click asked for.
-    cx.update_window(handle.into(), |_, window, _| {
-        assert_eq!(window.find("local-path").selected(), Some(true));
-        assert_eq!(window.find("remote-path").selected(), Some(false));
+    cx.update_window(handle.into(), |_, window, cx| {
+        let explorer = workspace.read(cx).explorer(ExplorerId(SFTP_TAB)).unwrap();
+        let local_focus = explorer.read(cx).local().read(cx).focus_handle(cx);
+        assert!(
+            local_focus.is_focused(window),
+            "empty space must focus its table"
+        );
     })
     .unwrap();
+    // The pane follows focus through a deferred callback during a draw;
+    // observe the current-pane indicators in a completed frame.
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        window.render_frame(cx);
+        window.find("local-path").selected() == Some(true)
+            && window.find("remote-path").selected() == Some(false)
+    })
+    .await;
 }
 
 #[gpui_kit::test]

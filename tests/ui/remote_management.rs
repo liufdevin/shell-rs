@@ -1,4 +1,5 @@
 use crate::support::*;
+use gpui_kit::Focusable as _;
 use shellrs::{
     app::RemoteAction,
     cli::Secret,
@@ -849,7 +850,14 @@ async fn remote_paths_load_on_connect_refresh_without_diagnostics_and_discard_ol
         backend.path_calls.load(Ordering::SeqCst) > count && !service.read(cx).is_busy()
     })
     .await;
-    dispatch(cx, handle, Command::DisconnectServer(server.id.clone()));
+    // A connection may stop externally while its details modal owns focus.
+    in_frame(cx, handle, |window, cx| {
+        workspace.read(cx).focus_handle(cx).dispatch_action(
+            &RemoteAction(Command::DisconnectServer(server.id.clone())),
+            window,
+            cx,
+        );
+    });
     cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
         service.read(cx).connection().is_none()
     })
@@ -857,6 +865,10 @@ async fn remote_paths_load_on_connect_refresh_without_diagnostics_and_discard_ol
     in_frame(cx, handle, |window, _| {
         assert!(window.try_find("remote-current-paths").is_none())
     });
+    // Close details before the user reconnects from the underlying server list.
+    for _ in 0..2 {
+        in_frame(cx, handle, |window, cx| window.press("escape", cx));
+    }
     *backend.diagnostic_transport.lock().unwrap() = Some(shellrs::remote::Transport::Direct);
     dispatch(
         cx,
@@ -868,6 +880,7 @@ async fn remote_paths_load_on_connect_refresh_without_diagnostics_and_discard_ol
     })
     .await;
     assert!(service.read_with(cx, |service, _| service.paths(&server.id).is_none()));
+    dispatch(cx, handle, Command::Networks(server.id.clone()));
     backend.hold_paths.store(false, Ordering::SeqCst);
     cx.wait_for(handle.into(), Duration::from_secs(3), |window, cx| {
         !service.read(cx).is_busy()
@@ -885,7 +898,14 @@ async fn remote_paths_load_on_connect_refresh_without_diagnostics_and_discard_ol
             .iter()
             .any(|call| call.starts_with("diagnose:"))
     );
-    dispatch(cx, handle, Command::DisconnectServer(server.id.clone()));
+    // A connection may stop externally while its details modal owns focus.
+    in_frame(cx, handle, |window, cx| {
+        workspace.read(cx).focus_handle(cx).dispatch_action(
+            &RemoteAction(Command::DisconnectServer(server.id.clone())),
+            window,
+            cx,
+        );
+    });
     cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
         service.read(cx).connection().is_none()
     })
