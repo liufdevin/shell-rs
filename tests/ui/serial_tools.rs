@@ -1542,7 +1542,7 @@ fn serial_assistant_entry_defaults_to_visible_and_follows_app_settings(cx: &mut 
         window.click("open-settings", cx);
     });
     in_frame(cx, handle, |window, cx| {
-        window.within("settings").click("0-7", cx)
+        window.within("settings").click("0-8", cx)
     });
     in_frame(cx, handle, |window, cx| {
         assert_eq!(window.find("show-serial-assistant").checked(), Some(true));

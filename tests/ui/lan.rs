@@ -13,10 +13,10 @@ fn lan_sleep_and_wake_guidance_is_visible_without_changing_system_settings(
     let (handle, _) = open_workspace(cx);
     in_frame(cx, handle, |window, cx| window.click("open-settings", cx));
     in_frame(cx, handle, |window, cx| {
-        window.within("settings").click("0-8", cx)
+        window.within("settings").click("0-9", cx)
     });
     in_frame(cx, handle, |window, cx| {
-        window.within("settings").click("0-8-0", cx)
+        window.within("settings").click("0-9-0", cx)
     });
     in_frame(cx, handle, |window, _| {
         if cfg!(windows) {
@@ -231,10 +231,10 @@ async fn shared_ssh_opens_interactive_tabs_and_reconnects_only_through_the_paire
     });
     in_frame(cx, handle, |window, cx| window.click("open-settings", cx));
     in_frame(cx, handle, |window, cx| {
-        window.within("settings").click("0-8", cx)
+        window.within("settings").click("0-9", cx)
     });
     in_frame(cx, handle, |window, cx| {
-        window.within("settings").click("0-8-4", cx)
+        window.within("settings").click("0-9-4", cx)
     });
     reveal_lan_control(cx, handle, "lan-open-host-shared").await;
     cx.wait_for(handle.into(), Duration::from_secs(5), |window, _| {
@@ -495,7 +495,7 @@ async fn firewall_buttons_check_explicitly_prevent_duplicate_jobs_and_handle_uac
     });
     in_frame(cx, handle, |window, cx| window.click("open-settings", cx));
     in_frame(cx, handle, |window, cx| {
-        window.within("settings").click("0-8", cx)
+        window.within("settings").click("0-9", cx)
     });
     in_frame(cx, handle, |window, cx| {
         assert_eq!(
@@ -644,7 +644,7 @@ async fn firewall_removal_requires_verified_absence_and_can_be_configured_again(
     });
     in_frame(cx, handle, |window, cx| window.click("open-settings", cx));
     in_frame(cx, handle, |window, cx| {
-        window.within("settings").click("0-8", cx)
+        window.within("settings").click("0-9", cx)
     });
     for expected in [
         "已取消管理员授权",
@@ -723,7 +723,7 @@ fn unsupported_firewall_controls_are_hidden_and_never_start_a_job(cx: &mut TestA
     });
     in_frame(cx, handle, |window, cx| window.click("open-settings", cx));
     in_frame(cx, handle, |window, cx| {
-        window.within("settings").click("0-8", cx)
+        window.within("settings").click("0-9", cx)
     });
     in_frame(cx, handle, |window, cx| {
         assert!(window.try_find("lan-firewall-check").is_none());
@@ -764,30 +764,29 @@ async fn ipv6_addresses_connect_from_the_lan_settings_without_protocol_notices(
     });
     in_frame(cx, handle, |window, cx| window.click("open-settings", cx));
     in_frame(cx, handle, |window, cx| {
-        window.within("settings").click("0-8", cx)
+        window.within("settings").click("0-9", cx)
     });
     in_frame(cx, handle, |window, cx| {
-        window.within("settings").click("0-8-3", cx)
+        window.within("settings").click("0-9-3", cx)
     });
     in_frame(cx, handle, |window, cx| {
         window.click("lan-address", cx);
         window.input(&owner_network.tcp_address.to_string(), cx);
+    });
+    in_frame(cx, handle, |window, cx| {
         window.click("lan-inspect", cx);
     });
     cx.wait_for(handle.into(), Duration::from_secs(8), |window, _| {
         window.try_find("lan-remote-password").is_some()
     })
     .await;
-    in_frame(cx, handle, |window, cx| {
-        window.scroll(
-            "lan-address",
-            gpui_kit::ScrollDelta::Pixels(point(px(0.), px(-400.))),
-            cx,
-        );
-    });
+    reveal_lan_control(cx, handle, "lan-remote-password").await;
     in_frame(cx, handle, |window, cx| {
         window.click("lan-remote-password", cx);
         window.input("test pairing password", cx);
+    });
+    reveal_lan_control(cx, handle, "lan-password-pair").await;
+    in_frame(cx, handle, |window, cx| {
         window.click("lan-password-pair", cx);
     });
     cx.wait_for(handle.into(), Duration::from_secs(8), |_, _| {
@@ -884,10 +883,10 @@ async fn request_pairing_notifies_the_controller_once_when_approved(cx: &mut Tes
     });
     in_frame(cx, handle, |window, cx| window.click("open-settings", cx));
     in_frame(cx, handle, |window, cx| {
-        window.within("settings").click("0-8", cx)
+        window.within("settings").click("0-9", cx)
     });
     in_frame(cx, handle, |window, cx| {
-        window.within("settings").click("0-8-3", cx)
+        window.within("settings").click("0-9-3", cx)
     });
     cx.wait_for(handle.into(), Duration::from_secs(5), |window, _| {
         window.try_find("lan-request-pair").is_some()
@@ -923,7 +922,7 @@ async fn lan_settings_separate_connection_pairing_sharing_and_access_into_named_
     cx.simulate_window_resize(handle.into(), size(px(1100.), px(800.)));
     in_frame(cx, handle, |window, cx| window.click("open-settings", cx));
     in_frame(cx, handle, |window, cx| {
-        window.within("settings").click("0-8", cx)
+        window.within("settings").click("0-9", cx)
     });
     for (index, id) in [
         (0, "lan-connection-section"),
@@ -936,7 +935,7 @@ async fn lan_settings_separate_connection_pairing_sharing_and_access_into_named_
         (8, "lan-activity-section"),
     ] {
         in_frame(cx, handle, |window, cx| {
-            window.within("settings").click(format!("0-8-{index}"), cx)
+            window.within("settings").click(format!("0-9-{index}"), cx)
         });
         cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
             window.try_find(id).is_some_and(|element| element.visible())
@@ -973,7 +972,7 @@ fn settings_search_finds_lan_and_exposes_its_status_to_assistive_technology(
                     && element.path().contains(&ElementId::from("settings"))
             })
             .expect("settings search");
-        window.click(search.path().last().unwrap().clone(), cx);
+        window.within("settings").click("input-state", cx);
         window.input("局域网协作", cx);
     });
     in_frame(cx, handle, |window, _| {
@@ -996,7 +995,7 @@ async fn lan_settings_require_a_matching_password_before_enabling(cx: &mut TestA
     });
     in_frame(cx, handle, |window, cx| window.click("open-settings", cx));
     in_frame(cx, handle, |window, cx| {
-        window.within("settings").click("0-8", cx)
+        window.within("settings").click("0-9", cx)
     });
     in_frame(cx, handle, |window, cx| {
         assert_eq!(window.find("lan-enable").label(), Some("启用局域网协作"));
@@ -1081,7 +1080,7 @@ async fn discoverability_is_an_independent_persisted_switch_and_starts_off(
     });
     in_frame(cx, handle, |window, cx| window.click("open-settings", cx));
     in_frame(cx, handle, |window, cx| {
-        window.within("settings").click("0-8", cx)
+        window.within("settings").click("0-9", cx)
     });
     in_frame(cx, handle, |window, cx| {
         assert_eq!(window.find("lan-enable").checked(), Some(false));
@@ -1166,10 +1165,10 @@ async fn incoming_pair_can_be_rejected_blacklisted_unblocked_and_then_accepted(
     });
     in_frame(cx, handle, |window, cx| window.click("open-settings", cx));
     in_frame(cx, handle, |window, cx| {
-        window.within("settings").click("0-8", cx)
+        window.within("settings").click("0-9", cx)
     });
     in_frame(cx, handle, |window, cx| {
-        window.within("settings").click("0-8-7", cx)
+        window.within("settings").click("0-9-7", cx)
     });
     reveal_lan_control(cx, handle, "lan-unblock-127.0.0.1").await;
     in_frame(cx, handle, |window, cx| {
@@ -1315,10 +1314,10 @@ async fn shared_serial_and_adb_open_real_terminal_views_and_revoke_without_local
     });
     in_frame(cx, handle, |window, cx| window.click("open-settings", cx));
     in_frame(cx, handle, |window, cx| {
-        window.within("settings").click("0-8", cx)
+        window.within("settings").click("0-9", cx)
     });
     in_frame(cx, handle, |window, cx| {
-        window.within("settings").click("0-8-4", cx)
+        window.within("settings").click("0-9-4", cx)
     });
     reveal_lan_control(cx, handle, "lan-open-device-uart").await;
     cx.wait_for(handle.into(), Duration::from_secs(8), |window, _| {

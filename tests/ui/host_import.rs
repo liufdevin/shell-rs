@@ -107,7 +107,7 @@ async fn xshell_import_from_sync_previews_groups_accounts_and_protocols_before_p
     let (handle, workspace) = open_workspace_with_store(cx, store);
     in_frame(cx, handle, |window, cx| window.click("open-settings", cx));
     in_frame(cx, handle, |window, cx| {
-        window.within("settings").click("0-6", cx)
+        window.within("settings").click("0-7", cx)
     });
     in_frame(cx, handle, |window, cx| window.click("import-xshell", cx));
     in_frame(cx, handle, |window, cx| {
@@ -193,7 +193,7 @@ async fn xshell_file_selection_and_cancel_leave_existing_data_untouched(cx: &mut
     let (handle, workspace) = open_workspace_with_store(cx, HostStore::empty());
     in_frame(cx, handle, |window, cx| window.click("open-settings", cx));
     in_frame(cx, handle, |window, cx| {
-        window.within("settings").click("0-6", cx)
+        window.within("settings").click("0-7", cx)
     });
     in_frame(cx, handle, |window, cx| window.click("import-xshell", cx));
     in_frame(cx, handle, |window, cx| {
@@ -300,7 +300,7 @@ async fn mobaxterm_combined_import_selects_hosts_and_colors_independently(cx: &m
         store.settings().terminal_theme.imported.is_empty()
     }));
     in_frame(cx, handle, |window, cx| {
-        window.within("settings").click("0-6", cx)
+        window.within("settings").click("0-7", cx)
     });
     in_frame(cx, handle, |window, cx| {
         window.click("import-mobaxterm", cx)
@@ -382,7 +382,7 @@ async fn mobaxterm_combined_import_selects_hosts_and_colors_independently(cx: &m
         gpui_kit::Hsla::from(gpui_kit::rgb(0x010203))
     );
     in_frame(cx, handle, |window, cx| {
-        window.within("settings").click("0-6", cx)
+        window.within("settings").click("0-7", cx)
     });
     in_frame(cx, handle, |window, cx| {
         window.click("import-mobaxterm", cx)
@@ -457,7 +457,7 @@ async fn mobaxterm_malformed_colors_warn_but_do_not_prevent_host_only_import(
     let (handle, workspace) = open_workspace_with_store(cx, HostStore::empty());
     in_frame(cx, handle, |window, cx| window.click("open-settings", cx));
     in_frame(cx, handle, |window, cx| {
-        window.within("settings").click("0-6", cx)
+        window.within("settings").click("0-7", cx)
     });
     in_frame(cx, handle, |window, cx| {
         window.click("import-mobaxterm", cx)
@@ -514,7 +514,7 @@ async fn mobaxterm_import_from_sync_previews_and_persists_hosts_without_password
     let (handle, workspace) = open_workspace_with_store(cx, store);
     in_frame(cx, handle, |window, cx| window.click("open-settings", cx));
     in_frame(cx, handle, |window, cx| {
-        window.within("settings").click("0-6", cx)
+        window.within("settings").click("0-7", cx)
     });
     in_frame(cx, handle, |window, cx| {
         window.click("import-mobaxterm", cx)
@@ -594,7 +594,7 @@ async fn mobaxterm_interface_only_export_explains_missing_hosts_and_cancel_chang
     let (handle, workspace) = open_workspace_with_store(cx, HostStore::empty());
     in_frame(cx, handle, |window, cx| window.click("open-settings", cx));
     in_frame(cx, handle, |window, cx| {
-        window.within("settings").click("0-6", cx)
+        window.within("settings").click("0-7", cx)
     });
     in_frame(cx, handle, |window, cx| {
         window.click("import-mobaxterm", cx)

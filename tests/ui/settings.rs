@@ -82,22 +82,10 @@ async fn background_image_controls_follow_appearance_and_preserve_originals(
     in_frame(cx, handle, |window, cx| {
         window.within("settings").click("0-0", cx)
     });
-    for _ in 0..4 {
-        in_frame(cx, handle, |window, cx| {
-            let page = window.find("settings").bounds();
-            window.dispatch_event(
-                gpui_kit::ScrollEvent {
-                    position: point(page.center().x, page.top() + px(60.)),
-                    delta: gpui_kit::ScrollDelta::Pixels(point(px(0.), px(-500.))),
-                    modifiers: Default::default(),
-                    touch_phase: gpui_kit::TouchPhase::Moved,
-                    source: gpui_kit::ScrollSource::Pointer,
-                }
-                .to_platform_input(),
-                cx,
-            );
-        });
-    }
+    // Navigate to the dark background group; Settings virtualizes its groups.
+    in_frame(cx, handle, |window, cx| {
+        window.within("settings").click("0-0-3", cx)
+    });
     in_frame(cx, handle, |window, cx| {
         assert_eq!(window.find("background-image-dark").label(), Some("未选择"));
         window.click("background-choose-dark", cx);
@@ -450,6 +438,10 @@ async fn xshell_schemes_import_apply_update_and_delete_in_settings(cx: &mut Test
         settings.read(cx).settings().terminal_theme.imported[0]
             .key()
             .to_owned()
+    });
+    // Reveal the theme group after its imported card changes the list height.
+    in_frame(cx, handle, |window, cx| {
+        window.within("settings").click("0-0-1", cx)
     });
     in_frame(cx, handle, |window, cx| {
         window.click(

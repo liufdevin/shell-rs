@@ -338,7 +338,7 @@ async fn mirror_survives_dialog_close_and_stops_on_request(cx: &mut TestAppConte
     message(cx, handle, "android-mirror-status", "投屏运行中").await;
     in_frame(cx, handle, |window, cx| {
         assert_eq!(window.find("android-mirror").label(), Some("停止投屏"));
-        assert!(!enabled(&window.find("android-mirror-audio")));
+        assert_eq!(window.find("android-mirror-audio").disabled(), Some(true));
         window.dispatch_action(Box::new(AdbDeviceAction(DeviceCommand::StartMirror)), cx);
         window.press("escape", cx);
     });
@@ -403,10 +403,11 @@ async fn screen_control_is_compact_and_audio_is_off_by_default(cx: &mut TestAppC
     in_frame(cx, handle, |window, cx| {
         assert_eq!(window.find("android-mirror").label(), Some("开始投屏"));
         assert_eq!(window.find("android-mirror-audio").checked(), Some(false));
-        assert_eq!(
-            window.find("android-mirror").bounds().center().y,
-            window.find("android-mirror-audio").bounds().center().y
-        );
+        // Standard controls round independently: 0.11 measures 224px and
+        // 223.75px here; keep subpixel alignment within half a pixel.
+        let mirror_y = window.find("android-mirror").bounds().center().y;
+        let audio_y = window.find("android-mirror-audio").bounds().center().y;
+        assert!((mirror_y - audio_y).abs() <= px(0.5));
         assert!(
             window.find("android-install").bounds().size.width
                 < window.find("android-device-manager").bounds().size.width
@@ -464,7 +465,7 @@ async fn audio_can_be_selected_by_keyboard_and_is_fixed_until_mirroring_stops(
             .contains(&"mirror:android:audio=true".into())
     );
     in_frame(cx, handle, |window, cx| {
-        assert!(!enabled(&window.find("android-mirror-audio")));
+        assert_eq!(window.find("android-mirror-audio").disabled(), Some(true));
         window.dispatch_action(
             Box::new(AdbDeviceAction(DeviceCommand::SetMirrorAudio(false))),
             cx,
@@ -476,7 +477,9 @@ async fn audio_can_be_selected_by_keyboard_and_is_fixed_until_mirroring_stops(
     });
     in_frame(cx, handle, |window, cx| {
         assert_eq!(window.find("android-mirror").label(), Some("开始投屏"));
-        assert!(enabled(&window.find("android-mirror-audio")));
+        // An enabled control's semantics omit the attribute rather than
+        // reporting `false`.
+        assert_ne!(window.find("android-mirror-audio").disabled(), Some(true));
         window.click("android-mirror-audio", cx);
     });
     in_frame(cx, handle, |window, cx| window.click("android-mirror", cx));
@@ -498,7 +501,7 @@ async fn android10_can_be_controlled_but_cannot_enable_audio(cx: &mut TestAppCon
     detected(cx, handle).await;
     in_frame(cx, handle, |window, cx| {
         assert!(enabled(&window.find("android-mirror")));
-        assert!(!enabled(&window.find("android-mirror-audio")));
+        assert_eq!(window.find("android-mirror-audio").disabled(), Some(true));
         window.dispatch_action(
             Box::new(AdbDeviceAction(DeviceCommand::SetMirrorAudio(true))),
             cx,

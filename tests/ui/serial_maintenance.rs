@@ -398,7 +398,7 @@ fn serial_maintenance_entry_is_in_application_settings_and_opens_without_scannin
     let (handle, _) = open_workspace(cx);
     in_frame(cx, handle, |window, cx| window.click("open-settings", cx));
     in_frame(cx, handle, |window, cx| {
-        window.within("settings").click("0-7", cx)
+        window.within("settings").click("0-8", cx)
     });
     for _ in 0..8 {
         let visible = in_frame(cx, handle, |window, cx| {

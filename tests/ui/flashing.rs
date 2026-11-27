@@ -49,7 +49,7 @@ async fn flashing_driver_check_is_manual_read_only_and_can_be_retried(cx: &mut T
         )
     });
     in_frame(cx, handle, |window, cx| {
-        window.within("settings").click("0-7", cx)
+        window.within("settings").click("0-8", cx)
     });
     for _ in 0..8 {
         if in_frame(cx, handle, |window, _| {
@@ -134,7 +134,7 @@ fn flashing_is_hidden_until_enabled_in_application_settings(cx: &mut TestAppCont
         window.click("open-settings", cx);
     });
     in_frame(cx, handle, |window, cx| {
-        window.within("settings").click("0-7", cx);
+        window.within("settings").click("0-8", cx);
     });
     for _ in 0..8 {
         if in_frame(cx, handle, |window, _| {
