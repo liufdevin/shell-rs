@@ -61,10 +61,10 @@ pub use vault::{
     unlock_vault, vault_status,
 };
 pub use wire::{
-    Auth, BookmarkData, Capabilities, CredentialData, CredentialKind, Endpoint, ForwardData,
-    ForwardKind, GroupData, HostData, Protocol, ProxyData, ProxyKind, RecordData, Route,
-    SnippetCategoryData, SnippetData, SnippetScope, SnippetStep, SnippetWait, TelnetData,
-    bookmark_id, valid_snippet_steps,
+    AiProtocol, AiProviderData, Auth, BookmarkData, Capabilities, CredentialData, CredentialKind,
+    Endpoint, ForwardData, ForwardKind, GroupData, HostData, Protocol, ProxyData, ProxyKind,
+    RecordData, Route, SnippetCategoryData, SnippetData, SnippetScope, SnippetStep, SnippetWait,
+    TelnetData, bookmark_id, valid_snippet_steps,
 };
 
 /// The snapshot format this version writes and reads.

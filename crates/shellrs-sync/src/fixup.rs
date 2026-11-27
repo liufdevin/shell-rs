@@ -129,7 +129,9 @@ pub(crate) fn repairs(set: &RecordSet) -> Vec<(RecordKey, Body)> {
             RecordData::CredentialPassword(_)
             | RecordData::Passphrase(_)
             | RecordData::PrivateKey(_) => delete = deleted(Kind::Credential, &record.key.id),
-            RecordData::Credential(_)
+            RecordData::AiKey(_) => delete = deleted(Kind::AiProvider, &record.key.id),
+            RecordData::AiProvider(_)
+            | RecordData::Credential(_)
             | RecordData::SnippetCategory(_)
             | RecordData::Password(_)
             | RecordData::ProxyPassword(_) => {}

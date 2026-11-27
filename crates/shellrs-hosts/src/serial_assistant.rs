@@ -286,7 +286,9 @@ mod tests {
         drop(data);
         let connection = rusqlite::Connection::open(&path).unwrap();
         connection
-            .execute_batch("DROP TABLE serial_assistants; PRAGMA user_version = 27;")
+            .execute_batch(
+                "DROP TABLE serial_assistants; DROP TABLE ai_providers; PRAGMA user_version = 27;",
+            )
             .unwrap();
         drop(connection);
         let data = HostData::load(HostDatabase::open(&path).unwrap()).unwrap();

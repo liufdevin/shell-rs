@@ -32,6 +32,9 @@ pub enum SecretRef {
         host: String,
         port: u16,
     },
+    /// The API key of a model service of the AI assistant, by the
+    /// service's public id.
+    AiKey { provider: String },
     /// The password of a connection that is not saved, by an id the app
     /// gave it. The core keeps it in memory only: the keychain never sees
     /// it.
@@ -62,6 +65,9 @@ impl From<&ssh::SecretRef> for SecretRef {
                 host: host.clone(),
                 port: *port,
             },
+            ssh::SecretRef::AiKey { provider } => Self::AiKey {
+                provider: provider.clone(),
+            },
             ssh::SecretRef::Temporary { host } => Self::Temporary { host: *host },
             ssh::SecretRef::SyncKeyring => Self::SyncKeyring,
             ssh::SecretRef::SyncLogin => Self::SyncLogin,
@@ -76,6 +82,7 @@ impl From<SecretRef> for ssh::SecretRef {
             SecretRef::Passphrase { key_path } => Self::Passphrase { key_path },
             SecretRef::Credential { keychain_id } => Self::credential(keychain_id),
             SecretRef::Proxy { user, host, port } => Self::proxy(user, host, port),
+            SecretRef::AiKey { provider } => Self::ai_key(provider),
             SecretRef::Temporary { host } => Self::temporary(host),
             SecretRef::SyncKeyring => Self::SyncKeyring,
             SecretRef::SyncLogin => Self::SyncLogin,
@@ -217,6 +224,12 @@ mod tests {
                 port: 3128,
             }),
             "proxy:me@proxy:3128"
+        );
+        assert_eq!(
+            account_for(SecretRef::AiKey {
+                provider: "Jwg5rHvXCxw89paM".into()
+            }),
+            "ai_key:Jwg5rHvXCxw89paM"
         );
         assert_eq!(account_for(SecretRef::Temporary { host: 7 }), "temporary:7");
         assert_eq!(account_for(SecretRef::SyncKeyring), "sync:keyring");

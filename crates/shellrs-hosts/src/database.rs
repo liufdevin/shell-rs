@@ -14,12 +14,13 @@ use gpui_shared_string::SharedString;
 use rusqlite::{Connection, params};
 
 use super::{
-    AuthKind, BookmarkSide, Credential, CredentialDraft, CredentialId, CredentialKind, DataBits,
-    FlowControl, ForwardDraft, ForwardEndpoint, ForwardId, ForwardKind, ForwardRule, GroupDraft,
-    GroupId, Host, HostDraft, HostGroup, HostId, HostOs, Parity, Protocol, ProxyKind,
-    ProxySettings, PublicId, Route, SavedTerminal, SavedTerminalId, SavedTerminalTab,
-    SerialSettings, Snippet, SnippetCategory, SnippetCategoryId, SnippetDraft, SnippetId,
-    SnippetScope, StopBits, TelnetSettings, TerminalGroup, TerminalGroupId,
+    AiProtocol, AiProvider, AiProviderDraft, AiProviderId, AuthKind, BookmarkSide, Credential,
+    CredentialDraft, CredentialId, CredentialKind, DataBits, FlowControl, ForwardDraft,
+    ForwardEndpoint, ForwardId, ForwardKind, ForwardRule, GroupDraft, GroupId, Host, HostDraft,
+    HostGroup, HostId, HostOs, Parity, Protocol, ProxyKind, ProxySettings, PublicId, Route,
+    SavedTerminal, SavedTerminalId, SavedTerminalTab, SerialSettings, Snippet, SnippetCategory,
+    SnippetCategoryId, SnippetDraft, SnippetId, SnippetScope, StopBits, TelnetSettings,
+    TerminalGroup, TerminalGroupId,
 };
 
 /// SQLite's only integer type is `i64`, so the `u64` ids cross the boundary
@@ -41,7 +42,7 @@ fn from_sql(id: i64) -> u64 {
 /// command snippets, 15 the serial hosts, 16 the Telnet hosts, 17 each
 /// host's right sidebar, 18 the saved local terminals, 19 their titles, 20
 /// what sync needs, 21 each host's local connection log.
-const SCHEMA_VERSION: i64 = 32;
+const SCHEMA_VERSION: i64 = 33;
 
 /// The whole schema, as a new database gets it.
 ///
@@ -106,6 +107,11 @@ const SCHEMA_VERSION: i64 = 32;
 ///   key, never the secret; **sync_state** is the sync's one blob of state,
 ///   whose secrets are sealed; **sync_pending** names the secrets a round
 ///   brought that are not written yet, by their sync key.
+/// - **ai_providers** are the AI assistant's model services, in
+///   `sort_order`; `models` is a JSON list of model names, never empty. A
+///   service's id for sync and for its key in the keychain is its
+///   `public_id`; the key is never here. The assistant's
+///   conversations are not in this file: they have one of their own.
 ///
 /// A column added later goes after the table's last column here and is
 /// added to existing files with `ALTER TABLE ADD COLUMN`, which puts it in
@@ -298,7 +304,17 @@ CREATE TABLE sync_pending (
     kind TEXT NOT NULL,
     id   TEXT NOT NULL,
     PRIMARY KEY (kind, id)
-) STRICT, WITHOUT ROWID;";
+) STRICT, WITHOUT ROWID;
+CREATE TABLE ai_providers (
+    id         INTEGER PRIMARY KEY,
+    public_id  TEXT NOT NULL UNIQUE,
+    name       TEXT NOT NULL CHECK (name <> ''),
+    protocol   TEXT NOT NULL CHECK (protocol IN ('anthropic', 'openai', 'openai_responses')),
+    base_url   TEXT NOT NULL CHECK (base_url <> ''),
+    models     TEXT NOT NULL CHECK (json_array_length(models) > 0),
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    edited_ms  INTEGER NOT NULL DEFAULT 0
+) STRICT;";
 
 /// One step from a version to the next: one transaction that ends by
 /// recording the version it reached.
@@ -315,7 +331,7 @@ enum Step {
 ///
 /// A step is history: it says what that version's change was, and stays as
 /// written when `SCHEMA` changes again.
-const STEPS: [(i64, Step); 19] = [
+const STEPS: [(i64, Step); 20] = [
     (
     13,
     // The command snippets.
@@ -437,6 +453,25 @@ COMMIT;",
     (29, Step::Sql("BEGIN; UPDATE hosts SET serial_dtr = 1, serial_rts = 1 WHERE protocol = 'serial'; PRAGMA user_version = 30; COMMIT;")),
     (30, Step::Sql("BEGIN; CREATE TABLE IF NOT EXISTS manual_host_order (scope INTEGER PRIMARY KEY, group_id INTEGER UNIQUE REFERENCES groups(id) ON DELETE CASCADE, CHECK (scope = COALESCE(group_id, 0))) STRICT; PRAGMA user_version = 31; COMMIT;")),
     (31, Step::Code(add_snippet_steps)),
+    (
+        32,
+        // The AI assistant's model services; API keys stay in the keychain.
+        Step::Sql(
+            "BEGIN;
+CREATE TABLE ai_providers (
+    id         INTEGER PRIMARY KEY,
+    public_id  TEXT NOT NULL UNIQUE,
+    name       TEXT NOT NULL CHECK (name <> ''),
+    protocol   TEXT NOT NULL CHECK (protocol IN ('anthropic', 'openai', 'openai_responses')),
+    base_url   TEXT NOT NULL CHECK (base_url <> ''),
+    models     TEXT NOT NULL CHECK (json_array_length(models) > 0),
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    edited_ms  INTEGER NOT NULL DEFAULT 0
+) STRICT;
+PRAGMA user_version = 33;
+COMMIT;",
+        ),
+    ),
 ];
 
 fn add_snippet_steps(connection: &Connection) -> rusqlite::Result<()> {
@@ -733,6 +768,8 @@ pub struct StoredData {
     pub secret_edits: HashMap<(String, String), u64>,
     /// The secrets a round brought and that are not written yet, likewise.
     pub sync_pending: Vec<(String, String)>,
+    /// The AI assistant's model services in the order the list shows them.
+    pub ai_providers: Vec<AiProvider>,
 }
 
 pub struct HostDatabase {
@@ -1270,6 +1307,38 @@ impl HostDatabase {
             .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
 
+        let ai_providers = self
+            .connection
+            .prepare(
+                "SELECT id, public_id, name, protocol, base_url, models, sort_order, \
+                 edited_ms FROM ai_providers ORDER BY sort_order, id",
+            )?
+            .query_map([], |row| {
+                let id: i64 = row.get(0)?;
+                let public_id: String = row.get(1)?;
+                let name: String = row.get(2)?;
+                let protocol: String = row.get(3)?;
+                let base_url: String = row.get(4)?;
+                let models: String = row.get(5)?;
+                let sort_order: i64 = row.get(6)?;
+                let edited_ms: i64 = row.get(7)?;
+                // The table's CHECKs admit only the protocols this build
+                // knows and a list of models.
+                let models = serde_json::from_str::<Vec<String>>(&models).ok();
+                Ok(AiProtocol::from_stored(&protocol)
+                    .zip(models)
+                    .map(|(protocol, models)| {
+                        let draft = AiProviderDraft::new(name, protocol, base_url, models);
+                        let mut provider = AiProvider::new(AiProviderId(from_sql(id)), draft);
+                        provider.public_id = PublicId::from_stored(public_id);
+                        provider.sort_order = sort_order;
+                        provider.edited_ms = from_sql(edited_ms);
+                        provider
+                    }))
+            })?
+            .filter_map(Result::transpose)
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+
         Ok(StoredData {
             groups,
             hosts,
@@ -1284,7 +1353,51 @@ impl HostDatabase {
             saved_terminal_tabs,
             secret_edits,
             sync_pending,
+            ai_providers,
         })
+    }
+
+    pub fn insert_ai_provider(&self, provider: &AiProvider) -> rusqlite::Result<()> {
+        self.connection.execute(
+            "INSERT INTO ai_providers (id, public_id, name, protocol, base_url, models, \
+             sort_order, edited_ms) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                to_sql(provider.id.0),
+                provider.public_id.as_str(),
+                provider.name.as_ref(),
+                provider.protocol.as_str(),
+                provider.base_url.as_ref(),
+                models_json(provider),
+                provider.sort_order,
+                to_sql(provider.edited_ms),
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn update_ai_provider(&self, provider: &AiProvider) -> rusqlite::Result<()> {
+        self.connection.execute(
+            "UPDATE ai_providers SET name = ?2, protocol = ?3, base_url = ?4, models = ?5, \
+             sort_order = ?6, edited_ms = ?7 WHERE id = ?1",
+            params![
+                to_sql(provider.id.0),
+                provider.name.as_ref(),
+                provider.protocol.as_str(),
+                provider.base_url.as_ref(),
+                models_json(provider),
+                provider.sort_order,
+                to_sql(provider.edited_ms),
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn remove_ai_provider(&self, id: AiProviderId) -> rusqlite::Result<()> {
+        self.connection.execute(
+            "DELETE FROM ai_providers WHERE id = ?1",
+            params![to_sql(id.0)],
+        )?;
+        Ok(())
     }
 
     /// Run `write` in one transaction that lands whole or not at all: the
@@ -2278,6 +2391,12 @@ pub fn now_millis() -> u64 {
         .unwrap_or_default()
 }
 
+/// A model service's models as the `models` column holds them.
+fn models_json(provider: &AiProvider) -> String {
+    let models: Vec<&str> = provider.models.iter().map(|model| model.as_ref()).collect();
+    serde_json::to_string(&models).unwrap_or_else(|_| "[]".into())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2298,6 +2417,38 @@ mod tests {
                 group.map(GroupId),
             ),
         )
+    }
+
+    #[test]
+    fn a_version_32_file_gets_the_model_services_and_keeps_its_hosts() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("shellrs.db");
+        {
+            // Version 32 is this schema without the model services.
+            let old = Connection::open(&path).unwrap();
+            old.execute_batch(&format!(
+                "BEGIN;\n{SCHEMA}\nDROP TABLE ai_providers;\nPRAGMA user_version = 32;\nCOMMIT;"
+            ))
+            .unwrap();
+            old.execute_batch(
+                "INSERT INTO hosts (id, name, address, port, auth, username, edited_ms) \
+                 VALUES (1, 'web', '10.0.0.1', 22, 'password', 'root', 5);",
+            )
+            .unwrap();
+        }
+
+        let db = HostDatabase::open(&path).unwrap();
+        let version: i64 = db
+            .connection
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+        assert!(dir.path().join("shellrs.db.v32.bak").exists());
+        let fresh = HostDatabase::in_memory().unwrap();
+        assert_eq!(schema_of(&db.connection), schema_of(&fresh.connection));
+        let data = db.load().unwrap();
+        assert_eq!(data.hosts[0].name.as_ref(), "web");
+        assert!(data.ai_providers.is_empty());
     }
 
     #[test]
@@ -2326,7 +2477,9 @@ mod tests {
         database.insert_host(&saved).unwrap();
         database
             .connection
-            .execute_batch("DROP TABLE manual_host_order; PRAGMA user_version = 30;")
+            .execute_batch(
+                "DROP TABLE manual_host_order; DROP TABLE ai_providers; PRAGMA user_version = 30;",
+            )
             .unwrap();
         drop(database);
         let database = HostDatabase::open(&path).unwrap();
@@ -2341,7 +2494,7 @@ mod tests {
         let database = HostDatabase::open(&path).unwrap();
         database
             .connection
-            .execute_batch("DROP TABLE terminal_timestamp_preferences; PRAGMA user_version = 26;")
+            .execute_batch("DROP TABLE terminal_timestamp_preferences; DROP TABLE ai_providers; PRAGMA user_version = 26;")
             .unwrap();
         drop(database);
         let database = HostDatabase::open(&path).unwrap();
@@ -3621,7 +3774,7 @@ INSERT INTO snippets (id, category_id, name, command) VALUES (1, 1, 'ps', 'docke
             db.insert_host(&host(2, "COM5", None)).unwrap();
             db.connection
                 .execute_batch(
-                    "ALTER TABLE hosts DROP COLUMN device_log_settings; ALTER TABLE hosts DROP COLUMN monitor_settings; PRAGMA user_version = 24;",
+                    "ALTER TABLE hosts DROP COLUMN device_log_settings; ALTER TABLE hosts DROP COLUMN monitor_settings; DROP TABLE ai_providers; PRAGMA user_version = 24;",
                 )
                 .unwrap();
         }
@@ -3649,7 +3802,7 @@ INSERT INTO snippets (id, category_id, name, command) VALUES (1, 1, 'ps', 'docke
             db.insert_host(&host(2, "ubuntu", None)).unwrap();
             db.connection
                 .execute_batch(
-                    "ALTER TABLE hosts DROP COLUMN device_log_settings; PRAGMA user_version = 25;",
+                    "ALTER TABLE hosts DROP COLUMN device_log_settings; DROP TABLE ai_providers; PRAGMA user_version = 25;",
                 )
                 .unwrap();
         }
@@ -3682,7 +3835,7 @@ INSERT INTO snippets (id, category_id, name, command) VALUES (1, 1, 'ps', 'docke
             );
             db.insert_host(&host).unwrap();
             db.connection.execute_batch(
-                "ALTER TABLE hosts DROP COLUMN serial_dtr; ALTER TABLE hosts DROP COLUMN serial_rts; PRAGMA user_version = 28;"
+                "ALTER TABLE hosts DROP COLUMN serial_dtr; ALTER TABLE hosts DROP COLUMN serial_rts; DROP TABLE ai_providers; PRAGMA user_version = 28;"
             ).unwrap();
         }
         let db = HostDatabase::open(&path).unwrap();
@@ -3725,7 +3878,7 @@ INSERT INTO snippets (id, category_id, name, command) VALUES (1, 1, 'ps', 'docke
             db.insert_host(&serial).unwrap();
             db.connection
                 .execute_batch(
-                    "ALTER TABLE hosts DROP COLUMN device_log_settings; ALTER TABLE hosts DROP COLUMN monitor_settings; ALTER TABLE hosts DROP COLUMN serial_linux_shell; PRAGMA user_version = 23;",
+                    "ALTER TABLE hosts DROP COLUMN device_log_settings; ALTER TABLE hosts DROP COLUMN monitor_settings; ALTER TABLE hosts DROP COLUMN serial_linux_shell; DROP TABLE ai_providers; PRAGMA user_version = 23;",
                 )
                 .unwrap();
         }
@@ -3753,7 +3906,7 @@ INSERT INTO snippets (id, category_id, name, command) VALUES (1, 1, 'ps', 'docke
             db.insert_host(&saved).unwrap();
             db.connection
                 .execute_batch(
-                    "ALTER TABLE hosts DROP COLUMN device_log_settings; ALTER TABLE hosts DROP COLUMN monitor_settings; ALTER TABLE hosts DROP COLUMN serial_linux_shell; ALTER TABLE hosts DROP COLUMN terminal_encoding; PRAGMA user_version = 22;",
+                    "ALTER TABLE hosts DROP COLUMN device_log_settings; ALTER TABLE hosts DROP COLUMN monitor_settings; ALTER TABLE hosts DROP COLUMN serial_linux_shell; ALTER TABLE hosts DROP COLUMN terminal_encoding; DROP TABLE ai_providers; PRAGMA user_version = 22;",
                 )
                 .unwrap();
         }
@@ -3783,7 +3936,7 @@ ALTER TABLE hosts DROP COLUMN auto_reconnect;
 ALTER TABLE hosts DROP COLUMN reconnect_delay_secs;
 ALTER TABLE hosts DROP COLUMN log_enabled;
 ALTER TABLE hosts RENAME COLUMN log_directory TO log_file;
-PRAGMA user_version = 21;",
+DROP TABLE ai_providers; PRAGMA user_version = 21;",
                 )
                 .unwrap();
             db.connection
@@ -4415,6 +4568,7 @@ PRAGMA user_version = 21;",
             "secret_edits",
             "sync_state",
             "sync_pending",
+            "ai_providers",
         ] {
             assert!(tables.contains(&table.to_string()), "{table}");
         }

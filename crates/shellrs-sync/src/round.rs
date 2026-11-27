@@ -880,7 +880,10 @@ fn deliverable(
             RecordData::Passphrase(_) | RecordData::PrivateKey(_) => {
                 credential_kind(&key.id) == Some(CredentialKind::Key)
             }
-            RecordData::Credential(_)
+            // A model service's, while the service is there.
+            RecordData::AiKey(_) => has(Kind::AiProvider, &key.id),
+            RecordData::AiProvider(_)
+            | RecordData::Credential(_)
             | RecordData::SnippetCategory(_)
             | RecordData::Password(_)
             | RecordData::ProxyPassword(_) => true,

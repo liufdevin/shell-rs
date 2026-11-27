@@ -37,6 +37,8 @@ struct Remote {
     fault: Cell<Option<Fault>>,
     in_flight: Cell<usize>,
     max_in_flight: Cell<usize>,
+    first_writes: Option<tokio::sync::Barrier>,
+    write_arrivals: Cell<usize>,
     writes: Cell<usize>,
     reads: Cell<usize>,
     short_reads: Cell<bool>,
@@ -50,6 +52,8 @@ impl Remote {
             fault: Cell::new(None),
             in_flight: Cell::new(0),
             max_in_flight: Cell::new(0),
+            first_writes: None,
+            write_arrivals: Cell::new(0),
             writes: Cell::new(0),
             reads: Cell::new(0),
             short_reads: Cell::new(false),
@@ -208,6 +212,13 @@ impl RemoteFs for Remote {
         self.max_in_flight
             .set(self.max_in_flight.get().max(in_flight));
         let _guard = WriteGuard(&self.in_flight);
+        if let Some(barrier) = &self.first_writes {
+            let arrival = self.write_arrivals.get();
+            self.write_arrivals.set(arrival + 1);
+            if arrival < 2 {
+                barrier.wait().await;
+            }
+        }
         tokio::task::yield_now().await;
         let mut nodes = self.nodes.borrow_mut();
         let node = nodes.get_mut(handle).unwrap();
@@ -430,6 +441,13 @@ impl Drop for Answers {
         self.task.abort();
     }
 }
+// Upload scanning removes Windows' extended path prefix. Use the same
+// source identity in progress expectations and resume-journal lookups.
+fn tempdir() -> tempfile::TempDir {
+    let directory = std::env::temp_dir().canonicalize().unwrap();
+    tempfile::tempdir_in(dunce::simplified(&directory)).unwrap()
+}
+
 fn runtime() -> tokio::runtime::Runtime {
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -465,7 +483,7 @@ async fn run(
 #[test]
 fn recursive_upload_deduplicates_sources_and_preserves_empty_directories_and_links() {
     runtime().block_on(async {
-        let tmp = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
+        let tmp = tempdir();
         let root = tmp.path().join("中文 目录");
         std::fs::create_dir_all(root.join("空/嵌套")).unwrap();
         std::fs::write(root.join("零 字节"), []).unwrap();
@@ -521,7 +539,7 @@ fn recursive_upload_deduplicates_sources_and_preserves_empty_directories_and_lin
 #[test]
 fn winscp_style_upload_finishes_without_a_verification_phase() {
     runtime().block_on(async {
-        let tmp = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
+        let tmp = tempdir();
         let source = tmp.path().join("file");
         let data = vec![73; 2 * 1024 * 1024 + 17];
         std::fs::write(&source, &data).unwrap();
@@ -572,7 +590,7 @@ fn winscp_style_upload_finishes_without_a_verification_phase() {
 #[test]
 fn small_files_go_straight_to_their_names_several_at_once() {
     runtime().block_on(async {
-        let tmp = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
+        let tmp = tempdir();
         let root = tmp.path().join("dist");
         std::fs::create_dir_all(root.join("assets/js")).unwrap();
         for i in 0..20 {
@@ -586,7 +604,10 @@ fn small_files_go_straight_to_their_names_several_at_once() {
         let journal = tmp.path().join("journal");
         let answers = Answers::new(vec![]);
         let mut upload = batch(&root, Journal::new(journal.clone()), &answers.control).await;
-        let remote = Remote::new();
+        let mut remote = Remote::new();
+        // Wait for two writes to overlap regardless of local file-read
+        // scheduling. A sequential implementation hits run's timeout.
+        remote.first_writes = Some(tokio::sync::Barrier::new(2));
 
         run(&mut upload, &remote, &answers.control).await.unwrap();
 
@@ -628,7 +649,7 @@ fn small_files_go_straight_to_their_names_several_at_once() {
 #[test]
 fn overwriting_small_files_asks_once_for_all_of_them() {
     runtime().block_on(async {
-        let tmp = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
+        let tmp = tempdir();
         let root = tmp.path().join("dist");
         std::fs::create_dir(&root).unwrap();
         let remote = Remote::new();
@@ -667,7 +688,7 @@ fn overwriting_small_files_asks_once_for_all_of_them() {
 #[test]
 fn a_small_file_cut_off_is_written_again_or_removed() {
     runtime().block_on(async {
-        let tmp = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
+        let tmp = tempdir();
         let source = tmp.path().join("file");
         let data = vec![7; 50_000];
         std::fs::write(&source, &data).unwrap();
@@ -714,7 +735,7 @@ fn a_small_file_cut_off_is_written_again_or_removed() {
 #[test]
 fn resume_uses_remote_filepart_size_and_preserves_old_target() {
     runtime().block_on(async {
-        let tmp = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
+        let tmp = tempdir();
         let source = tmp.path().join("file");
         let data = vec![71; 150_000];
         std::fs::write(&source, &data).unwrap();
@@ -765,7 +786,7 @@ fn resume_uses_remote_filepart_size_and_preserves_old_target() {
 #[test]
 fn filepart_larger_than_source_requires_explicit_restart() {
     runtime().block_on(async {
-        let tmp = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
+        let tmp = tempdir();
         let source = tmp.path().join("file");
         std::fs::write(&source, vec![1; 200_000]).unwrap();
         let journal = Journal::new(tmp.path().join("journal"));
@@ -794,7 +815,7 @@ fn filepart_larger_than_source_requires_explicit_restart() {
 #[test]
 fn winscp_style_resume_does_not_prevalidate_the_source_version() {
     runtime().block_on(async {
-        let tmp = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
+        let tmp = tempdir();
         let source = tmp.path().join("file");
         let data = vec![1; 200_000];
         std::fs::write(&source, &data).unwrap();
@@ -832,7 +853,7 @@ fn winscp_style_resume_does_not_prevalidate_the_source_version() {
 #[test]
 fn winscp_style_resume_detects_filepart_without_a_local_record() {
     runtime().block_on(async {
-        let tmp = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
+        let tmp = tempdir();
         let source = tmp.path().join("file");
         let data = vec![3; 200_000];
         std::fs::write(&source, &data).unwrap();
@@ -861,7 +882,7 @@ fn winscp_style_resume_detects_filepart_without_a_local_record() {
 fn lost_replies_at_backup_publish_and_close_are_reconciled() {
     runtime().block_on(async {
         for fault in [Fault::Rename(1), Fault::Rename(2), Fault::Close] {
-            let tmp = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
+            let tmp = tempdir();
             let source = tmp.path().join("file");
             let data = vec![9; 200_000];
             std::fs::write(&source, &data).unwrap();
@@ -885,7 +906,7 @@ fn lost_replies_at_backup_publish_and_close_are_reconciled() {
 #[test]
 fn cancellation_retains_journal_and_skip_does_not_overwrite() {
     runtime().block_on(async {
-        let tmp = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
+        let tmp = tempdir();
         let source = tmp.path().join("file");
         std::fs::write(&source, b"new").unwrap();
         let remote = Remote::new();
@@ -912,7 +933,7 @@ fn cancellation_retains_journal_and_skip_does_not_overwrite() {
 #[test]
 fn directory_permission_error_is_reported_as_failure() {
     runtime().block_on(async {
-        let tmp = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
+        let tmp = tempdir();
         let source = tmp.path().join("blocked");
         std::fs::create_dir(&source).unwrap();
         let remote = Remote::new();
@@ -940,7 +961,7 @@ fn directory_permission_error_is_reported_as_failure() {
 fn retrying_an_unreadable_folder_adds_only_its_files_to_the_upload() {
     use std::os::unix::fs::PermissionsExt as _;
     runtime().block_on(async {
-        let tmp = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
+        let tmp = tempdir();
         let folder = tmp.path().join("folder");
         std::fs::create_dir(&folder).unwrap();
         std::fs::write(folder.join("inside.bin"), vec![1; 300]).unwrap();
@@ -988,7 +1009,7 @@ fn retrying_an_unreadable_folder_adds_only_its_files_to_the_upload() {
 #[test]
 fn retrying_an_unreadable_folder_adds_only_its_files_to_the_download() {
     runtime().block_on(async {
-        let tmp = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
+        let tmp = tempdir();
         let out = tmp.path().join("out");
         std::fs::create_dir(&out).unwrap();
         let remote = Remote::new();
@@ -1041,7 +1062,7 @@ fn paths_and_journals_reject_unsafe_identity() {
                 .as_str(),
             "/目录\\name"
         );
-        let tmp = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
+        let tmp = tempdir();
         let source = tmp.path().join("file");
         std::fs::write(&source, b"data").unwrap();
         let source_metadata = SourceMetadata::read(&source).await.unwrap();
@@ -1076,7 +1097,7 @@ fn paths_and_journals_reject_unsafe_identity() {
 fn openssh_protocol_uploads_offsets_links_metadata_and_replaces_readonly_targets() {
     runtime().block_on(async {
         use std::os::unix::fs::PermissionsExt as _;
-        let temp = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
+        let temp = tempdir();
         let dest = temp.path().join("remote");
         let source = temp.path().join("中文 目录");
         std::fs::create_dir_all(source.join("空目录/嵌套")).unwrap();
@@ -1433,7 +1454,7 @@ async fn run_download(
 #[test]
 fn download_copies_trees_links_and_empty_directories_in_order() {
     runtime().block_on(async {
-        let tmp = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
+        let tmp = tempdir();
         let data: Vec<u8> = (0..2 * 1024 * 1024 + 13).map(|i| (i % 251) as u8).collect();
         for short_reads in [false, true] {
             let out = tmp.path().join(format!("out-{short_reads}"));
@@ -1446,6 +1467,7 @@ fn download_copies_trees_links_and_empty_directories_in_order() {
             remote.dir("/srv/中文 目录/空", 0o755);
             remote.dir("/srv/中文 目录/嵌套", 0o755);
             remote.file("/srv/中文 目录/嵌套/b.txt", b"nested");
+            #[cfg(unix)]
             remote.link("/srv/中文 目录/链接", "large.bin");
             let answers = Answers::new(vec![]);
             let journal = DownloadJournal::new(tmp.path().join(format!("journal-{short_reads}")));
@@ -1492,7 +1514,7 @@ fn download_copies_trees_links_and_empty_directories_in_order() {
 #[test]
 fn download_resumes_from_the_partial_file_after_a_lost_connection() {
     runtime().block_on(async {
-        let tmp = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
+        let tmp = tempdir();
         let data: Vec<u8> = (0..300_000).map(|i| (i % 253) as u8).collect();
         let remote = Remote::new();
         remote.file("/big", &data);
@@ -1541,7 +1563,7 @@ fn download_resumes_from_the_partial_file_after_a_lost_connection() {
 #[test]
 fn download_asks_before_overwriting_and_keeps_the_replaced_permissions() {
     runtime().block_on(async {
-        let tmp = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
+        let tmp = tempdir();
         let target = tmp.path().join("file");
         std::fs::write(&target, b"old").unwrap();
         #[cfg(unix)]
@@ -1592,7 +1614,7 @@ fn download_asks_before_overwriting_and_keeps_the_replaced_permissions() {
 #[test]
 fn a_changed_remote_file_is_not_resumed_and_discard_cleans_up() {
     runtime().block_on(async {
-        let tmp = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
+        let tmp = tempdir();
         let remote = Remote::new();
         remote.file("/file", &vec![7; 200_000]);
         remote.fault.set(Some(Fault::Read(4)));
@@ -1660,7 +1682,7 @@ fn a_changed_remote_file_is_not_resumed_and_discard_cleans_up() {
 #[test]
 fn download_cancellation_keeps_the_partial_file() {
     runtime().block_on(async {
-        let tmp = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
+        let tmp = tempdir();
         let remote = Remote::new();
         remote.file("/file", &vec![1; 200_000]);
         let answers = Answers::new(vec![]);
@@ -1687,7 +1709,7 @@ fn download_cancellation_keeps_the_partial_file() {
 #[test]
 fn a_small_download_keeps_no_record_and_asks_nothing_about_a_partial_file() {
     runtime().block_on(async {
-        let tmp = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
+        let tmp = tempdir();
         let out = tmp.path().join("out");
         std::fs::create_dir(&out).unwrap();
         let journal = tmp.path().join("journal");
@@ -1741,7 +1763,7 @@ fn a_small_download_keeps_no_record_and_asks_nothing_about_a_partial_file() {
 fn openssh_protocol_downloads_lists_owners_and_changes_files_without_following_links() {
     runtime().block_on(async {
         use std::os::unix::fs::PermissionsExt as _;
-        let temp = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
+        let temp = tempdir();
         let served = temp.path().join("remote");
         let tree = served.join("树");
         std::fs::create_dir_all(tree.join("空目录")).unwrap();
@@ -1903,7 +1925,7 @@ fn scp_puts_a_copy_inside_a_directory_or_at_the_path_itself() {
 fn an_scp_upload_takes_the_destination_name_and_keeps_the_execute_bits() {
     use std::os::unix::fs::PermissionsExt as _;
     runtime().block_on(async {
-        let tmp = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
+        let tmp = tempdir();
         let source = tmp.path().join("build.sh");
         std::fs::write(&source, b"#!/bin/sh\n").unwrap();
         std::fs::set_permissions(&source, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -1956,7 +1978,7 @@ async fn batch_to(
 fn an_scp_download_takes_the_destination_name_and_keeps_the_execute_bits() {
     use std::os::unix::fs::PermissionsExt as _;
     runtime().block_on(async {
-        let tmp = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
+        let tmp = tempdir();
         let out = tmp.path().join("out");
         std::fs::create_dir(&out).unwrap();
         let remote = Remote::new();
@@ -2173,7 +2195,7 @@ fn a_save_that_fails_after_truncating_is_interrupted() {
 fn openssh_protocol_edits_in_place_through_links_keeping_mode_and_hard_links() {
     runtime().block_on(async {
         use std::os::unix::fs::PermissionsExt as _;
-        let temp = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
+        let temp = tempdir();
         let served = temp.path().join("remote");
         std::fs::create_dir(&served).unwrap();
         let real = served.join("真的.conf");
@@ -2281,7 +2303,7 @@ async fn sync_batch(local: &Path, tmp: &Path, control: &TransferControl) -> Uplo
 fn a_sync_copies_only_what_changed_since_the_last() {
     use std::os::unix::fs::PermissionsExt as _;
     runtime().block_on(async {
-        let tmp = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
+        let tmp = tempdir();
         let dist = tmp.path().join("dist");
         std::fs::create_dir_all(dist.join("assets")).unwrap();
         std::fs::write(dist.join("index.html"), b"v1").unwrap();
@@ -2329,7 +2351,7 @@ fn a_sync_copies_only_what_changed_since_the_last() {
 fn a_sync_with_delete_removes_what_is_not_here_and_nothing_it_cannot_see() {
     use std::os::unix::fs::PermissionsExt as _;
     runtime().block_on(async {
-        let tmp = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
+        let tmp = tempdir();
         let dist = tmp.path().join("dist");
         std::fs::create_dir_all(dist.join("sub")).unwrap();
         std::fs::create_dir_all(dist.join("locked")).unwrap();
@@ -2392,4 +2414,42 @@ fn a_sync_with_delete_removes_what_is_not_here_and_nothing_it_cannot_see() {
         assert_eq!((progress.deleted(), progress.failed()), (3, 1));
         assert_eq!(progress.total(), total + 1);
     });
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn the_start_of_a_text_file_is_read_with_its_size() {
+    let served = tempfile::tempdir().unwrap();
+    std::fs::write(served.path().join("notes.txt"), "line one\nline two\n").unwrap();
+    std::fs::write(served.path().join("binary.bin"), b"\x7fELF\x00\x01").unwrap();
+    let Ok((client, mut process)) =
+        super::client::SftpClient::local_test_server(served.path()).await
+    else {
+        eprintln!("skipped: no sftp-server here");
+        return;
+    };
+    let start = super::edit::read_start(&client, "notes.txt", 8)
+        .await
+        .unwrap();
+    assert_eq!(start.bytes, b"line one");
+    assert_eq!(start.size, 18);
+    let whole = super::edit::read_start(&client, "~/notes.txt", 1024)
+        .await
+        .unwrap();
+    assert_eq!(whole.bytes.len(), 18);
+    let binary = super::edit::read_start(&client, "binary.bin", 1024)
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        super::ReadFailure::<super::Reason>::from_error(binary, |why| why),
+        super::ReadFailure::NotText
+    ));
+    let folder = super::edit::read_start(&client, "~", 1024)
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        super::ReadFailure::<super::Reason>::from_error(folder, |why| why),
+        super::ReadFailure::NotFile
+    ));
+    let _ = process.kill().await;
 }

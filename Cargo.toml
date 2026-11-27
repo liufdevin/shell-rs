@@ -30,11 +30,12 @@ members = [
     "crates/shellrs-sync",
     "crates/shellrs-ssh",
     "crates/shellrs-hosts",
+    "crates/shellrs-assistant",
     "crates/shellrs-mobile",
     "crates/shellrs-lan",
     "crates/shellrs-cli",
 ]
-default-members = [".", "crates/shellrs-sync", "crates/shellrs-ssh", "crates/shellrs-hosts", "crates/shellrs-lan"]
+default-members = [".", "crates/shellrs-sync", "crates/shellrs-ssh", "crates/shellrs-hosts", "crates/shellrs-lan", "crates/shellrs-assistant"]
 resolver = "3"
 
 [dependencies]
@@ -123,6 +124,9 @@ shellrs-ssh = { path = "crates/shellrs-ssh" }
 shellrs-hosts = { path = "crates/shellrs-hosts" }
 shellrs-lan = { path = "crates/shellrs-lan" }
 shellrs-cli = { path = "crates/shellrs-cli" }
+# The AI assistant's model protocols, loop and conversations; its own crate,
+# under MIT, so the mobile apps can link it too.
+shellrs-assistant = { path = "crates/shellrs-assistant" }
 trash = "5"
 # Online update: the signed manifest, its versions and the downloads. The
 # default features keep rustls with the OS trust store and the system proxy
@@ -209,6 +213,7 @@ minisign = "0.7"
 zip = { version = "9", default-features = false, features = ["deflate-flate2"] }
 # The hosts core's fixtures, such as a database in memory.
 shellrs-hosts = { path = "crates/shellrs-hosts", features = ["testing"] }
+shellrs-assistant = { path = "crates/shellrs-assistant", features = ["testing"] }
 
 # What the release workflow ships: smaller and faster than the default, at
 # the cost of a longer build.
