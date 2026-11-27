@@ -36,11 +36,11 @@ use crate::app::{
     NewTemporaryConnection, OpenExplorer, OpenFlashing, OpenLocalTerminalOptions, OpenSettings,
     PasteTerminal, QuickConnect, ReconnectTerminal, RefreshCliIntegration, RemoveAgentSkill,
     RemoveCliCommand, RenameExplorer, RenameGroup, RenameTerminal, RestartLocalTerminal,
-    RestoreWindow, ReturnDetachedTab, SelectAllTerminal, SendBreak, SendSerialHex,
-    SetFileSizeFormat, ShowOrHideApp, StartLocalTerminal, StartTerminalRecording,
-    StopTerminalRecording, ToggleHiddenFiles, ToggleHostDetails, ToggleHostPanel,
-    ToggleTerminalFindOption, ToggleTheme, ToolKind, ZoomIn, ZoomOut, ZoomReset, ZoomTerminalIn,
-    ZoomTerminalOut, ZoomTerminalReset,
+    RestoreWindow, ReturnDetachedTab, ScrollTerminalPageDown, ScrollTerminalPageUp,
+    SelectAllTerminal, SendBreak, SendSerialHex, SetFileSizeFormat, ShowOrHideApp,
+    StartLocalTerminal, StartTerminalRecording, StopTerminalRecording, ToggleHiddenFiles,
+    ToggleHostDetails, ToggleHostPanel, ToggleTerminalFindOption, ToggleTheme, ToolKind, ZoomIn,
+    ZoomOut, ZoomReset, ZoomTerminalIn, ZoomTerminalOut, ZoomTerminalReset,
 };
 use crate::app::{
     ClearTerminalLog, DeleteTerminalLog, SetSerialBackspace, ToggleSerialReceiveHex,
@@ -3568,6 +3568,35 @@ impl Workspace {
         }
     }
 
+    fn on_scroll_terminal_page_up(
+        &mut self,
+        _: &ScrollTerminalPageUp,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.scroll_terminal_page(true, window, cx);
+    }
+
+    fn on_scroll_terminal_page_down(
+        &mut self,
+        _: &ScrollTerminalPageDown,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.scroll_terminal_page(false, window, cx);
+    }
+
+    /// A page of the terminal's scrollback (issue #148). A full-screen
+    /// program has none, so there the key is its, as less's Shift+PageUp.
+    fn scroll_terminal_page(&mut self, up: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let scrolled = self.active_terminal(window, cx).is_some_and(|terminal| {
+            terminal.update(cx, |terminal, cx| terminal.scroll_page(up, cx))
+        });
+        if !scrolled {
+            cx.propagate();
+        }
+    }
+
     fn on_send_break(&mut self, action: &SendBreak, _: &mut Window, cx: &mut Context<Self>) {
         if let Some(terminal) = self.terminals.get(&action.0) {
             terminal.read(cx).send_break(cx);
@@ -5089,6 +5118,8 @@ impl Workspace {
             .on_action(cx.listener(Self::on_toggle_terminal_find_option))
             .on_action(cx.listener(Self::on_copy_terminal_find_results))
             .on_action(cx.listener(Self::on_clear_terminal))
+            .on_action(cx.listener(Self::on_scroll_terminal_page_up))
+            .on_action(cx.listener(Self::on_scroll_terminal_page_down))
             .on_action(cx.listener(Self::on_toggle_host_panel))
             .on_action(cx.listener(Self::on_maximize_window))
             .on_action(cx.listener(Self::on_restore_window))

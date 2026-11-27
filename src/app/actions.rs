@@ -85,6 +85,12 @@ gpui_kit::actions!(
         /// Clear the active terminal's screen and scrollback, keeping the
         /// prompt line.
         ClearTerminal,
+        /// A page up the active terminal's scrollback, or the key for the
+        /// program in a full-screen one.
+        ScrollTerminalPageUp,
+        /// A page down the active terminal's scrollback, as
+        /// `ScrollTerminalPageUp`.
+        ScrollTerminalPageDown,
         /// Show or hide the left dock, whichever list it is showing.
         ToggleHostPanel,
         /// Show or hide the right sidebar, whichever tool it is showing.
