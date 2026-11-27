@@ -94,7 +94,7 @@ impl ExplorerPanel {
                 if entry.is_dir() || entry.is_parent() {
                     return None;
                 }
-                pane.child_path_of(&entry.name)
+                pane.open_path_of(&entry)
             }
         };
         Some(if remote {
