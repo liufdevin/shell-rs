@@ -25,6 +25,7 @@ use crate::update::Channel;
 #[serde(default)]
 pub struct AppSettings {
     pub remote_servers: Vec<crate::remote::Server>,
+    pub remote_debug_devices: Vec<crate::remote::SavedDebugDevice>,
     pub language: InterfaceLanguage,
     pub appearance: Appearance,
     /// 外观 → 常规 → 界面字号.
@@ -719,6 +720,10 @@ impl AppSettings {
         self.remote_servers
             .retain(|server| server.validate().is_ok() && ids.insert(server.id.clone()));
         self.remote_servers.truncate(64);
+        let mut debug_ids = std::collections::HashSet::new();
+        self.remote_debug_devices
+            .retain(|device| device.validate().is_ok() && debug_ids.insert(device.id.clone()));
+        self.remote_debug_devices.truncate(64);
         self.sidebar_width = self
             .sidebar_width
             .filter(|width| width.is_finite() && *width > 0.);

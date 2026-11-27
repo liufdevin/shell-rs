@@ -1,4 +1,4 @@
-use super::{Backend, Operation, Reply, Server};
+use super::{Backend, Operation, Reply, SavedDebugDevice, Server};
 use crate::{
     cli::Secret,
     secrets::{SecretRef, SharedSecretStore},
@@ -21,8 +21,26 @@ impl Drop for SavedPassword {
     }
 }
 
+#[derive(Serialize, Deserialize)]
+struct SavedDebugKey {
+    url: String,
+    device_id: String,
+    key: String,
+}
+
+impl Drop for SavedDebugKey {
+    fn drop(&mut self) {
+        use zeroize::Zeroize as _;
+        self.key.zeroize();
+    }
+}
+
 pub(super) fn password_ref(id: &str) -> SecretRef {
     SecretRef::credential(format!("remote-management:{id}"))
+}
+
+pub(super) fn debug_key_ref(id: &str) -> SecretRef {
+    SecretRef::credential(format!("remote-debug:{id}"))
 }
 
 pub(super) fn read_password(
@@ -39,12 +57,39 @@ pub(super) fn read_password(
     Ok(Some(Secret::new(record.password.clone())))
 }
 
+pub(super) fn read_debug_key(
+    secrets: &SharedSecretStore,
+    device: &SavedDebugDevice,
+) -> anyhow::Result<Option<Secret>> {
+    let Some(value) = secrets.get(&debug_key_ref(&device.id))? else {
+        return Ok(None);
+    };
+    let record: SavedDebugKey = serde_json::from_str(&value)?;
+    if record.url != super::api::server_url(&device.url)? || record.device_id != device.device_id {
+        return Ok(None);
+    }
+    Ok(Some(Secret::new(record.key.clone())))
+}
+
 pub(super) fn perform(
     backend: Arc<dyn Backend>,
     secrets: SharedSecretStore,
     operation: Operation,
 ) -> Reply {
     match operation {
+        Operation::SilentLogin(server) => match read_password(&secrets, &server) {
+            Ok(Some(password)) => {
+                let mut reply = backend.perform(Operation::Login(server, password));
+                reply.silent = true;
+                reply.keep_connection = true;
+                reply
+            }
+            _ => Reply {
+                silent: true,
+                keep_connection: true,
+                ..Reply::default()
+            },
+        },
         Operation::SavedLogin(server) => match read_password(&secrets, &server) {
             Ok(Some(password)) => login(backend, server, password),
             result => Reply {
@@ -84,6 +129,76 @@ pub(super) fn perform(
                 }
             }
             reply
+        }
+        Operation::OpenSavedDebugScreen(device) => {
+            match read_debug_key(&secrets, &device) {
+                Ok(Some(key)) => {
+                    let mut reply = backend.perform(Operation::OpenDebugScreen {
+                        url: device.url.clone(),
+                        device_id: device.device_id.clone(),
+                        key,
+                    });
+                    reply.keep_connection = true;
+                    if let Some(screen) = reply.screen.as_mut() {
+                        screen.device_name = device.label().to_owned();
+                    }
+                    if reply.error.as_deref().is_some_and(|code| {
+                        matches!(code, "http_401" | "http_403" | "invalid_params")
+                    }) {
+                        reply.debug_prompt = Some(device);
+                    }
+                    reply
+                }
+                result => Reply {
+                    debug_prompt: Some(device),
+                    error: result.err().map(|_| "credential_read".into()),
+                    keep_connection: true,
+                    ..Reply::default()
+                },
+            }
+        }
+        Operation::RememberDebugScreen { device, key, save } => {
+            let mut reply = backend.perform(Operation::OpenDebugScreen {
+                url: device.url.clone(),
+                device_id: device.device_id.clone(),
+                key: key.clone(),
+            });
+            reply.keep_connection = true;
+            if let Some(screen) = reply.screen.as_mut() {
+                screen.device_name = device.label().to_owned();
+            }
+            if reply.error.is_none()
+                && save
+                && let Ok(normalized_url) = super::api::server_url(&device.url)
+            {
+                let record = SavedDebugKey {
+                    url: normalized_url,
+                    device_id: device.device_id.clone(),
+                    key: key.expose().to_owned(),
+                };
+                let encoded = Zeroizing::new(serde_json::to_string(&record).unwrap());
+                if secrets.set(&debug_key_ref(&device.id), &encoded).is_ok() {
+                    reply.saved_debug_device = Some(device);
+                } else {
+                    reply.error = Some("credential_save".into());
+                }
+            }
+            reply
+        }
+        Operation::ForgetDebugDevice(id) => {
+            if secrets.delete(&debug_key_ref(&id)).is_ok() {
+                Reply {
+                    forgotten_debug_device: Some(id),
+                    keep_connection: true,
+                    ..Reply::default()
+                }
+            } else {
+                Reply {
+                    error: Some("credential_delete".into()),
+                    keep_connection: true,
+                    ..Reply::default()
+                }
+            }
         }
         operation => backend.perform(operation),
     }
@@ -129,6 +244,7 @@ mod tests {
                     }
                 }
                 Operation::Logout(id) => reply.logged_out = Some(id),
+                Operation::OpenDebugScreen { .. } => {}
                 _ => panic!("unexpected network operation"),
             }
             reply
@@ -256,5 +372,58 @@ mod tests {
         let reply = perform(backend, secrets, Operation::Forget(server.id));
         assert_eq!(reply.error.as_deref(), Some("credential_delete"));
         assert!(reply.forgotten.is_none());
+    }
+
+    #[test]
+    fn silent_login_never_prompts_and_debug_device_key_persists_in_keychain() {
+        let server = Server::new(
+            "test".into(),
+            "https://example.test".into(),
+            "operator".into(),
+        );
+        let backend = Arc::new(FakeBackend::default());
+        let secrets: SharedSecretStore = Arc::new(InMemorySecretStore::default());
+
+        let reply = perform(
+            backend.clone(),
+            secrets.clone(),
+            Operation::SilentLogin(server.clone()),
+        );
+        assert!(reply.silent);
+        assert!(reply.prompt.is_none());
+        assert!(reply.catalog.is_none());
+
+        let device = super::SavedDebugDevice::new(
+            "客厅测试板".into(),
+            "https://example.test".into(),
+            "7K9M-2R8X".into(),
+        );
+        let saved = perform(
+            backend.clone(),
+            secrets.clone(),
+            Operation::RememberDebugScreen {
+                device: device.clone(),
+                key: Secret::new("5W3P-6T4H"),
+                save: true,
+            },
+        );
+        assert!(saved.error.is_none());
+        assert_eq!(saved.saved_debug_device.as_ref(), Some(&device));
+        assert!(
+            super::read_debug_key(&secrets, &device)
+                .unwrap()
+                .is_some_and(|k| k.expose() == "5W3P-6T4H")
+        );
+
+        let deleted = perform(
+            backend,
+            secrets.clone(),
+            Operation::ForgetDebugDevice(device.id.clone()),
+        );
+        assert_eq!(
+            deleted.forgotten_debug_device.as_deref(),
+            Some(device.id.as_str())
+        );
+        assert!(super::read_debug_key(&secrets, &device).unwrap().is_none());
     }
 }

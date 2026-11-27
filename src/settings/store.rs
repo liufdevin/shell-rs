@@ -359,6 +359,15 @@ mod tests {
         let data: serde_json::Value = serde_json::from_str(&json).unwrap();
         let remote = &data["remote_servers"][0];
         assert!(remote.get("password").is_none() && remote.get("token").is_none());
+        assert_eq!(remote["auto_login"], serde_json::json!(true));
+        let legacy: crate::remote::Server = serde_json::from_value(serde_json::json!({
+            "id": "00000000-0000-4000-8000-000000000001",
+            "name": "Legacy",
+            "url": "https://example.test:8180",
+            "username": "operator"
+        }))
+        .unwrap();
+        assert!(legacy.auto_login);
     }
 
     #[test]

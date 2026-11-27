@@ -12,7 +12,7 @@ mod register_dialog;
 mod screen;
 mod service;
 
-pub use api::{Catalog, Device, Network, Server};
+pub use api::{Catalog, Device, Network, SavedDebugDevice, Server};
 pub use diagnostics::{
     DeviceDiagnostic, DeviceState, DiagnosticReport, LocalDiagnostic, Measurement, ProbeStatus,
     RouteDiagnostic, Transport,

@@ -27,8 +27,8 @@ use crate::analytics::Counter;
 use crate::app::{
     CenterTab, ControlContainers, ControlService, CopyCommand, EndProcess, EnterCommand,
     RefreshConnections, RefreshDocker, RefreshGpu, RefreshHistory, RefreshProcesses,
-    RefreshServices, RemoveDockerObject, ShowDockerObject, ShowProcess, ShowService, SortProcesses,
-    ToggleAllGpuDevices, ToggleDockerProject, ToggleGpuDevice, ToggleMonitorChannel,
+    RefreshServices, RemoveDockerObject, ShowDockerObject, ShowProcess, ShowService, ShowTool,
+    SortProcesses, ToggleAllGpuDevices, ToggleDockerProject, ToggleGpuDevice, ToggleMonitorChannel,
     ToggleMonitorDetail, ToggleTool, ToggleToolSidebar, ToolKind,
 };
 use crate::docker::{
@@ -418,6 +418,26 @@ impl Workspace {
         if self.tool_showing(cx) == Some(tool) {
             self.remember_target_tool(&target, None, cx);
         } else {
+            self.remember_target_tool(&target, Some(tool), cx);
+            self.count_tool(tool);
+        }
+        self.sync_tool_sidebar(window, cx);
+    }
+
+    pub(super) fn on_show_tool(
+        &mut self,
+        action: &ShowTool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let tool = action.0;
+        let Some(target) = self.sidebar_target(cx) else {
+            return;
+        };
+        if !self.offered_tools(cx).contains(&tool) {
+            return;
+        }
+        if self.tool_showing(cx) != Some(tool) {
             self.remember_target_tool(&target, Some(tool), cx);
             self.count_tool(tool);
         }

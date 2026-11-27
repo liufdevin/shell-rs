@@ -361,3 +361,25 @@ terminal.command.closed:
 terminal.command.usage:
   zh-CN: 用法：ssh 用户名@地址 [-p 端口] 或 ssh -l 用户名 地址；exit 退出命令提示符
   en: "Usage: ssh user@host [-p port] or ssh -l user host; exit ends the command prompt"
+
+terminal.htop_hint.message:
+  zh-CN: htop 核心列表占满了屏幕，进程列表已被遮挡
+  en: htop’s CPU meters fill the screen and hide the process list
+terminal.htop_hint.zoom_out:
+  zh-CN: 缩小字号
+  en: Zoom out
+terminal.htop_hint.open_processes:
+  zh-CN: 打开进程面板
+  en: Open Processes
+terminal.htop_hint.copy_config:
+  zh-CN: 复制精简配置命令
+  en: Copy compact config command
+terminal.htop_hint.copied:
+  zh-CN: 已复制命令，退出 htop 后粘贴执行即可（会自动备份原配置）
+  en: Command copied. Exit htop, then paste and run it (your existing htoprc will be backed up).
+terminal.htop_hint.mute:
+  zh-CN: 不再提示
+  en: Don’t show again
+terminal.htop_hint.close:
+  zh-CN: 关闭提示
+  en: Dismiss hint

@@ -306,6 +306,22 @@ impl Render for CatalogDialog {
                             .outline(),
                         )
                         .child(
+                            Checkbox::new("remote-online-only")
+                                .label(t!("remote.online_only"))
+                                .checked(service.online_only())
+                                .disabled(busy)
+                                .on_click({
+                                    let dispatch = self.dispatch.clone();
+                                    move |_, window, cx| {
+                                        dispatch.dispatch_action(
+                                            &RemoteAction(Command::ToggleOnlineOnly),
+                                            window,
+                                            cx,
+                                        )
+                                    }
+                                }),
+                        )
+                        .child(
                             Checkbox::new("remote-current-only")
                                 .label(t!("remote.current_only"))
                                 .checked(self.current_only)
@@ -322,13 +338,14 @@ impl Render for CatalogDialog {
                                 .child(Input::new(&self.user).id("remote-ssh-user").w(rems(9.))),
                         ),
                 );
+                let online_only = service.online_only();
                 let devices: Vec<_> = catalog
                     .devices
                     .iter()
                     .filter(|device| {
                         let in_network =
                             active.is_some_and(|active| active.network == device.network_id);
-                        device.lease_valid()
+                        (!online_only || device.is_online())
                             && (!self.current_only || in_network)
                             && [
                                 device.label().to_string(),
@@ -391,13 +408,22 @@ impl Render for CatalogDialog {
                                             .gap_4()
                                             .flex_wrap()
                                             .text_sm()
-                                            .child(device.customer_name.clone())
+                                            .when(device.screen_online(), |row| {
+                                                row.child(
+                                                    div()
+                                                        .text_color(cx.theme().success)
+                                                        .child(t!("remote.screen_online")),
+                                                )
+                                            })
+                                            .when(!device.customer_name.is_empty(), |row| {
+                                                row.child(device.customer_name.clone())
+                                            })
                                             .child(
                                                 device
                                                     .virtual_ip
                                                     .map(|ip| ip.to_string())
                                                     .unwrap_or_else(|| {
-                                                        t!("remote.unconfigured").to_string()
+                                                        t!("remote.no_ssh").to_string()
                                                     }),
                                             ),
                                     )

@@ -315,6 +315,24 @@ serial.assistant.add_command:
 serial.assistant.saved_hint:
   zh-CN: 每条命令独立保存 HEX、换行、CRC 和发送后等待时间。右侧「多条发送」支持单条、顺序发送和整组循环；整组发送只包含勾选的命令，末条等待结束后开始下一轮。断开、重连、切换标签或关闭工具时自动停止。命令内容会明文保存，请勿保存密码。
   en: Each command saves its HEX, line ending, CRC and delay after sending. Multi-send supports individual commands, sending in order and looping enabled commands. The last delay also applies between cycles. Sending stops on disconnect, reconnect, tab change or closing the tool. Content is stored as plain text; do not save passwords.
+serial.assistant.group_newline:
+  zh-CN: 加换行
+  en: Newline
+serial.assistant.group_ending_tooltip:
+  zh-CN: 切换整组共用换行符（CRLF / LF / CR）
+  en: Cycle shared line ending (CRLF / LF / CR)
+serial.assistant.group_hex:
+  zh-CN: HEX
+  en: HEX
+serial.assistant.group_delay:
+  zh-CN: 间隔
+  en: Delay
+serial.assistant.inherit_group:
+  zh-CN: 跟随组共用设置（换行 / HEX / 间隔）
+  en: Use group defaults (newline / HEX / delay)
+serial.assistant.custom_override_hint:
+  zh-CN: 仅在需要覆盖组默认设置时修改下方选项
+  en: Override below only when this command needs different settings
 serial.assistant.group_actions:
   zh-CN: 分组操作
   en: Group actions

@@ -16,6 +16,7 @@ mod environment;
 mod exec;
 mod font;
 mod highlight;
+mod htop_hint;
 mod input;
 mod kept_output;
 mod links;

@@ -400,6 +400,8 @@ id_actions! {
     /// Show a tool in the right sidebar, or hide the sidebar if it is
     /// already showing that tool.
     ToggleTool(ToolKind);
+    /// Show a tool in the right sidebar, keeping it open if already visible.
+    ShowTool(ToolKind);
     UtilityAction(crate::utilities::UtilityCommand);
     SerialAssistantAction(crate::serial::SerialAssistantTabCommand);
     LoadSerialCommand(u64);

@@ -29,7 +29,8 @@ use unicode_width::UnicodeWidthChar as _;
 use crate::app::{
     CatalogIcon, ClearTerminal, CopyTerminal, CopyTerminalFindResults, DismissTerminalFind,
     FindInTerminal, FindNextInTerminal, FindPreviousInTerminal, PasteTerminal, SelectAllTerminal,
-    ToggleComposePane, ToggleTerminalFindOption, ZoomTerminalIn, ZoomTerminalOut,
+    ShowTool, ToggleComposePane, ToggleTerminalFindOption, ToolKind, ZoomTerminalIn,
+    ZoomTerminalOut,
 };
 use crate::connection::{ConnectionPromptReply, Latency};
 use crate::i18n::{UiLocale, t};
@@ -157,6 +158,12 @@ pub type CommandItems = Rc<dyn Fn(PopupMenu, &TerminalLifecycle) -> PopupMenu>;
 pub struct ComposePaneShown(pub bool);
 
 impl Global for ComposePaneShown {}
+
+/// Whether the user muted the crowded-`htop` hint for the rest of this run.
+#[derive(Clone, Copy, Debug, Default)]
+struct HtopHintMuted(bool);
+
+impl Global for HtopHintMuted {}
 
 /// The open find bar of one terminal.
 struct FindBar {
@@ -359,6 +366,12 @@ pub struct TerminalView {
     /// terminal starts again: keys queued meanwhile do not act twice.
     reconnect_pending: bool,
     find: Option<FindBar>,
+    /// Whether this terminal can open the right-sidebar Processes tool.
+    offers_processes: bool,
+    /// Shown when `htop`'s per-CPU meters fill the screen and hide processes.
+    htop_hint_visible: bool,
+    /// Dismissed for this terminal session.
+    htop_hint_dismissed: bool,
     cursor_visible: bool,
     focused: bool,
     hovered_link: Option<HoveredLink>,
@@ -635,7 +648,17 @@ impl TerminalView {
                     }
                 }
                 this.refresh_log_filter(cx);
+                this.refresh_htop_hint(cx);
                 cx.notify();
+            }),
+            cx.observe_global::<HtopHintMuted>(|this, cx| {
+                if cx
+                    .try_global::<HtopHintMuted>()
+                    .is_some_and(|muted| muted.0)
+                {
+                    this.htop_hint_visible = false;
+                    cx.notify();
+                }
             }),
             cx.observe_global::<super::TerminalTabIndicators>(|this, cx| {
                 this.received_output_revision = this.engine.read(cx).received_output_revision();
@@ -749,6 +772,9 @@ impl TerminalView {
             close_action: None,
             reconnect_pending: false,
             find: None,
+            offers_processes: false,
+            htop_hint_visible: false,
+            htop_hint_dismissed: false,
             cursor_visible: true,
             focused: false,
             hovered_link: None,
@@ -2538,6 +2564,19 @@ impl Render for TerminalView {
                     )
                 }
             })
+            .when(
+                self.htop_hint_visible && !self.find.as_ref().is_some_and(|f| f.matching_lines),
+                |container| {
+                    container.child(
+                        div()
+                            .absolute()
+                            .bottom_2()
+                            .left_2()
+                            .right_2()
+                            .child(self.render_htop_hint(cx)),
+                    )
+                },
+            )
     }
 }
 
@@ -2560,6 +2599,138 @@ fn link_tooltip(uri: SharedString, window: &mut Window, cx: &mut App) -> AnyView
 }
 
 impl TerminalView {
+    pub(crate) fn set_offers_processes(&mut self, offers: bool) {
+        self.offers_processes = offers;
+    }
+
+    fn refresh_htop_hint(&mut self, cx: &App) {
+        let muted = cx
+            .try_global::<HtopHintMuted>()
+            .is_some_and(|muted| muted.0);
+        if muted || self.htop_hint_dismissed {
+            self.htop_hint_visible = false;
+            return;
+        }
+        let engine = self.engine.read(cx);
+        let mode = engine.mode();
+        if !mode.contains(TermMode::ALT_SCREEN) {
+            self.htop_hint_visible = false;
+            return;
+        }
+        let snapshot = engine.snapshot();
+        self.htop_hint_visible = super::htop_hint::is_htop_cpu_crowded(&snapshot, mode);
+    }
+
+    fn render_htop_hint(&self, cx: &Context<Self>) -> impl IntoElement {
+        let focus = self.focus_handle.clone();
+        let offers_processes = self.offers_processes;
+        h_flex()
+            .id("terminal-htop-hint")
+            .test_support()
+            .occlude()
+            .w_full()
+            .flex_wrap()
+            .items_center()
+            .justify_between()
+            .gap_2()
+            .px_2()
+            .py_1()
+            .bg(cx.theme().popover)
+            .border_1()
+            .border_color(cx.theme().border)
+            .rounded(cx.theme().radius)
+            .shadow_md()
+            .child(
+                h_flex()
+                    .items_center()
+                    .gap_1p5()
+                    .min_w_0()
+                    .child(
+                        Icon::new(IconName::Info)
+                            .small()
+                            .text_color(cx.theme().muted_foreground),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().foreground)
+                            .child(t!("terminal.htop_hint.message")),
+                    ),
+            )
+            .child(
+                h_flex()
+                    .items_center()
+                    .flex_wrap()
+                    .gap_1()
+                    .child(
+                        Button::new("terminal-htop-zoom-out")
+                            .outline()
+                            .xsmall()
+                            .label(t!("terminal.htop_hint.zoom_out"))
+                            .on_click(move |_, window, cx| {
+                                focus.dispatch_action(&ZoomTerminalOut, window, cx);
+                                focus.focus(window, cx);
+                            }),
+                    )
+                    .when(offers_processes, |bar| {
+                        let focus = self.focus_handle.clone();
+                        bar.child(
+                            Button::new("terminal-htop-processes")
+                                .outline()
+                                .xsmall()
+                                .label(t!("terminal.htop_hint.open_processes"))
+                                .on_click(move |_, window, cx| {
+                                    focus.dispatch_action(
+                                        &ShowTool(ToolKind::Processes),
+                                        window,
+                                        cx,
+                                    );
+                                }),
+                        )
+                    })
+                    .child(
+                        Button::new("terminal-htop-copy-config")
+                            .outline()
+                            .xsmall()
+                            .label(t!("terminal.htop_hint.copy_config"))
+                            .on_click(|_, window, cx| {
+                                cx.write_to_clipboard(ClipboardItem::new_string(
+                                    super::htop_hint::HTOP_COMPACT_COMMAND.to_owned(),
+                                ));
+                                window.push_notification(
+                                    Notification::success(t!("terminal.htop_hint.copied")),
+                                    cx,
+                                );
+                            }),
+                    )
+                    .child(
+                        Button::new("terminal-htop-mute")
+                            .ghost()
+                            .xsmall()
+                            .label(t!("terminal.htop_hint.mute"))
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                cx.set_global(HtopHintMuted(true));
+                                this.htop_hint_visible = false;
+                                this.focus(window, cx);
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        Button::new("terminal-htop-close")
+                            .ghost()
+                            .xsmall()
+                            .icon(IconName::Close)
+                            .tooltip(t!("terminal.htop_hint.close"))
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.htop_hint_dismissed = true;
+                                this.htop_hint_visible = false;
+                                this.focus(window, cx);
+                                cx.notify();
+                            })),
+                    ),
+            )
+    }
+
     fn render_find_bar(&self, find: &FindBar, cx: &App) -> impl IntoElement {
         let has_query = !find.input.read(cx).value().is_empty();
         let error = self

@@ -11,6 +11,10 @@ pub enum SerialCommandEnding {
     CrLf,
 }
 
+fn default_group_delay_ms() -> u32 {
+    500
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct SerialCommand {
@@ -22,14 +26,72 @@ pub struct SerialCommand {
     pub crc: bool,
     pub delay_ms: u32,
     pub enabled: bool,
+    #[serde(default)]
+    pub inherit_ending: bool,
+    #[serde(default)]
+    pub inherit_hex: bool,
+    #[serde(default)]
+    pub inherit_delay: bool,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct SerialCommandGroup {
     pub id: u64,
     pub name: String,
     pub commands: Vec<SerialCommand>,
+    #[serde(default)]
+    pub default_hex: bool,
+    #[serde(default)]
+    pub default_ending: SerialCommandEnding,
+    #[serde(default = "default_group_delay_ms")]
+    pub default_delay_ms: u32,
+}
+
+impl Default for SerialCommandGroup {
+    fn default() -> Self {
+        Self {
+            id: 0,
+            name: String::new(),
+            commands: Vec::new(),
+            default_hex: false,
+            default_ending: SerialCommandEnding::None,
+            default_delay_ms: default_group_delay_ms(),
+        }
+    }
+}
+
+impl SerialCommandGroup {
+    pub fn effective_hex(&self, command: &SerialCommand) -> bool {
+        if command.inherit_hex {
+            self.default_hex
+        } else {
+            command.hex
+        }
+    }
+
+    pub fn effective_ending<'a>(&'a self, command: &'a SerialCommand) -> &'a SerialCommandEnding {
+        if command.inherit_ending {
+            &self.default_ending
+        } else {
+            &command.ending
+        }
+    }
+
+    pub fn effective_delay_ms(&self, command: &SerialCommand) -> u32 {
+        if command.inherit_delay {
+            self.default_delay_ms
+        } else {
+            command.delay_ms
+        }
+    }
+
+    pub fn has_custom_override(&self, command: &SerialCommand) -> bool {
+        command.crc
+            || self.effective_hex(command) != self.default_hex
+            || self.effective_ending(command) != &self.default_ending
+            || self.effective_delay_ms(command) != self.default_delay_ms
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -56,6 +118,7 @@ impl SerialAssistant {
                     && ids.insert(group.id)
                     && !group.name.trim().is_empty()
                     && group.name.len() <= 128
+                    && group.default_delay_ms <= 60000
                     && group.commands.len() <= 128
                     && group.commands.iter().all(|command| {
                         size += command.content.len();
@@ -97,6 +160,7 @@ mod tests {
             crc: true,
             delay_ms: 500,
             enabled: true,
+            ..Default::default()
         };
         group.commands.push(command);
         value.groups.push(group);
@@ -157,6 +221,55 @@ mod tests {
             data.serial_assistant("lan:peer:serial:device"),
             Some(&value)
         );
+    }
+
+    #[test]
+    fn group_defaults_apply_to_inheriting_commands_while_preserving_custom_overrides() {
+        let mut group = SerialCommandGroup {
+            id: 1,
+            name: "调试组".into(),
+            default_hex: false,
+            default_ending: SerialCommandEnding::CrLf,
+            default_delay_ms: 200,
+            commands: Vec::new(),
+        };
+        let shared = SerialCommand {
+            id: 2,
+            name: "查询".into(),
+            content: "AT".into(),
+            inherit_ending: true,
+            inherit_hex: true,
+            inherit_delay: true,
+            enabled: true,
+            ..Default::default()
+        };
+        let custom = SerialCommand {
+            id: 3,
+            name: "特殊帧".into(),
+            content: "01 03".into(),
+            hex: true,
+            ending: SerialCommandEnding::None,
+            crc: true,
+            delay_ms: 1000,
+            enabled: true,
+            ..Default::default()
+        };
+        assert_eq!(group.effective_ending(&shared), &SerialCommandEnding::CrLf);
+        assert!(!group.effective_hex(&shared));
+        assert_eq!(group.effective_delay_ms(&shared), 200);
+        assert!(!group.has_custom_override(&shared));
+
+        assert_eq!(group.effective_ending(&custom), &SerialCommandEnding::None);
+        assert!(group.effective_hex(&custom));
+        assert_eq!(group.effective_delay_ms(&custom), 1000);
+        assert!(group.has_custom_override(&custom));
+
+        group.default_ending = SerialCommandEnding::Lf;
+        group.default_hex = true;
+        group.default_delay_ms = 50;
+        assert_eq!(group.effective_ending(&shared), &SerialCommandEnding::Lf);
+        assert!(group.effective_hex(&shared));
+        assert_eq!(group.effective_delay_ms(&shared), 50);
     }
 
     #[test]

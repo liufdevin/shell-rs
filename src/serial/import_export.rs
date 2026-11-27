@@ -52,10 +52,10 @@ pub(crate) fn export_group_json(group: &SerialCommandGroup) -> Result<String, se
             .map(|command| CommandFile {
                 name: command.name.clone(),
                 content: command.content.clone(),
-                hex: command.hex,
-                ending: command.ending.clone(),
+                hex: group.effective_hex(command),
+                ending: group.effective_ending(command).clone(),
                 crc: command.crc,
-                delay_ms: command.delay_ms,
+                delay_ms: group.effective_delay_ms(command),
                 enabled: command.enabled,
             })
             .collect(),
@@ -78,19 +78,29 @@ pub(crate) fn export_group_sscom(group: &SerialCommandGroup) -> String {
     ));
     for (idx, command) in group.commands.iter().enumerate() {
         let number = idx + 1;
-        let mode = if command.hex { 'H' } else { 'A' };
+        let mode = if group.effective_hex(command) {
+            'H'
+        } else {
+            'A'
+        };
         let content = escape_ini_content(&command.content);
         out.push_str(&format!("N{number}={mode},{content}\r\n"));
         out.push_str(&format!(
             "S{number}={}\r\n",
             sanitize_ini_value(&command.name)
         ));
-        out.push_str(&format!("T{number}={}\r\n", command.delay_ms));
+        out.push_str(&format!(
+            "T{number}={}\r\n",
+            group.effective_delay_ms(command)
+        ));
         out.push_str(&format!(
             "E{number}={}\r\n",
             if command.enabled { 1 } else { 0 }
         ));
-        out.push_str(&format!("L{number}={}\r\n", ending_tag(&command.ending)));
+        out.push_str(&format!(
+            "L{number}={}\r\n",
+            ending_tag(group.effective_ending(command))
+        ));
         if command.crc {
             out.push_str(&format!("R{number}=1\r\n"));
         }

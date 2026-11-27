@@ -34,6 +34,10 @@ pub enum SerialAssistantCommand {
     ToggleHex(u64, bool),
     CycleEnding(u64),
     ToggleCrc(u64),
+    ToggleGroupNewline(bool),
+    CycleGroupEnding,
+    ToggleGroupHex(bool),
+    CommitGroupDelay,
     CommitInline(u64),
     MoveUp(u64),
     MoveDown(u64),
@@ -58,6 +62,8 @@ pub(super) struct AssistantEditor {
     pub(super) quick_name: Entity<InputState>,
     pub(super) quick_delay: Entity<InputState>,
     pub(super) quick_hex: bool,
+    pub(super) group_delay: Entity<InputState>,
+    last_group_ending: SerialCommandEnding,
     pub(super) inline_rows: HashMap<u64, InlineRowInputs>,
     command_scroll: ScrollHandle,
     _group_search_observer: Subscription,
@@ -91,7 +97,33 @@ impl AssistantEditor {
                 .default_value("500")
                 .validate(|text, _| text.len() <= 5 && text.bytes().all(|b| b.is_ascii_digit()))
         });
+        let group_delay = cx.new(|cx| {
+            InputState::new(window, cx)
+                .default_value("500")
+                .validate(|text, _| text.len() <= 5 && text.bytes().all(|b| b.is_ascii_digit()))
+        });
         let mut quick_subscriptions = vec![cx.observe(&quick_content, |_, _, cx| cx.notify())];
+        {
+            let dispatch = dispatch.clone();
+            quick_subscriptions.push(cx.subscribe_in(
+                &group_delay,
+                window,
+                move |_, _, event: &InputEvent, window, cx| {
+                    if matches!(event, InputEvent::Blur | InputEvent::PressEnter { .. }) {
+                        let dispatch = dispatch.clone();
+                        window.defer(cx, move |window, cx| {
+                            dispatch.send(
+                                SerialToolCommand::Assistant(
+                                    SerialAssistantCommand::CommitGroupDelay,
+                                ),
+                                window,
+                                cx,
+                            );
+                        });
+                    }
+                },
+            ));
+        }
         for input in [&quick_content, &quick_name, &quick_delay] {
             let dispatch = dispatch.clone();
             quick_subscriptions.push(cx.subscribe_in(
@@ -119,6 +151,8 @@ impl AssistantEditor {
             quick_name,
             quick_delay,
             quick_hex: false,
+            group_delay,
+            last_group_ending: SerialCommandEnding::CrLf,
             inline_rows: HashMap::new(),
             command_scroll: ScrollHandle::new(),
             _group_search_observer: group_search_observer,
@@ -143,10 +177,25 @@ struct CommandForm {
     ending: SerialLineEnding,
     hex: bool,
     crc: bool,
+    inherit_group: bool,
+    _delay_subscription: Subscription,
 }
 
 impl CommandForm {
     fn new(saved: Option<&SerialCommand>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let inherit_group = saved.is_some_and(|command| {
+            command.inherit_ending && command.inherit_hex && command.inherit_delay
+        });
+        let delay = cx.new(|cx| {
+            InputState::new(window, cx)
+                .default_value(saved.map_or(500, |command| command.delay_ms).to_string())
+        });
+        let delay_subscription = cx.subscribe(&delay, |form, _, event: &InputEvent, cx| {
+            if matches!(event, InputEvent::Change) && form.inherit_group {
+                form.inherit_group = false;
+                cx.notify();
+            }
+        });
         Self {
             name: cx.new(|cx| {
                 InputState::new(window, cx).default_value(saved.map_or("", |command| &command.name))
@@ -156,15 +205,14 @@ impl CommandForm {
                     .rows(4)
                     .default_value(saved.map_or("", |command| &command.content))
             }),
-            delay: cx.new(|cx| {
-                InputState::new(window, cx)
-                    .default_value(saved.map_or(500, |command| command.delay_ms).to_string())
-            }),
+            delay,
             ending: saved.map_or_else(SerialLineEnding::default, |command| {
                 runtime_ending(&command.ending)
             }),
             hex: saved.is_some_and(|command| command.hex),
             crc: saved.is_some_and(|command| command.crc),
+            inherit_group,
+            _delay_subscription: delay_subscription,
         }
     }
 
@@ -186,6 +234,9 @@ impl CommandForm {
         draft.ending = stored_ending(self.ending);
         draft.hex = self.hex;
         draft.crc = self.crc;
+        draft.inherit_ending = self.inherit_group;
+        draft.inherit_hex = self.inherit_group;
+        draft.inherit_delay = self.inherit_group;
         draft.enabled = true;
         Ok(draft)
     }
@@ -194,17 +245,13 @@ impl CommandForm {
 impl Render for CommandForm {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let content_label = t!("serial.assistant.command_content");
+        let inherit = self.inherit_group;
         Form::new()
             .child(
                 Field::new()
                     .label(t!("serial.assistant.command_name"))
                     .required(true)
                     .child(Input::new(&self.name).id("serial-assistant-command-name")),
-            )
-            .child(
-                Field::new()
-                    .label(t!("serial.assistant.command_delay"))
-                    .child(Input::new(&self.delay).id("serial-assistant-delay")),
             )
             .child(
                 Field::new()
@@ -223,33 +270,19 @@ impl Render for CommandForm {
                             ),
                     ),
             )
-            .child(Field::new().child(h_flex().gap_2().flex_wrap().children(
-                SerialLineEnding::ALL.into_iter().map(|ending| {
-                    ending_style(
-                        Button::new(ending_id(ending))
-                            .small()
-                            .label(ending.label())
-                            .on_click(cx.listener(move |form, _, _, cx| {
-                                form.ending = ending;
-                                cx.notify();
-                            })),
-                        self.ending == ending,
-                    )
-                }),
-            )))
             .child(
                 Field::new().child(
                     h_flex()
-                        .gap_2()
+                        .gap_3()
                         .flex_wrap()
                         .child(
-                            Checkbox::new("serial-assistant-draft-hex")
+                            Checkbox::new("serial-assistant-draft-inherit")
                                 .small()
                                 .w_auto()
-                                .label(t!("serial.mode.send_hex"))
-                                .checked(self.hex)
+                                .label(t!("serial.assistant.inherit_group"))
+                                .checked(inherit)
                                 .on_click(cx.listener(|form, enabled, _, cx| {
-                                    form.hex = *enabled;
+                                    form.inherit_group = *enabled;
                                     cx.notify();
                                 })),
                         )
@@ -264,6 +297,40 @@ impl Render for CommandForm {
                                     cx.notify();
                                 })),
                         ),
+                ),
+            )
+            .child(
+                Field::new()
+                    .label(t!("serial.assistant.command_delay"))
+                    .child(Input::new(&self.delay).id("serial-assistant-delay")),
+            )
+            .child(Field::new().child(h_flex().gap_2().flex_wrap().children(
+                SerialLineEnding::ALL.into_iter().map(|ending| {
+                    ending_style(
+                        Button::new(ending_id(ending))
+                            .small()
+                            .label(ending.label())
+                            .on_click(cx.listener(move |form, _, _, cx| {
+                                form.inherit_group = false;
+                                form.ending = ending;
+                                cx.notify();
+                            })),
+                        self.ending == ending,
+                    )
+                }),
+            )))
+            .child(
+                Field::new().child(
+                    Checkbox::new("serial-assistant-draft-hex")
+                        .small()
+                        .w_auto()
+                        .label(t!("serial.mode.send_hex"))
+                        .checked(self.hex)
+                        .on_click(cx.listener(|form, enabled, _, cx| {
+                            form.inherit_group = false;
+                            form.hex = *enabled;
+                            cx.notify();
+                        })),
                 ),
             )
     }
@@ -777,11 +844,29 @@ impl SerialToolsPanel {
         let Some(editor) = self.assistant.as_mut() else {
             return;
         };
-        let commands: Vec<SerialCommand> = value
+        let current_group = value
             .groups
             .iter()
             .find(|group| Some(group.id) == editor.group)
-            .or_else(|| value.groups.first())
+            .or_else(|| value.groups.first());
+        if let Some(group) = current_group {
+            let group_delay_text = group.default_delay_ms.to_string();
+            if !editor
+                .group_delay
+                .read(cx)
+                .focus_handle(cx)
+                .is_focused(window)
+                && editor.group_delay.read(cx).value().as_str() != group_delay_text.as_str()
+            {
+                editor.group_delay.update(cx, |input, cx| {
+                    input.set_value(group_delay_text, window, cx);
+                });
+            }
+            if group.default_ending != SerialCommandEnding::None {
+                editor.last_group_ending = group.default_ending.clone();
+            }
+        }
+        let commands: Vec<SerialCommand> = current_group
             .map(|group| group.commands.clone())
             .unwrap_or_default();
         let valid_ids: std::collections::HashSet<u64> =
@@ -952,6 +1037,10 @@ impl SerialToolsPanel {
             SerialAssistantCommand::ToggleHex(_, _)
                 | SerialAssistantCommand::CycleEnding(_)
                 | SerialAssistantCommand::ToggleCrc(_)
+                | SerialAssistantCommand::ToggleGroupNewline(_)
+                | SerialAssistantCommand::CycleGroupEnding
+                | SerialAssistantCommand::ToggleGroupHex(_)
+                | SerialAssistantCommand::CommitGroupDelay
                 | SerialAssistantCommand::DuplicateCommand(_)
                 | SerialAssistantCommand::EditCommand(_)
                 | SerialAssistantCommand::DuplicateGroup
@@ -1162,6 +1251,7 @@ impl SerialToolsPanel {
                         )?;
                     }
                     saved.hex = *enabled;
+                    saved.inherit_hex = false;
                 }
             }
             SerialAssistantCommand::CycleEnding(id) => {
@@ -1177,6 +1267,7 @@ impl SerialToolsPanel {
                         SerialCommandEnding::Cr => SerialCommandEnding::CrLf,
                         SerialCommandEnding::CrLf => SerialCommandEnding::None,
                     };
+                    saved.inherit_ending = false;
                 }
             }
             SerialAssistantCommand::ToggleCrc(id) => {
@@ -1187,6 +1278,75 @@ impl SerialToolsPanel {
                     .find(|command| command.id == *id)
                 {
                     saved.crc = !saved.crc;
+                }
+            }
+            SerialAssistantCommand::ToggleGroupNewline(enabled) => {
+                if let Some(group) = value
+                    .groups
+                    .iter_mut()
+                    .find(|group| Some(group.id) == group_id)
+                {
+                    if *enabled {
+                        if group.default_ending == SerialCommandEnding::None {
+                            group.default_ending =
+                                if editor.last_group_ending == SerialCommandEnding::None {
+                                    SerialCommandEnding::CrLf
+                                } else {
+                                    editor.last_group_ending.clone()
+                                };
+                        }
+                    } else {
+                        if group.default_ending != SerialCommandEnding::None {
+                            editor.last_group_ending = group.default_ending.clone();
+                        }
+                        group.default_ending = SerialCommandEnding::None;
+                    }
+                }
+            }
+            SerialAssistantCommand::CycleGroupEnding => {
+                if let Some(group) = value
+                    .groups
+                    .iter_mut()
+                    .find(|group| Some(group.id) == group_id)
+                {
+                    group.default_ending = match group.default_ending {
+                        SerialCommandEnding::None => SerialCommandEnding::CrLf,
+                        SerialCommandEnding::CrLf => SerialCommandEnding::Lf,
+                        SerialCommandEnding::Lf => SerialCommandEnding::Cr,
+                        SerialCommandEnding::Cr => SerialCommandEnding::CrLf,
+                    };
+                    editor.last_group_ending = group.default_ending.clone();
+                }
+            }
+            SerialAssistantCommand::ToggleGroupHex(enabled) => {
+                if let Some(group) = value
+                    .groups
+                    .iter_mut()
+                    .find(|group| Some(group.id) == group_id)
+                {
+                    group.default_hex = *enabled;
+                }
+            }
+            SerialAssistantCommand::CommitGroupDelay => {
+                let raw = editor.group_delay.read(cx).value().to_string();
+                let delay_ms = if raw.trim().is_empty() {
+                    0
+                } else {
+                    raw.trim()
+                        .parse::<u32>()
+                        .ok()
+                        .filter(|delay| *delay <= 60000)
+                        .ok_or_else(|| t!("serial.assistant.invalid_delay"))?
+                };
+                if let Some(group) = value
+                    .groups
+                    .iter_mut()
+                    .find(|group| Some(group.id) == group_id)
+                {
+                    if group.default_delay_ms == delay_ms {
+                        return Ok(());
+                    }
+                    group.default_delay_ms = delay_ms;
                 }
             }
             SerialAssistantCommand::MoveUp(id) | SerialAssistantCommand::MoveDown(id) => {
@@ -1448,6 +1608,7 @@ impl SerialToolsPanel {
             let mut created = SerialCommandGroup::default();
             created.id = value.allocate_id();
             created.name = t!("serial.assistant.default_group").to_string();
+            created.default_ending = stored_ending(self.ending);
             let id = created.id;
             value.groups.push(created);
             id
@@ -1502,18 +1663,32 @@ impl SerialToolsPanel {
                 .ok_or_else(|| t!("serial.assistant.invalid_delay"))?
         };
         let hex = editor.quick_hex;
+        let current_group = self.assistant_value(cx);
+        let active_group = current_group
+            .groups
+            .iter()
+            .find(|group| Some(group.id) == editor.group)
+            .or_else(|| current_group.groups.first());
+        let group_delay = active_group.map_or(500, |group| group.default_delay_ms);
+        let group_hex = active_group.is_some_and(|group| group.default_hex);
+        let group_ending = active_group
+            .map(|group| group.default_ending.clone())
+            .unwrap_or_else(|| stored_ending(self.ending));
         let ending = if hex {
             SerialCommandEnding::None
         } else {
-            stored_ending(self.ending)
+            group_ending.clone()
         };
         let mut draft = SerialCommand::default();
         draft.name = name;
         draft.content = content;
         draft.hex = hex;
-        draft.ending = ending;
+        draft.ending = ending.clone();
         draft.crc = false;
         draft.delay_ms = delay_ms;
+        draft.inherit_hex = hex == group_hex;
+        draft.inherit_ending = !hex && ending == group_ending;
+        draft.inherit_delay = delay_ms == group_delay;
         draft.enabled = true;
         self.append_command(draft, cx)?;
         if let Some(editor) = self.assistant.as_ref() {
@@ -1573,17 +1748,20 @@ impl SerialToolsPanel {
             .iter()
             .filter(|command| single.map_or(command.enabled, |id| id == command.id))
             .map(|command| {
+                let effective_hex = group.effective_hex(command);
+                let effective_ending = runtime_ending(group.effective_ending(command));
+                let effective_delay = group.effective_delay_ms(command);
                 Ok((
                     command.id,
                     command.name.clone(),
                     view.read(cx).serial_tool_message(
                         &command.content,
-                        command.hex,
-                        runtime_ending(&command.ending),
+                        effective_hex,
+                        effective_ending,
                         command.crc,
                         cx,
                     )?,
-                    command.delay_ms,
+                    effective_delay,
                 ))
             })
             .collect::<Result<Vec<_>, SharedString>>()?;

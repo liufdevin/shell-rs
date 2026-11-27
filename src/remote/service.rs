@@ -1,10 +1,10 @@
 use super::{
-    api::{Account, Catalog, Server},
+    api::{Account, Catalog, SavedDebugDevice, Server},
     network::{Connected, NetworkProgress, NetworkStage, Running},
 };
 use gpui_kit::{Context, EventEmitter, Task};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     path::PathBuf,
     sync::{Arc, Mutex},
     time::{Duration, Instant},
@@ -13,9 +13,11 @@ use std::{
 pub enum Operation {
     Login(Server, crate::cli::Secret),
     SavedLogin(Server),
+    SilentLogin(Server),
     RememberLogin(Server, crate::cli::Secret, bool),
     Forget(String),
     Refresh(String),
+    SetOnlineOnly(bool),
     Diagnose(String, Vec<String>),
     Resolve(String, String, String, Option<u64>),
     OpenScreen(String, String),
@@ -24,6 +26,13 @@ pub enum Operation {
         device_id: String,
         key: crate::cli::Secret,
     },
+    OpenSavedDebugScreen(SavedDebugDevice),
+    RememberDebugScreen {
+        device: SavedDebugDevice,
+        key: crate::cli::Secret,
+        save: bool,
+    },
+    ForgetDebugDevice(String),
     Register {
         url: String,
         name: String,
@@ -50,6 +59,10 @@ pub struct Reply {
     pub registered: Option<String>,
     pub(super) prompt: Option<(Server, Option<crate::cli::Secret>)>,
     pub(super) forgotten: Option<String>,
+    pub(super) debug_prompt: Option<SavedDebugDevice>,
+    pub(super) saved_debug_device: Option<SavedDebugDevice>,
+    pub(super) forgotten_debug_device: Option<String>,
+    pub(super) silent: bool,
     pub(super) keep_connection: bool,
 }
 
@@ -70,6 +83,8 @@ struct State {
     running: Option<Running>,
     root: PathBuf,
     refreshed: Option<Instant>,
+    refreshed_by_server: HashMap<String, Instant>,
+    online_only: bool,
     bindings: HashMap<String, (String, String, String)>,
 }
 
@@ -95,6 +110,8 @@ impl SystemBackend {
                 running: None,
                 root,
                 refreshed: None,
+                refreshed_by_server: HashMap::new(),
+                online_only: true,
                 bindings: HashMap::new(),
             }),
             Arc::new(Mutex::new(None)),
@@ -104,13 +121,15 @@ impl SystemBackend {
 
 impl State {
     fn refresh(&mut self, id: &str, reply: &mut Reply) -> anyhow::Result<()> {
+        let now = Instant::now();
         if self
             .running
             .as_ref()
             .is_none_or(|running| running.info.server == id)
         {
-            self.refreshed = Some(Instant::now());
+            self.refreshed = Some(now);
         }
+        self.refreshed_by_server.insert(id.to_owned(), now);
         if let Some(running) = self
             .running
             .as_mut()
@@ -122,7 +141,7 @@ impl State {
             .accounts
             .get_mut(id)
             .ok_or_else(|| anyhow::anyhow!("login_required"))?;
-        account.refresh()?;
+        account.refresh(self.online_only)?;
         if let Some(running) = self
             .running
             .as_mut()
@@ -160,12 +179,22 @@ impl State {
                 if let Some(old) = self.accounts.remove(&server.id) {
                     let _ = old.logout();
                 }
-                let account = Account::login(server, password.expose())?;
+                let mut account = Account::login(server, password.expose())?;
+                if !self.online_only {
+                    account.refresh(false)?;
+                }
+                self.refreshed_by_server
+                    .insert(account.server.id.clone(), Instant::now());
                 reply.catalog = Some((account.server.id.clone(), account.catalog.clone()));
                 self.accounts.insert(account.server.id.clone(), account);
             }
             Operation::Refresh(id) => {
                 self.refresh(&id, reply)?;
+            }
+            Operation::SetOnlineOnly(online_only) => {
+                self.online_only = online_only;
+                self.refreshed_by_server.clear();
+                reply.keep_connection = true;
             }
             Operation::Diagnose(server, selected) => {
                 self.refresh(&server, reply)?;
@@ -273,6 +302,7 @@ impl State {
                 if let Some(account) = self.accounts.remove(&id) {
                     let _ = account.logout();
                 }
+                self.refreshed_by_server.remove(&id);
                 reply.logged_out = Some(id);
             }
             Operation::Poll => {
@@ -291,15 +321,33 @@ impl State {
                         .map(|running| running.info.server.clone())
                 {
                     self.refresh(&server, reply)?;
+                } else if let Some(server) = self
+                    .accounts
+                    .keys()
+                    .find(|id| {
+                        self.refreshed_by_server
+                            .get(*id)
+                            .is_none_or(|last| last.elapsed() >= Duration::from_secs(15))
+                    })
+                    .cloned()
+                {
+                    self.refresh(&server, reply)?;
                 }
             }
             Operation::Shutdown => {
                 self.stop()?;
+                self.refreshed_by_server.clear();
                 for (_, account) in self.accounts.drain() {
                     let _ = account.logout();
                 }
             }
-            Operation::SavedLogin(_) | Operation::RememberLogin(..) | Operation::Forget(_) => {
+            Operation::SavedLogin(_)
+            | Operation::SilentLogin(_)
+            | Operation::RememberLogin(..)
+            | Operation::Forget(_)
+            | Operation::OpenSavedDebugScreen(_)
+            | Operation::RememberDebugScreen { .. }
+            | Operation::ForgetDebugDevice(_) => {
                 anyhow::bail!("invalid_operation");
             }
         }
@@ -447,8 +495,13 @@ pub enum Event {
     NetworkChanging,
     NetworkChanged,
     Updated,
+    LoggedIn(String),
+    LoggedOut(String),
     LoginRequired(Server, Option<crate::cli::Secret>),
     Forgotten(String),
+    DebugDeviceSaved(SavedDebugDevice),
+    DebugDeviceForgotten(String),
+    DebugKeyRequired(SavedDebugDevice),
     SshReady(ResolvedSsh),
     DeviceAddressesChanged(String, Vec<String>),
 }
@@ -475,6 +528,9 @@ pub struct Service {
     busy: bool,
     polling: bool,
     queued: Option<Operation>,
+    online_only: bool,
+    auto_login_queue: VecDeque<Server>,
+    last_catalog_poll: Option<Instant>,
     pub(super) status: String,
     pub(super) status_error: bool,
     pub(super) statuses: HashMap<String, ServiceStatus>,
@@ -503,6 +559,9 @@ impl Service {
             busy: false,
             polling: false,
             queued: None,
+            online_only: true,
+            auto_login_queue: VecDeque::new(),
+            last_catalog_poll: None,
             status: String::new(),
             status_error: false,
             statuses: HashMap::new(),
@@ -517,8 +576,20 @@ impl Service {
                 if this
                     .update(cx, |this, cx| {
                         this.refresh_paths(cx);
-                        if !this.busy && this.connection.is_some() {
-                            this.run(Operation::Poll, cx);
+                        if !this.busy {
+                            if this.drain_auto_login(cx) {
+                                return;
+                            }
+                            if this.connection.is_some() {
+                                this.run(Operation::Poll, cx);
+                            } else if !this.catalogs.is_empty()
+                                && this
+                                    .last_catalog_poll
+                                    .is_none_or(|last| last.elapsed() >= Duration::from_secs(15))
+                            {
+                                this.last_catalog_poll = Some(Instant::now());
+                                this.run(Operation::Poll, cx);
+                            }
                         }
                     })
                     .is_err()
@@ -532,7 +603,60 @@ impl Service {
 
     pub fn set_backend(&mut self, backend: Arc<dyn Backend>, cx: &mut Context<Self>) {
         self.backend = Some(backend);
+        self.drain_auto_login(cx);
         cx.notify();
+    }
+
+    pub fn online_only(&self) -> bool {
+        self.online_only
+    }
+
+    pub fn set_online_only(&mut self, online_only: bool, cx: &mut Context<Self>) {
+        if self.online_only == online_only {
+            return;
+        }
+        self.online_only = online_only;
+        self.last_catalog_poll = None;
+        self.run(Operation::SetOnlineOnly(online_only), cx);
+        if let Some(first_server) = self.catalogs.keys().next().cloned() {
+            if self.busy && self.queued.is_none() {
+                self.queued = Some(Operation::Refresh(first_server));
+            } else {
+                self.run(Operation::Refresh(first_server), cx);
+            }
+        }
+        cx.notify();
+    }
+
+    /// Queue saved servers for silent auto-login (never prompts or shows errors
+    /// when no password is stored).
+    pub fn queue_auto_login(&mut self, servers: Vec<Server>, cx: &mut Context<Self>) {
+        for server in servers {
+            if self.is_logged_in(&server.id)
+                || self
+                    .auto_login_queue
+                    .iter()
+                    .any(|queued| queued.id == server.id)
+            {
+                continue;
+            }
+            self.auto_login_queue.push_back(server);
+        }
+        self.drain_auto_login(cx);
+    }
+
+    fn drain_auto_login(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.busy || self.backend.is_none() {
+            return false;
+        }
+        while let Some(server) = self.auto_login_queue.pop_front() {
+            if self.is_logged_in(&server.id) {
+                continue;
+            }
+            self.run(Operation::SilentLogin(server), cx);
+            return true;
+        }
+        false
     }
 
     pub fn set_screen_viewer(
@@ -679,6 +803,9 @@ impl Service {
     }
 
     pub fn run(&mut self, operation: Operation, cx: &mut Context<Self>) {
+        if let Operation::Logout(id) | Operation::Forget(id) = &operation {
+            self.auto_login_queue.retain(|server| &server.id != id);
+        }
         if self.busy {
             if self.polling && !matches!(operation, Operation::Poll) && self.queued.is_none() {
                 self.queued = Some(operation);
@@ -689,12 +816,24 @@ impl Service {
         let Some(backend) = self.backend.clone() else {
             return;
         };
-        let polling = matches!(operation, Operation::Poll);
+        let is_login = matches!(
+            operation,
+            Operation::Login(..)
+                | Operation::SavedLogin(_)
+                | Operation::SilentLogin(_)
+                | Operation::RememberLogin(..)
+        );
+        let is_logout = matches!(operation, Operation::Logout(_));
+        let polling = matches!(
+            operation,
+            Operation::Poll | Operation::SilentLogin(_) | Operation::SetOnlineOnly(_)
+        );
         self.polling = polling;
         self.diagnosing = matches!(operation, Operation::Diagnose(..));
         let server_id = match &operation {
             Operation::Login(server, _)
             | Operation::SavedLogin(server)
+            | Operation::SilentLogin(server)
             | Operation::RememberLogin(server, ..) => Some(server.id.clone()),
             Operation::Refresh(id)
             | Operation::Connect(id, _)
@@ -703,7 +842,12 @@ impl Service {
             | Operation::Resolve(id, ..)
             | Operation::OpenScreen(id, _) => Some(id.clone()),
             Operation::Diagnose(id, _) => Some(id.clone()),
-            Operation::OpenDebugScreen { .. } | Operation::Register { .. } => None,
+            Operation::OpenDebugScreen { .. }
+            | Operation::OpenSavedDebugScreen(_)
+            | Operation::RememberDebugScreen { .. }
+            | Operation::ForgetDebugDevice(_)
+            | Operation::SetOnlineOnly(_)
+            | Operation::Register { .. } => None,
             _ => self.connection.as_ref().map(|active| active.server.clone()),
         };
         let network_progress = matches!(operation, Operation::Connect(..))
@@ -849,6 +993,12 @@ impl Service {
                 }
                 let catalog_refreshed = reply.catalog.is_some();
                 let diagnosed = reply.diagnostics.is_some();
+                let logged_in = reply
+                    .catalog
+                    .as_ref()
+                    .filter(|_| is_login)
+                    .map(|(id, _)| id.clone());
+                let explicit_logout = reply.logged_out.as_ref().filter(|_| is_logout).cloned();
                 if let Some((id, catalog)) = reply.catalog {
                     this.catalogs.insert(id, catalog);
                 }
@@ -889,7 +1039,10 @@ impl Service {
                     }
                 }
                 let failed = reply.error.is_some();
-                if let Some(error) = reply.error {
+                if reply.silent {
+                    // Silent background auto-login never overwrites visible status
+                    // with an error or interrupts the user.
+                } else if let Some(error) = reply.error {
                     this.status = super::panel::describe(&error).to_string();
                     if let Some(progress) = server_id
                         .as_ref()
@@ -913,6 +1066,7 @@ impl Service {
                     this.status_error = false;
                 }
                 if let Some(id) = server_id
+                    && !reply.silent
                     && (!polling || failed || catalog_refreshed)
                 {
                     this.statuses.insert(
@@ -924,12 +1078,27 @@ impl Service {
                         },
                     );
                 }
+                if let Some(id) = logged_in {
+                    cx.emit(Event::LoggedIn(id));
+                }
+                if let Some(id) = explicit_logout {
+                    cx.emit(Event::LoggedOut(id));
+                }
                 if let Some((server, password)) = reply.prompt {
                     cx.emit(Event::LoginRequired(server, password));
                 }
                 if let Some(id) = reply.forgotten {
                     this.statuses.remove(&id);
                     cx.emit(Event::Forgotten(id));
+                }
+                if let Some(device) = reply.saved_debug_device {
+                    cx.emit(Event::DebugDeviceSaved(device));
+                }
+                if let Some(id) = reply.forgotten_debug_device {
+                    cx.emit(Event::DebugDeviceForgotten(id));
+                }
+                if let Some(device) = reply.debug_prompt {
+                    cx.emit(Event::DebugKeyRequired(device));
                 }
                 if let Some((server, devices)) = moved {
                     cx.emit(Event::DeviceAddressesChanged(server, devices));
@@ -970,7 +1139,7 @@ impl Service {
                 cx.emit(Event::Updated);
                 if let Some(operation) = this.queued.take() {
                     this.run(operation, cx);
-                } else {
+                } else if !this.drain_auto_login(cx) {
                     this.refresh_paths(cx);
                 }
                 cx.notify();

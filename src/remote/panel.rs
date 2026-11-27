@@ -1,4 +1,4 @@
-use super::{Event, Operation, Server, Service};
+use super::{Event, Operation, SavedDebugDevice, Server, Service};
 use crate::{
     app::{CatalogIcon, RemoteAction},
     cli::Secret,
@@ -9,8 +9,9 @@ use crate::{
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     component::{
-        ActiveTheme as _, Icon, IconName, Sizable as _, WindowExt as _,
-        button::Button,
+        ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, WindowExt as _,
+        button::{Button, ButtonVariants as _},
+        checkbox::Checkbox,
         h_flex,
         input::{Input, InputState},
         list::ListItem,
@@ -34,6 +35,8 @@ pub enum Command {
     Devices(String),
     Networks(String),
     RefreshServer(String),
+    RefreshAll,
+    ToggleOnlineOnly,
     Diagnose(String, Vec<String>),
     ConnectServer(String, String),
     DisconnectServer(String),
@@ -55,6 +58,15 @@ pub enum Command {
         device_id: String,
         key: Secret,
     },
+    SaveDebugScreen {
+        device: SavedDebugDevice,
+        key: Secret,
+        save: bool,
+    },
+    OpenSavedDebugScreen(String),
+    EditDebugDevice(String),
+    DeleteDebugDevice(String),
+    ConfirmDeleteDebugDevice(String),
     RegisterDialog(Option<String>),
     RegisterAccount {
         url: String,
@@ -98,6 +110,40 @@ impl RemotePanel {
             }),
             cx.subscribe_in(&service, window, |panel, _, event, window, cx| {
                 match event {
+                    Event::LoggedIn(id) => {
+                        let id = id.clone();
+                        panel.settings.update(cx, |store, cx| {
+                            store.update(
+                                |settings| {
+                                    if let Some(server) = settings
+                                        .remote_servers
+                                        .iter_mut()
+                                        .find(|server| server.id == id)
+                                    {
+                                        server.auto_login = true;
+                                    }
+                                },
+                                cx,
+                            )
+                        });
+                    }
+                    Event::LoggedOut(id) => {
+                        let id = id.clone();
+                        panel.settings.update(cx, |store, cx| {
+                            store.update(
+                                |settings| {
+                                    if let Some(server) = settings
+                                        .remote_servers
+                                        .iter_mut()
+                                        .find(|server| server.id == id)
+                                    {
+                                        server.auto_login = false;
+                                    }
+                                },
+                                cx,
+                            )
+                        });
+                    }
                     Event::LoginRequired(server, password) => super::login_dialog::open(
                         Some(server.clone()),
                         password.clone(),
@@ -119,11 +165,65 @@ impl RemotePanel {
                             panel.selected = None;
                         }
                     }
+                    Event::DebugDeviceSaved(device) => {
+                        let device = device.clone();
+                        panel.settings.update(cx, |store, cx| {
+                            store.update(
+                                |settings| {
+                                    if let Some(existing) = settings
+                                        .remote_debug_devices
+                                        .iter_mut()
+                                        .find(|item| item.id == device.id)
+                                    {
+                                        *existing = device.clone();
+                                    } else if settings.remote_debug_devices.len() < 64 {
+                                        settings.remote_debug_devices.push(device.clone());
+                                    }
+                                },
+                                cx,
+                            )
+                        });
+                    }
+                    Event::DebugDeviceForgotten(id) => {
+                        panel.settings.update(cx, |store, cx| {
+                            store.update(
+                                |settings| {
+                                    settings
+                                        .remote_debug_devices
+                                        .retain(|device| &device.id != id)
+                                },
+                                cx,
+                            )
+                        });
+                        if panel.selected.as_ref() == Some(id) {
+                            panel.selected = None;
+                        }
+                    }
+                    Event::DebugKeyRequired(device) => super::debug_dialog::open(
+                        Some(device.url.clone()),
+                        Some(device.clone()),
+                        panel.service.clone(),
+                        panel.dispatch.clone(),
+                        window,
+                        cx,
+                    ),
                     _ => {}
                 }
                 cx.notify();
             }),
         ];
+        let initial_servers: Vec<_> = settings
+            .read(cx)
+            .settings()
+            .remote_servers
+            .into_iter()
+            .filter(|server| server.auto_login)
+            .collect();
+        if !initial_servers.is_empty() {
+            service.update(cx, |service, cx| {
+                service.queue_auto_login(initial_servers, cx)
+            });
+        }
         Self {
             service,
             settings,
@@ -140,10 +240,18 @@ impl RemotePanel {
     }
 
     pub fn toolbar_buttons(&self) -> Vec<Button> {
+        let refresh_dispatch = self.dispatch.clone();
         let debug_dispatch = self.dispatch.clone();
         let register_dispatch = self.dispatch.clone();
         let add_dispatch = self.dispatch.clone();
         vec![
+            Button::new("remote-refresh-all")
+                .icon(CatalogIcon::RefreshCw)
+                .tooltip(t!("remote.refresh_all"))
+                .accessibility_label(t!("remote.refresh_all"))
+                .on_click(move |_, window, cx| {
+                    refresh_dispatch.dispatch_action(&RemoteAction(Command::RefreshAll), window, cx)
+                }),
             Button::new("remote-debug-open")
                 .icon(CatalogIcon::Monitor)
                 .tooltip(t!("remote.debug.open"))
@@ -188,6 +296,15 @@ impl RemotePanel {
             .remote_servers
             .into_iter()
             .find(|server| server.id == id)
+    }
+
+    fn debug_device(&self, id: &str, cx: &App) -> Option<SavedDebugDevice> {
+        self.settings
+            .read(cx)
+            .settings()
+            .remote_debug_devices
+            .into_iter()
+            .find(|device| device.id == id)
     }
 
     fn default_server_url(&self, cx: &App) -> Option<String> {
@@ -266,6 +383,36 @@ impl RemotePanel {
             Command::RefreshServer(id) => self
                 .service
                 .update(cx, |service, cx| service.run(Operation::Refresh(id), cx)),
+            Command::RefreshAll => {
+                let first_logged_in = self
+                    .selected
+                    .as_deref()
+                    .filter(|id| self.service.read(cx).is_logged_in(id))
+                    .map(str::to_owned)
+                    .or_else(|| self.service.read(cx).catalogs.keys().next().cloned());
+                if let Some(id) = first_logged_in {
+                    self.service
+                        .update(cx, |service, cx| service.run(Operation::Refresh(id), cx));
+                } else {
+                    let servers: Vec<_> = self
+                        .settings
+                        .read(cx)
+                        .settings()
+                        .remote_servers
+                        .into_iter()
+                        .filter(|server| server.auto_login)
+                        .collect();
+                    if !servers.is_empty() {
+                        self.service
+                            .update(cx, |service, cx| service.queue_auto_login(servers, cx));
+                    }
+                }
+            }
+            Command::ToggleOnlineOnly => {
+                let next = !self.service.read(cx).online_only();
+                self.service
+                    .update(cx, |service, cx| service.set_online_only(next, cx));
+            }
             Command::Diagnose(id, devices) => {
                 if self
                     .service
@@ -359,7 +506,14 @@ impl RemotePanel {
                     .as_deref()
                     .and_then(|id| self.server(id, cx).map(|server| server.url))
                     .or_else(|| self.default_server_url(cx));
-                super::debug_dialog::open(url, self.dispatch.clone(), window, cx);
+                super::debug_dialog::open(
+                    url,
+                    None,
+                    self.service.clone(),
+                    self.dispatch.clone(),
+                    window,
+                    cx,
+                );
             }
             Command::OpenDebugScreen {
                 url,
@@ -376,6 +530,55 @@ impl RemotePanel {
                         cx,
                     )
                 });
+            }
+            Command::SaveDebugScreen { device, key, save } => {
+                self.service.update(cx, |service, cx| {
+                    service.run(Operation::RememberDebugScreen { device, key, save }, cx)
+                });
+            }
+            Command::OpenSavedDebugScreen(id) => {
+                if let Some(device) = self.debug_device(&id, cx) {
+                    self.service.update(cx, |service, cx| {
+                        service.run(Operation::OpenSavedDebugScreen(device), cx)
+                    });
+                }
+            }
+            Command::EditDebugDevice(id) => {
+                if let Some(device) = self.debug_device(&id, cx) {
+                    super::debug_dialog::open(
+                        Some(device.url.clone()),
+                        Some(device),
+                        self.service.clone(),
+                        self.dispatch.clone(),
+                        window,
+                        cx,
+                    );
+                }
+            }
+            Command::DeleteDebugDevice(id) => {
+                if let Some(device) = self.debug_device(&id, cx) {
+                    let dispatch = self.dispatch.clone();
+                    confirm_delete(
+                        device.label(),
+                        Some(t!("remote.debug.delete_help")),
+                        Rc::new(move |window, cx| {
+                            dispatch.dispatch_action(
+                                &RemoteAction(Command::ConfirmDeleteDebugDevice(id.clone())),
+                                window,
+                                cx,
+                            );
+                        }),
+                        window,
+                        cx,
+                    );
+                }
+            }
+            Command::ConfirmDeleteDebugDevice(id) => {
+                if self.debug_device(&id, cx).is_some() {
+                    self.service.update(cx, |service, cx| {
+                        service.run(Operation::ForgetDebugDevice(id), cx)
+                    });
+                }
             }
             Command::RegisterDialog(server_id) => {
                 let url = server_id
@@ -427,8 +630,10 @@ impl RemotePanel {
                         .iter_mut()
                         .find(|saved| saved.id == server.id)
                     {
+                        server.auto_login = saved.auto_login;
                         *saved = server.clone();
                     } else if settings.remote_servers.len() < 64 {
+                        server.auto_login = false;
                         settings.remote_servers.push(server.clone());
                     }
                 },
@@ -451,15 +656,46 @@ impl Render for RemotePanel {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let service = self.service.read(cx);
         let busy = service.is_busy();
+        let online_only = service.online_only();
         let query = self.search.read(cx).value().trim().to_lowercase();
-        let servers = self.settings.read(cx).settings().remote_servers;
+        let settings = self.settings.read(cx).settings();
+        let servers = settings.remote_servers;
+        let debug_devices = settings.remote_debug_devices;
         let mut rows = v_flex().gap_1().px_1();
         let mut count = 0;
         for server in &servers {
-            if ![&server.name, &server.username, &server.url]
-                .iter()
-                .any(|value| value.to_lowercase().contains(&query))
-            {
+            let server_matches = query.is_empty()
+                || [&server.name, &server.username, &server.url]
+                    .iter()
+                    .any(|value| value.to_lowercase().contains(&query));
+            let catalog_devices: Vec<_> = service
+                .catalogs
+                .get(&server.id)
+                .map(|catalog| {
+                    catalog
+                        .devices
+                        .iter()
+                        .filter(|device| {
+                            (!online_only || device.is_online())
+                                && (query.is_empty()
+                                    || server_matches
+                                    || [
+                                        device.label().to_string(),
+                                        device.device_id.clone(),
+                                        device.customer_name.clone(),
+                                        device
+                                            .virtual_ip
+                                            .map(|ip| ip.to_string())
+                                            .unwrap_or_default(),
+                                    ]
+                                    .iter()
+                                    .any(|value| value.to_lowercase().contains(&query)))
+                        })
+                        .cloned()
+                        .collect()
+                })
+                .unwrap_or_default();
+            if !server_matches && catalog_devices.is_empty() {
                 continue;
             }
             count += 1;
@@ -555,6 +791,134 @@ impl Render for RemotePanel {
                         }
                     }),
             );
+            if logged_in {
+                if catalog_devices.is_empty() && query.is_empty() {
+                    rows = rows.child(
+                        div()
+                            .pl_6()
+                            .pr_2()
+                            .py_1()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(if online_only {
+                                t!("remote.no_online_devices")
+                            } else {
+                                t!("remote.no_devices")
+                            }),
+                    );
+                }
+                for device in catalog_devices {
+                    let server_id = server.id.clone();
+                    let device_id = device.device_id.clone();
+                    let row_key = format!("device:{server_id}:{device_id}");
+                    let dispatch_click = self.dispatch.clone();
+                    let dispatch_btn = self.dispatch.clone();
+                    let dispatch_menu = self.dispatch.clone();
+                    let screen_online = device.screen_online();
+                    let has_ssh = device.lease_valid();
+                    let subtitle = match (screen_online, has_ssh) {
+                        (true, true) => device
+                            .virtual_ip
+                            .map(|ip| format!("{} · {ip}", t!("remote.screen_online")))
+                            .unwrap_or_else(|| t!("remote.screen_online").to_string()),
+                        (true, false) => {
+                            format!("{} · {}", t!("remote.screen_online"), t!("remote.no_ssh"))
+                        }
+                        (false, true) => device
+                            .virtual_ip
+                            .map(|ip| ip.to_string())
+                            .unwrap_or_else(|| t!("remote.screen_offline").to_string()),
+                        (false, false) => t!("remote.screen_offline").to_string(),
+                    };
+                    let menu_server = server_id.clone();
+                    let menu_device = device_id.clone();
+                    let btn_server = server_id.clone();
+                    let btn_device = device_id.clone();
+                    rows = rows.child(
+                        div().pl_4().child(
+                            ListItem::new(SharedString::from(format!(
+                                "remote-sidebar-device-{server_id}-{device_id}"
+                            )))
+                            .selected(self.selected.as_ref() == Some(&row_key))
+                            .on_click(move |event, window, cx| {
+                                dispatch_click.dispatch_action(
+                                    &RemoteAction(if event.click_count() == 2 {
+                                        Command::Screen {
+                                            server: server_id.clone(),
+                                            device: device_id.clone(),
+                                        }
+                                    } else {
+                                        Command::Select(row_key.clone())
+                                    }),
+                                    window,
+                                    cx,
+                                )
+                            })
+                            .child(
+                                h_flex()
+                                    .gap_2()
+                                    .items_center()
+                                    .min_w_0()
+                                    .child(Icon::new(CatalogIcon::Monitor).small().text_color(
+                                        if screen_online {
+                                            cx.theme().success
+                                        } else {
+                                            cx.theme().muted_foreground
+                                        },
+                                    ))
+                                    .child(
+                                        v_flex()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .child(
+                                                div()
+                                                    .text_sm()
+                                                    .truncate()
+                                                    .child(device.label().to_owned()),
+                                            )
+                                            .child(
+                                                div()
+                                                    .text_xs()
+                                                    .truncate()
+                                                    .text_color(cx.theme().muted_foreground)
+                                                    .child(subtitle),
+                                            ),
+                                    )
+                                    .child(
+                                        Button::new(SharedString::from(format!(
+                                            "remote-sidebar-screen-{btn_server}-{btn_device}"
+                                        )))
+                                        .ghost()
+                                        .xsmall()
+                                        .icon(CatalogIcon::Monitor)
+                                        .tooltip(t!("remote.screen"))
+                                        .disabled(busy)
+                                        .on_click(
+                                            move |_, window, cx| {
+                                                dispatch_btn.dispatch_action(
+                                                    &RemoteAction(Command::Screen {
+                                                        server: btn_server.clone(),
+                                                        device: btn_device.clone(),
+                                                    }),
+                                                    window,
+                                                    cx,
+                                                )
+                                            },
+                                        ),
+                                    ),
+                            )
+                            .context_menu(move |menu, _, _| {
+                                sidebar_device_menu(
+                                    menu.action_context(dispatch_menu.clone()),
+                                    &menu_server,
+                                    &menu_device,
+                                    busy,
+                                )
+                            }),
+                        ),
+                    );
+                }
+            }
             if let Some(active) = active {
                 rows = rows.child(div().px_3().child(super::diagnostic_view::current_paths(
                     format!("remote-sidebar-paths-{}", server.id),
@@ -593,7 +957,116 @@ impl Render for RemotePanel {
                 );
             }
         }
-        if servers.is_empty() {
+        let matching_debug_devices: Vec<_> = debug_devices
+            .iter()
+            .filter(|device| {
+                query.is_empty()
+                    || [
+                        device.label(),
+                        device.device_id.as_str(),
+                        device.url.as_str(),
+                    ]
+                    .iter()
+                    .any(|value| value.to_lowercase().contains(&query))
+            })
+            .cloned()
+            .collect();
+        if !matching_debug_devices.is_empty() {
+            count += matching_debug_devices.len();
+            rows = rows.child(
+                div()
+                    .px_2()
+                    .pt_2()
+                    .pb_1()
+                    .text_xs()
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(cx.theme().muted_foreground)
+                    .child(t!("remote.debug.saved_section")),
+            );
+            for device in matching_debug_devices {
+                let id = device.id.clone();
+                let row_key = format!("debug:{id}");
+                let click_id = id.clone();
+                let btn_id = id.clone();
+                let menu_id = id.clone();
+                let dispatch_click = self.dispatch.clone();
+                let dispatch_btn = self.dispatch.clone();
+                let dispatch_menu = self.dispatch.clone();
+                rows = rows.child(
+                    ListItem::new(SharedString::from(format!("remote-debug-device-row-{id}")))
+                        .selected(self.selected.as_ref() == Some(&row_key))
+                        .on_click(move |event, window, cx| {
+                            dispatch_click.dispatch_action(
+                                &RemoteAction(if event.click_count() == 2 {
+                                    Command::OpenSavedDebugScreen(click_id.clone())
+                                } else {
+                                    Command::Select(row_key.clone())
+                                }),
+                                window,
+                                cx,
+                            )
+                        })
+                        .child(
+                            h_flex()
+                                .gap_2()
+                                .items_center()
+                                .min_w_0()
+                                .child(
+                                    Icon::new(CatalogIcon::Monitor)
+                                        .small()
+                                        .text_color(cx.theme().muted_foreground),
+                                )
+                                .child(
+                                    v_flex()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .child(
+                                            div()
+                                                .text_sm()
+                                                .truncate()
+                                                .child(device.label().to_owned()),
+                                        )
+                                        .child(
+                                            div()
+                                                .text_xs()
+                                                .truncate()
+                                                .text_color(cx.theme().muted_foreground)
+                                                .child(device.device_id.clone()),
+                                        ),
+                                )
+                                .child(
+                                    Button::new(SharedString::from(format!(
+                                        "remote-debug-screen-open-{btn_id}"
+                                    )))
+                                    .ghost()
+                                    .xsmall()
+                                    .icon(CatalogIcon::Monitor)
+                                    .tooltip(t!("remote.screen"))
+                                    .disabled(busy)
+                                    .on_click(
+                                        move |_, window, cx| {
+                                            dispatch_btn.dispatch_action(
+                                                &RemoteAction(Command::OpenSavedDebugScreen(
+                                                    btn_id.clone(),
+                                                )),
+                                                window,
+                                                cx,
+                                            )
+                                        },
+                                    ),
+                                ),
+                        )
+                        .context_menu(move |menu, _, _| {
+                            debug_device_menu(
+                                menu.action_context(dispatch_menu.clone()),
+                                &menu_id,
+                                busy,
+                            )
+                        }),
+                );
+            }
+        }
+        if servers.is_empty() && debug_devices.is_empty() {
             rows = rows.child(
                 div()
                     .p_3()
@@ -616,6 +1089,7 @@ impl Render for RemotePanel {
                 .values()
                 .any(|entry| entry.message == service.status))
         .then(|| (service.status.clone(), service.status_error));
+        let toggle_dispatch = self.dispatch.clone();
         v_flex()
             .id("remote-management")
             .test_support()
@@ -624,13 +1098,31 @@ impl Render for RemotePanel {
             .min_h_0()
             .min_w_0()
             .child(
-                div().p_2().child(
-                    Input::new(&self.search)
-                        .id("remote-search")
-                        .small()
-                        .cleanable(true)
-                        .prefix(Icon::new(IconName::Search).small()),
-                ),
+                v_flex()
+                    .gap_2()
+                    .p_2()
+                    .child(
+                        Input::new(&self.search)
+                            .id("remote-search")
+                            .small()
+                            .cleanable(true)
+                            .prefix(Icon::new(IconName::Search).small()),
+                    )
+                    .when(!servers.is_empty(), |box_view| {
+                        box_view.child(
+                            Checkbox::new("remote-sidebar-online-only")
+                                .label(t!("remote.online_only"))
+                                .checked(online_only)
+                                .disabled(busy)
+                                .on_click(move |_, window, cx| {
+                                    toggle_dispatch.dispatch_action(
+                                        &RemoteAction(Command::ToggleOnlineOnly),
+                                        window,
+                                        cx,
+                                    )
+                                }),
+                        )
+                    }),
             )
             .when_some(global_status, |view, (message, failed)| {
                 view.child(
@@ -726,6 +1218,51 @@ fn server_menu(
             busy,
         ))
         .item(item(t!("common.delete"), Command::Delete(id.into()), busy))
+}
+
+fn sidebar_device_menu(menu: PopupMenu, server_id: &str, device_id: &str, busy: bool) -> PopupMenu {
+    let item = |label: SharedString, command: Command, disabled: bool| {
+        PopupMenuItem::new(label)
+            .action(Box::new(RemoteAction(command)))
+            .disabled(disabled)
+    };
+    menu.item(item(
+        t!("remote.screen"),
+        Command::Screen {
+            server: server_id.into(),
+            device: device_id.into(),
+        },
+        busy,
+    ))
+    .item(item(
+        t!("remote.show_devices"),
+        Command::Devices(server_id.into()),
+        busy,
+    ))
+}
+
+fn debug_device_menu(menu: PopupMenu, id: &str, busy: bool) -> PopupMenu {
+    let item = |label: SharedString, command: Command, disabled: bool| {
+        PopupMenuItem::new(label)
+            .action(Box::new(RemoteAction(command)))
+            .disabled(disabled)
+    };
+    menu.item(item(
+        t!("remote.screen"),
+        Command::OpenSavedDebugScreen(id.into()),
+        busy,
+    ))
+    .separator()
+    .item(item(
+        t!("remote.edit_login"),
+        Command::EditDebugDevice(id.into()),
+        busy,
+    ))
+    .item(item(
+        t!("common.delete"),
+        Command::DeleteDebugDevice(id.into()),
+        busy,
+    ))
 }
 
 pub(super) fn describe(code: &str) -> SharedString {

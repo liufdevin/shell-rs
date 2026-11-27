@@ -212,6 +212,7 @@ impl TerminalPanel {
                 store.clone(),
             ));
             terminal.set_ended_actions(ReconnectTerminal(id), CloseTerminal(id), cx);
+            terminal.set_offers_processes(protocol == ProtocolKind::Ssh);
             terminal.take_dropped_files();
             terminal
         });

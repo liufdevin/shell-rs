@@ -2292,30 +2292,33 @@ async fn serial_multi_send_quick_add_draft_save_and_inline_hex_work_without_leav
     assert_eq!(second.delay_ms, 200);
     assert_eq!(third.content, "123456789");
     assert!(third.crc);
-    // Inline HEX toggle rejects non-hex text and toggles valid hex cleanly.
-    in_frame(cx, handle, |window, cx| {
-        window.click(("serial-multi-hex", first.id), cx);
-    });
+    // Shared group newline toggle applies to inheriting rows (first) without
+    // overriding custom rows (second HEX row, third CRC row).
     in_frame(cx, handle, |window, cx| {
         assert_eq!(
-            window.find(("serial-multi-hex", first.id)).checked(),
-            Some(false)
-        );
-        assert!(window.find("serial-tool-status").visible());
-        window.click(("serial-multi-hex", second.id), cx);
-    });
-    in_frame(cx, handle, |window, cx| {
-        assert_eq!(
-            window.find(("serial-multi-hex", second.id)).checked(),
-            Some(false)
-        );
-        window.click(("serial-multi-hex", second.id), cx);
-    });
-    in_frame(cx, handle, |window, _| {
-        assert_eq!(
-            window.find(("serial-multi-hex", second.id)).checked(),
+            window.find("serial-multi-group-newline").checked(),
             Some(true)
         );
+        window.click("serial-multi-group-newline", cx);
+    });
+    in_frame(cx, handle, |window, cx| {
+        assert_eq!(
+            window.find("serial-multi-group-newline").checked(),
+            Some(false)
+        );
+        window.click(("serial-multi-send", first.id), cx);
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(5), |window, _| {
+        window.find("serial-tool-status").label() == Some("命令组发送完成。")
+    })
+    .await;
+    assert_eq!(
+        factory.writes.lock().unwrap().last(),
+        Some(&b"AT+GMR".to_vec())
+    );
+    // Re-enable shared newline (restores CrLf) and verify all three rows send as expected.
+    in_frame(cx, handle, |window, cx| {
+        window.click("serial-multi-group-newline", cx);
     });
     // Send buttons send each configured row immediately.
     for (id, expected) in [
@@ -2356,14 +2359,15 @@ async fn serial_multi_send_sscom_inline_edit_select_all_and_quick_toggles(cx: &m
     });
     open_assistant(cx, handle, &workspace).await;
     connect_assistant(cx, handle).await;
-    // Inline edit content and delay on command 2 ("hello", CrLf, 100ms) and send immediately.
+    // Inline edit content on command 2 and shared group delay, then send immediately.
     in_frame(cx, handle, |window, cx| {
         window.click(("serial-multi-content", 2_u64), cx);
         window.press("secondary-a", cx);
         window.input("AT+RST", cx);
-        window.click(("serial-multi-delay", 2_u64), cx);
+        window.click("serial-multi-group-delay", cx);
         window.press("secondary-a", cx);
         window.input("250", cx);
+        window.press("enter", cx);
     });
     in_frame(cx, handle, |window, cx| {
         window.click(("serial-multi-send", 2_u64), cx);
@@ -2384,24 +2388,26 @@ async fn serial_multi_send_sscom_inline_edit_select_all_and_quick_toggles(cx: &m
             .serial_assistant("serial-assistant:COM5")
             .unwrap();
         assert_eq!(saved.groups[0].commands[0].content, "AT+RST");
-        assert_eq!(saved.groups[0].commands[0].delay_ms, 250);
+        assert_eq!(saved.groups[0].default_delay_ms, 250);
     });
-    // Cycle ending (CrLf -> None) and toggle CRC on command 2, then send again.
+    // Shared group newline toggle + ending cycle updates the group default cleanly.
     in_frame(cx, handle, |window, cx| {
-        window.click(("serial-multi-ending", 2_u64), cx);
-        window.click(("serial-multi-crc", 2_u64), cx);
+        assert_eq!(
+            window.find("serial-multi-group-newline").checked(),
+            Some(false)
+        );
+        window.click("serial-multi-group-newline", cx);
     });
     in_frame(cx, handle, |window, cx| {
-        window.click(("serial-multi-send", 2_u64), cx);
+        assert_eq!(
+            window.find("serial-multi-group-ending").label(),
+            Some("CRLF")
+        );
+        window.click("serial-multi-group-ending", cx);
     });
-    cx.wait_for(handle.into(), Duration::from_secs(5), |window, _| {
-        factory.writes.lock().unwrap().len() == 2
-            && window.find("serial-tool-status").label() == Some("命令组发送完成。")
-    })
-    .await;
-    let sent = factory.writes.lock().unwrap()[1].clone();
-    assert!(sent.starts_with(b"AT+RST"));
-    assert_eq!(sent.len(), b"AT+RST".len() + 2);
+    in_frame(cx, handle, |window, _| {
+        assert_eq!(window.find("serial-multi-group-ending").label(), Some("LF"));
+    });
     // Select-all toggles all rows enabled, then all rows disabled.
     in_frame(cx, handle, |window, cx| {
         assert_eq!(

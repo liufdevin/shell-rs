@@ -3239,3 +3239,105 @@ async fn duplicating_a_terminal_without_a_reported_directory_only_copies_its_nam
     .await;
     assert!(!factory.written_text().contains("cd --"));
 }
+
+#[gpui_kit::test]
+async fn crowded_htop_shows_hint_with_zoom_copy_and_mute(cx: &mut TestAppContext) {
+    let factory = Arc::new(FakeTerminalFactory::default());
+    let (handle, workspace) =
+        open_workspace_with_remote_factory(cx, HostStore::seed(), factory.clone());
+    let terminal_id = RemoteTerminalId(INITIAL_WEB_TERMINAL);
+    cx.wait_for(handle.into(), Duration::from_secs(2), |_, cx| {
+        remote_lifecycle(&workspace, terminal_id, cx) == TerminalLifecycle::Running
+    })
+    .await;
+
+    let mut crowded = String::from("\x1b[?1049h\x1b[2J\x1b[H");
+    for i in 1..=32 {
+        crowded.push_str(&format!(
+            "{:>3} [        0.0%] {:>3} [|       0.6%] {:>3} [        0.0%] {:>3} [        0.0%]\r\n",
+            i,
+            i + 32,
+            i + 64,
+            i + 96
+        ));
+    }
+
+    let paste = |cx: &mut TestAppContext, text: &str| {
+        cx.update(|cx| {
+            cx.write_to_clipboard(ClipboardItem::new_string(text.to_owned()));
+            let terminal = workspace
+                .read(cx)
+                .remote_terminal(terminal_id)
+                .unwrap()
+                .read(cx)
+                .terminal()
+                .clone();
+            terminal.update(cx, |terminal, cx| terminal.paste_clipboard(cx));
+        });
+    };
+
+    paste(cx, &crowded);
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, _| {
+        window.try_find("terminal-htop-hint").is_some()
+            && window.try_find("terminal-htop-zoom-out").is_some()
+            && window.try_find("terminal-htop-processes").is_some()
+            && window.try_find("terminal-htop-copy-config").is_some()
+    })
+    .await;
+
+    let size_before = cx.update(|cx| {
+        workspace
+            .read(cx)
+            .settings()
+            .read(cx)
+            .settings()
+            .terminal_font
+            .size
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.click("terminal-htop-zoom-out", cx);
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(2), |_, cx| {
+        workspace
+            .read(cx)
+            .settings()
+            .read(cx)
+            .settings()
+            .terminal_font
+            .size
+            < size_before
+    })
+    .await;
+
+    in_frame(cx, handle, |window, cx| {
+        window.click("terminal-htop-copy-config", cx);
+    });
+    let copied = cx
+        .update(|cx| cx.read_from_clipboard().and_then(|item| item.text()))
+        .expect("copied htop compact command");
+    assert!(copied.contains("htoprc"));
+    assert!(copied.contains("left_meters"));
+    assert!(copied.contains("column_meters_0"));
+
+    // Leaving alternate screen automatically hides the hint.
+    paste(cx, "\x1b[?1049l");
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, _| {
+        window.try_find("terminal-htop-hint").is_none()
+    })
+    .await;
+
+    // Re-entering shows it again until muted.
+    paste(cx, &crowded);
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, _| {
+        window.try_find("terminal-htop-hint").is_some()
+    })
+    .await;
+
+    in_frame(cx, handle, |window, cx| {
+        window.click("terminal-htop-mute", cx);
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, _| {
+        window.try_find("terminal-htop-hint").is_none()
+    })
+    .await;
+}

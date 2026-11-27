@@ -1,6 +1,6 @@
 [package]
 name = "shellrs"
-version = "0.1.24"
+version = "0.1.25-beta-3"
 edition = "2024"
 publish = false
 description = "SSH client and host manager: terminal, SFTP, port forwarding"
@@ -168,11 +168,13 @@ windows-sys = { version = "0.61", features = [
     "Win32_System_Diagnostics_ToolHelp",
     "Win32_System_JobObjects",
     "Win32_System_Com",
+    "Win32_System_Console",
     "Win32_System_LibraryLoader",
     "Win32_System_SystemInformation",
     "Win32_System_Pipes",
     "Win32_System_Threading",
     "Win32_System_WindowsProgramming",
+    "Win32_UI_WindowsAndMessaging",
     "Win32_UI_WindowsAndMessaging",
     "Win32_UI_Controls_Dialogs",
     "Win32_UI_Input_KeyboardAndMouse",

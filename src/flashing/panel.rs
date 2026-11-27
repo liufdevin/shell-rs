@@ -17,6 +17,7 @@ use gpui_kit::component::{
     progress::Progress,
     radio::Radio,
     resizable::{ResizablePanelEvent, ResizableState, h_resizable, resizable_panel},
+    scroll::ScrollableElement as _,
     tooltip::Tooltip,
     v_flex,
 };
@@ -1748,23 +1749,39 @@ impl FlashingPanel {
                                             .file_name()
                                             .map(|name| name.to_string_lossy().into_owned())
                                             .unwrap_or_else(|| path.display().to_string());
+                                        let full_path = recent_firmware_tooltip(path);
+                                        let item_id = ElementId::Name(
+                                            format!("flashing-recent-item:{full_path}").into(),
+                                        );
                                         let selected = current.as_ref() == Some(path);
                                         let target = path.clone();
                                         let dispatch = dispatch.clone();
                                         menu = menu.item(
-                                            PopupMenuItem::new(label).checked(selected).on_click(
-                                                move |_, window, cx| {
-                                                    dispatch.dispatch_action(
-                                                        &FlashingAction(
-                                                            FlashingCommand::SelectFirmwarePath(
-                                                                target.clone(),
-                                                            ),
+                                            PopupMenuItem::element(move |_, _| {
+                                                let tooltip_path = full_path.clone();
+                                                div()
+                                                    .id(item_id.clone())
+                                                    .flex_1()
+                                                    .min_w_0()
+                                                    .truncate()
+                                                    .tooltip(move |window, cx| {
+                                                        Tooltip::new(tooltip_path.clone())
+                                                            .build(window, cx)
+                                                    })
+                                                    .child(label.clone())
+                                            })
+                                            .checked(selected)
+                                            .on_click(move |_, window, cx| {
+                                                dispatch.dispatch_action(
+                                                    &FlashingAction(
+                                                        FlashingCommand::SelectFirmwarePath(
+                                                            target.clone(),
                                                         ),
-                                                        window,
-                                                        cx,
-                                                    );
-                                                },
-                                            ),
+                                                    ),
+                                                    window,
+                                                    cx,
+                                                );
+                                            }),
                                         );
                                     }
                                     let dispatch = dispatch.clone();
@@ -1950,8 +1967,8 @@ impl FlashingPanel {
         let configurable = self.can_configure();
         let switch_dispatch = self.dispatch.clone();
         v_flex()
-            .flex_1()
-            .min_h_0()
+            .flex_grow(1.)
+            .flex_shrink_0()
             .gap_3()
             .p_4()
             .rounded_lg()
@@ -2014,9 +2031,8 @@ impl FlashingPanel {
             .child(
                 div()
                     .id("flashing-partition-overview")
-                    .flex_1()
-                    .min_h_24()
-                    .overflow_y_scroll()
+                    .test_support()
+                    .flex_grow(1.)
                     .child(if self.partitions.is_empty() {
                         v_flex()
                             .size_full()
@@ -2050,11 +2066,8 @@ impl FlashingPanel {
                             .into_any_element()
                     } else {
                         let cols = partition_grid_columns(self.partitions.len());
-                        let rows = self.partitions.len().div_ceil(cols);
-                        let fill = rows <= 4;
                         v_flex()
                             .w_full()
-                            .when(fill, |grid| grid.h_full())
                             .gap_2p5()
                             .children(self.partitions.chunks(cols).map(|chunk| {
                                 let padding = cols - chunk.len();
@@ -2062,7 +2075,6 @@ impl FlashingPanel {
                                     .w_full()
                                     .items_stretch()
                                     .min_h(px(44.))
-                                    .when(fill, |row| row.flex_1())
                                     .gap_2p5()
                                     .children(chunk.iter().map(|part| {
                                         h_flex()
@@ -2129,8 +2141,8 @@ impl FlashingPanel {
         };
 
         v_flex()
-            .flex_1()
-            .min_h_0()
+            .flex_grow(1.)
+            .flex_shrink_0()
             .gap_3()
             .p_4()
             .rounded_lg()
@@ -2246,9 +2258,7 @@ impl FlashingPanel {
                 div()
                     .id("flashing-partitions")
                     .test_support()
-                    .flex_1()
-                    .min_h_24()
-                    .overflow_y_scroll()
+                    .flex_grow(1.)
                     .child(if visible_partitions.is_empty() {
                         div()
                             .py_3()
@@ -2265,11 +2275,8 @@ impl FlashingPanel {
                             .into_any_element()
                     } else {
                         let cols = partition_grid_columns(visible_partitions.len());
-                        let rows = visible_partitions.len().div_ceil(cols);
-                        let fill = rows <= 4;
                         v_flex()
                             .w_full()
-                            .when(fill, |grid| grid.h_full())
                             .gap_2p5()
                             .children(visible_partitions.chunks(cols).map(|chunk| {
                                 let padding = cols - chunk.len();
@@ -2277,78 +2284,91 @@ impl FlashingPanel {
                                     .w_full()
                                     .items_stretch()
                                     .min_h(px(46.))
-                                    .when(fill, |row| row.flex_1())
                                     .gap_2p5()
                                     .children(chunk.iter().map(|partition| {
                                         let dispatch = self.dispatch.clone();
                                         let index = partition.index;
                                         let checked = self.selected_partitions.contains(&index);
-                                        h_flex()
-                                            .flex_1()
-                                            .min_w_0()
-                                            .items_center()
-                                            .justify_between()
-                                            .gap_2()
-                                            .px_3p5()
-                                            .py_2()
-                                            .rounded_md()
-                                            .border_1()
-                                            .border_color(if checked {
-                                                cx.theme().primary.opacity(0.65)
-                                            } else {
-                                                cx.theme().border
+                                        Checkbox::new(SharedString::from(format!(
+                                            "flashing-partition-{index}"
+                                        )))
+                                        .flex_1()
+                                        .min_w_0()
+                                        .h_full()
+                                        .items_center()
+                                        .px_3p5()
+                                        .py_2()
+                                        .rounded_md()
+                                        .border_1()
+                                        .border_color(if checked {
+                                            cx.theme().primary.opacity(0.65)
+                                        } else {
+                                            cx.theme().border
+                                        })
+                                        .bg(if checked {
+                                            cx.theme().primary.opacity(0.10)
+                                        } else {
+                                            cx.theme().background
+                                        })
+                                        .when(configurable && !checked, |chip| {
+                                            chip.hover(|style| {
+                                                style.border_color(cx.theme().primary.opacity(0.4))
                                             })
-                                            .bg(if checked {
-                                                cx.theme().primary.opacity(0.10)
-                                            } else {
-                                                cx.theme().background
-                                            })
-                                            .when(configurable && !checked, |chip| {
-                                                chip.hover(|style| {
-                                                    style.border_color(
-                                                        cx.theme().primary.opacity(0.4),
-                                                    )
-                                                })
-                                            })
-                                            .child(
-                                                Checkbox::new(SharedString::from(format!(
-                                                    "flashing-partition-{index}"
-                                                )))
-                                                .flex_1()
-                                                .label(partition.name.clone())
-                                                .checked(checked)
-                                                .disabled(!configurable)
-                                                .on_click(move |_, window, cx| {
-                                                    dispatch.dispatch_action(
-                                                        &FlashingAction(
-                                                            FlashingCommand::TogglePartition(index),
-                                                        ),
-                                                        window,
-                                                        cx,
-                                                    );
-                                                }),
-                                            )
-                                            .child(
-                                                div()
-                                                    .px_2()
-                                                    .py_0p5()
-                                                    .rounded_sm()
-                                                    .bg(if checked {
-                                                        cx.theme().primary.opacity(0.16)
-                                                    } else {
-                                                        cx.theme().muted
-                                                    })
-                                                    .font_family(
-                                                        cx.theme().mono_font_family.clone(),
-                                                    )
-                                                    .text_xs()
-                                                    .text_color(if checked {
-                                                        cx.theme().primary
-                                                    } else {
-                                                        cx.theme().muted_foreground
-                                                    })
-                                                    .child(format!("#{:02}", index)),
-                                            )
+                                        })
+                                        .accessibility_label(partition.name.clone())
+                                        .checked(checked)
+                                        .disabled(!configurable)
+                                        .on_click(move |_, window, cx| {
+                                            dispatch.dispatch_action(
+                                                &FlashingAction(FlashingCommand::TogglePartition(
+                                                    index,
+                                                )),
+                                                window,
+                                                cx,
+                                            );
+                                        })
+                                        .child(
+                                            h_flex()
+                                                .w_full()
+                                                .min_w_0()
+                                                .items_center()
+                                                .justify_between()
+                                                .gap_2()
+                                                .child(
+                                                    div()
+                                                        .flex_1()
+                                                        .min_w_0()
+                                                        .truncate()
+                                                        .text_color(if configurable {
+                                                            cx.theme().foreground
+                                                        } else {
+                                                            cx.theme().muted_foreground
+                                                        })
+                                                        .child(partition.name.clone()),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .flex_shrink_0()
+                                                        .px_2()
+                                                        .py_0p5()
+                                                        .rounded_sm()
+                                                        .bg(if checked {
+                                                            cx.theme().primary.opacity(0.16)
+                                                        } else {
+                                                            cx.theme().muted
+                                                        })
+                                                        .font_family(
+                                                            cx.theme().mono_font_family.clone(),
+                                                        )
+                                                        .text_xs()
+                                                        .text_color(if checked {
+                                                            cx.theme().primary
+                                                        } else {
+                                                            cx.theme().muted_foreground
+                                                        })
+                                                        .child(format!("#{:02}", index)),
+                                                ),
+                                        )
                                     }))
                                     .children((0..padding).map(|_| div().flex_1().min_w_0()))
                             }))
@@ -3179,12 +3199,18 @@ impl Render for FlashingPanel {
                             resizable_panel()
                                 .size_range(px(460.)..Pixels::MAX)
                                 .child(
-                                    v_flex()
+                                    div()
                                         .size_full()
                                         .min_h_0()
                                         .min_w_0()
-                                        .pr_2()
-                                        .gap_3()
+                                        .overflow_y_scrollbar()
+                                        .child(
+                                            v_flex()
+                                                .w_full()
+                                                .min_h_full()
+                                                .min_w_0()
+                                                .pr_2()
+                                                .gap_3()
                                         .child(
                                             div().flex_shrink_0().child(self.progress_card(cx)),
                                         )
@@ -3325,6 +3351,7 @@ impl Render for FlashingPanel {
                                         } else {
                                             self.partition_overview_card(cx).into_any_element()
                                         }),
+                                        ),
                                 ),
                         )
                         .child(
@@ -3397,6 +3424,16 @@ fn normalize_result_line(line: &str) -> String {
         return line.to_string();
     }
     format!("{before}device burn result={digit}")
+}
+
+fn recent_firmware_tooltip(path: &std::path::Path) -> SharedString {
+    if path.is_absolute() {
+        path.display().to_string().into()
+    } else if let Ok(cwd) = std::env::current_dir() {
+        cwd.join(path).display().to_string().into()
+    } else {
+        path.display().to_string().into()
+    }
 }
 
 #[cfg(test)]
@@ -4867,8 +4904,8 @@ mod tests {
             let p5 = window.find("flashing-partition-5");
             assert!(p0.visible());
             assert!(p5.visible());
-            assert!(p0.bounds().size.height > px(0.));
-            assert!(p5.bounds().size.height > px(0.));
+            assert!(p0.bounds().size.height >= px(46.));
+            assert!(p5.bounds().size.height >= px(46.));
 
             let progress = window.find("flashing-primary-progress");
             let log = window.find("flashing-log");
@@ -4882,5 +4919,56 @@ mod tests {
         settings.read_with(cx, |store, _| {
             assert_eq!(store.settings().flashing_log_width, None);
         });
+    }
+
+    #[gpui_kit::test]
+    fn eleven_partition_overview_does_not_clip_rows_on_short_windows(cx: &mut TestAppContext) {
+        use gpui_kit::component::Root;
+        use gpui_kit::test::TestWindowExt as _;
+        use gpui_kit::{px, size};
+
+        cx.update(gpui_kit::init);
+        let settings = cx.new(|_| crate::settings::SettingsStore::in_memory());
+        let panel = cx.new(|cx| FlashingPanel::new(cx.focus_handle(), settings.clone(), cx));
+        panel.update(cx, |panel, cx| {
+            panel.partition_mode = false;
+            panel.partitions = (1..=11)
+                .map(|index| super::FirmwarePartition {
+                    index,
+                    name: format!("PART_{index:02}"),
+                })
+                .collect();
+            panel.phase = Phase::Ready;
+            cx.notify();
+        });
+        let handle = cx.open_window(size(px(1280.), px(720.)), |window, cx| {
+            Root::new(panel.clone(), window, cx)
+        });
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            let overview = window.find("flashing-partition-overview");
+            // 11 partitions laid out in 3 columns = 4 rows * 44px + 3 * 10px gaps = 206px.
+            assert!(
+                overview.bounds().size.height >= px(206.),
+                "expected partition overview to keep full 4-row height, got {:?}",
+                overview.bounds().size.height
+            );
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn recent_firmware_tooltip_returns_absolute_path() {
+        let folder = tempfile::tempdir().unwrap();
+        let abs = folder.path().join("demo.img");
+        assert_eq!(
+            super::recent_firmware_tooltip(&abs).as_ref(),
+            abs.display().to_string()
+        );
+
+        let rel = std::path::Path::new("demo.img");
+        let resolved = super::recent_firmware_tooltip(rel);
+        assert!(std::path::Path::new(resolved.as_ref()).is_absolute());
+        assert!(resolved.ends_with("demo.img"));
     }
 }

@@ -125,6 +125,7 @@ impl LoginForm {
             name: self.name.read(cx).value().trim().into(),
             url: self.url.read(cx).value().trim().into(),
             username: self.user.read(cx).value().trim().into(),
+            auto_login: true,
         };
         let password = Secret::new(self.password.read(cx).value().to_string());
         if server.validate().is_err() || password.expose().is_empty() {

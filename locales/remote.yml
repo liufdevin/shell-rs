@@ -437,3 +437,42 @@ remote.error.credential_save:
 remote.error.credential_delete:
   zh-CN: 未能删除系统保存的密码，已保留服务器记录，请检查凭据管理器权限后重试。
   en: Could not remove the saved password. The server profile was kept. Check credential-store access and retry.
+remote.online_only:
+  zh-CN: 仅显示在线
+  en: Online only
+remote.show_all_devices:
+  zh-CN: 显示全部设备
+  en: Show all devices
+remote.screen_online:
+  zh-CN: 投屏在线
+  en: Screen online
+remote.screen_offline:
+  zh-CN: 离线
+  en: Offline
+remote.no_ssh:
+  zh-CN: 未配置 SSH
+  en: No SSH
+remote.no_online_devices:
+  zh-CN: 当前没有在线设备
+  en: No online devices
+remote.refresh_all:
+  zh-CN: 刷新在线设备
+  en: Refresh online devices
+remote.debug.saved_section:
+  zh-CN: 已保存的投屏设备
+  en: Saved Screen Devices
+remote.debug.name:
+  zh-CN: 备注名称
+  en: Label
+remote.debug.name_placeholder:
+  zh-CN: 例如：测试板 A133（可选）
+  en: e.g. Test Board A133 (optional)
+remote.debug.save:
+  zh-CN: 保存到远程管理（密钥存于系统钥匙串）
+  en: Save to Remote Management (key stored in OS keychain)
+remote.debug.edit_title:
+  zh-CN: 编辑投屏设备
+  en: Edit Screen Device
+remote.debug.delete_help:
+  zh-CN: 将移除此投屏设备并删除钥匙串中保存的调试密钥。
+  en: This removes the saved screen device and deletes its debug key from the keychain.

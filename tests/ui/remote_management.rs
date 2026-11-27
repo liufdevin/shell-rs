@@ -1898,3 +1898,276 @@ async fn remote_debug_device_and_account_registration_work_without_signing_in(
     })
     .await;
 }
+
+#[gpui_kit::test]
+async fn screen_only_online_device_and_saved_debug_device_persist_in_sidebar(
+    cx: &mut TestAppContext,
+) {
+    let secrets = Arc::new(InMemorySecretStore::default());
+    let (handle, workspace) =
+        open_workspace_with_store(cx, HostStore::empty().with_secrets(secrets.clone()));
+    cx.simulate_window_resize(handle.into(), size(px(1000.), px(750.)));
+    let backend = Arc::new(FakeRemote::default());
+    let viewer = Arc::new(FakeScreenViewer::default());
+    let server = Server::new(
+        "ScreenOnlyServer".into(),
+        "https://remote.example.test".into(),
+        "operator".into(),
+    );
+    cx.update(|cx| {
+        let remote = workspace.read(cx).remote_management().clone();
+        remote.update(cx, |service, cx| {
+            service.set_backend(backend.clone(), cx);
+            service.set_screen_viewer(viewer.clone(), cx);
+        });
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.click("show-remote-management", cx)
+    });
+
+    // Save a debug screen device via the dialog; it should persist in settings
+    // and store its debug key only in the keychain.
+    in_frame(cx, handle, |window, cx| {
+        window.click("remote-debug-open", cx)
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.click("remote-debug-name", cx);
+        window.input("板子A133", cx);
+        window.click("remote-debug-url", cx);
+        window.input("https://remote.example.test:8180", cx);
+        window.click("remote-debug-device-id", cx);
+        window.input("7K9M-2R8X", cx);
+        window.click("remote-debug-key", cx);
+        window.input("5W3P-6T4H", cx);
+        window.click("remote-debug-connect", cx);
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
+        workspace
+            .read(cx)
+            .settings()
+            .read(cx)
+            .settings()
+            .remote_debug_devices
+            .len()
+            == 1
+    })
+    .await;
+    let saved_id = cx.update(|cx| {
+        workspace
+            .read(cx)
+            .settings()
+            .read(cx)
+            .settings()
+            .remote_debug_devices[0]
+            .id
+            .clone()
+    });
+    assert!(
+        secrets
+            .get(&SecretRef::credential(format!("remote-debug:{saved_id}")))
+            .unwrap()
+            .is_some()
+    );
+    in_frame(cx, handle, |window, _| {
+        assert!(
+            window
+                .try_find(format!("remote-debug-device-row-{saved_id}"))
+                .is_some()
+        );
+    });
+
+    // Click the saved debug device's quick screen button to reconnect without re-entering the key.
+    in_frame(cx, handle, |window, cx| {
+        window.click(format!("remote-debug-screen-open-{saved_id}"), cx);
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(3), |_, _| {
+        viewer.opened.lock().unwrap().len() == 2
+    })
+    .await;
+    assert_eq!(viewer.opened.lock().unwrap()[1].device_name, "板子A133");
+
+    // Delete the saved debug device and confirm it is removed from both settings and keychain.
+    dispatch(
+        cx,
+        handle,
+        Command::ConfirmDeleteDebugDevice(saved_id.clone()),
+    );
+    cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
+        workspace
+            .read(cx)
+            .settings()
+            .read(cx)
+            .settings()
+            .remote_debug_devices
+            .is_empty()
+    })
+    .await;
+    assert!(
+        secrets
+            .get(&SecretRef::credential(format!("remote-debug:{saved_id}")))
+            .unwrap()
+            .is_none()
+    );
+
+    // Log in to the server and verify its online device appears directly in the sidebar.
+    dispatch(
+        cx,
+        handle,
+        Command::SaveLogin(server.clone(), Secret::new("test password"), true),
+    );
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, cx| {
+        workspace
+            .read(cx)
+            .remote_management()
+            .read(cx)
+            .is_logged_in(&server.id)
+            && window
+                .try_find(format!("remote-sidebar-device-{}-board-00", server.id))
+                .is_some()
+    })
+    .await;
+}
+
+#[gpui_kit::test]
+async fn remote_auto_login_follows_last_signed_in_state_across_restarts(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let settings_path = directory.path().join("settings.json");
+    let secrets = Arc::new(InMemorySecretStore::default());
+    let server = Server::new(
+        "AutoLoginServer".into(),
+        "https://remote.example.test".into(),
+        "operator".into(),
+    );
+
+    let open = |cx: &mut TestAppContext, backend: Arc<FakeRemote>| {
+        let (settings, problem) = SettingsStore::load(settings_path.clone());
+        assert!(problem.is_none());
+        let (handle, workspace) = open_workspace_with_settings_and_tester(
+            cx,
+            HostStore::empty().with_secrets(secrets.clone()),
+            settings,
+            Arc::new(FakeConnectionTester::default()),
+        );
+        cx.update(|cx| {
+            workspace
+                .read(cx)
+                .remote_management()
+                .clone()
+                .update(cx, |service, cx| service.set_backend(backend, cx));
+        });
+        in_frame(cx, handle, |window, cx| {
+            window.click("show-remote-management", cx)
+        });
+        (handle, workspace)
+    };
+
+    // 1. Log in and keep signed in when closing.
+    let backend1 = Arc::new(FakeRemote::default());
+    let (handle1, workspace1) = open(cx, backend1);
+    dispatch(
+        cx,
+        handle1,
+        Command::SaveLogin(server.clone(), Secret::new("test password"), true),
+    );
+    cx.wait_for(handle1.into(), Duration::from_secs(3), |_, cx| {
+        workspace1
+            .read(cx)
+            .remote_management()
+            .read(cx)
+            .is_logged_in(&server.id)
+            && workspace1
+                .read(cx)
+                .settings()
+                .read(cx)
+                .settings()
+                .remote_servers
+                .first()
+                .is_some_and(|saved| saved.auto_login)
+    })
+    .await;
+
+    // 2. Reopen while previously signed in: should auto-login silently.
+    let backend2 = Arc::new(FakeRemote::default());
+    let (handle2, workspace2) = open(cx, backend2);
+    cx.wait_for(handle2.into(), Duration::from_secs(3), |_, cx| {
+        workspace2
+            .read(cx)
+            .remote_management()
+            .read(cx)
+            .is_logged_in(&server.id)
+    })
+    .await;
+
+    // 3. Explicitly log out: should persist auto_login = false.
+    dispatch(cx, handle2, Command::LogoutServer(server.id.clone()));
+    cx.wait_for(handle2.into(), Duration::from_secs(3), |_, cx| {
+        !workspace2
+            .read(cx)
+            .remote_management()
+            .read(cx)
+            .is_logged_in(&server.id)
+            && workspace2
+                .read(cx)
+                .settings()
+                .read(cx)
+                .settings()
+                .remote_servers
+                .first()
+                .is_some_and(|saved| !saved.auto_login)
+    })
+    .await;
+
+    // 4. Reopen after logging out: must NOT auto-login on startup or RefreshAll.
+    let backend3 = Arc::new(FakeRemote::default());
+    let (handle3, workspace3) = open(cx, backend3.clone());
+    cx.background_executor
+        .timer(Duration::from_millis(250))
+        .await;
+    cx.run_until_parked();
+    assert!(!cx.update(|cx| {
+        workspace3
+            .read(cx)
+            .remote_management()
+            .read(cx)
+            .is_logged_in(&server.id)
+    }));
+    assert!(backend3.calls.lock().unwrap().is_empty());
+
+    dispatch(cx, handle3, Command::RefreshAll);
+    cx.background_executor
+        .timer(Duration::from_millis(250))
+        .await;
+    cx.run_until_parked();
+    assert!(backend3.calls.lock().unwrap().is_empty());
+
+    // 5. Manually sign in again: should succeed with saved password and restore auto_login = true.
+    dispatch(cx, handle3, Command::SignIn(server.id.clone()));
+    cx.wait_for(handle3.into(), Duration::from_secs(3), |_, cx| {
+        workspace3
+            .read(cx)
+            .remote_management()
+            .read(cx)
+            .is_logged_in(&server.id)
+            && workspace3
+                .read(cx)
+                .settings()
+                .read(cx)
+                .settings()
+                .remote_servers
+                .first()
+                .is_some_and(|saved| saved.auto_login)
+    })
+    .await;
+
+    // 6. Reopen again: should auto-login once more.
+    let backend4 = Arc::new(FakeRemote::default());
+    let (handle4, workspace4) = open(cx, backend4);
+    cx.wait_for(handle4.into(), Duration::from_secs(3), |_, cx| {
+        workspace4
+            .read(cx)
+            .remote_management()
+            .read(cx)
+            .is_logged_in(&server.id)
+    })
+    .await;
+}

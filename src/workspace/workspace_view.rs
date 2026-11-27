@@ -5083,6 +5083,7 @@ impl Workspace {
             .on_action(cx.listener(Self::on_show_or_hide_app))
             .on_action(cx.listener(Self::on_toggle_tool_sidebar))
             .on_action(cx.listener(Self::on_toggle_tool))
+            .on_action(cx.listener(Self::on_show_tool))
             .on_action(cx.listener(Self::on_auto_serial_files))
             .on_action(cx.listener(Self::on_upload_serial_file))
             .on_action(cx.listener(Self::on_download_serial_file))

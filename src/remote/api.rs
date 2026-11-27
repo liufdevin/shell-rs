@@ -8,6 +8,10 @@ use std::{
 };
 use zeroize::Zeroizing;
 
+fn default_auto_login() -> bool {
+    true
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct Server {
@@ -15,6 +19,8 @@ pub struct Server {
     pub name: String,
     pub url: String,
     pub username: String,
+    #[serde(default = "default_auto_login")]
+    pub auto_login: bool,
 }
 
 impl Server {
@@ -24,6 +30,7 @@ impl Server {
             name,
             url,
             username,
+            auto_login: true,
         }
     }
     pub fn validate(&self) -> Result<()> {
@@ -35,6 +42,47 @@ impl Server {
         ensure!(
             !self.username.trim().is_empty() && self.username.len() <= 256,
             "invalid_server"
+        );
+        server_url(&self.url)?;
+        Ok(())
+    }
+}
+
+/// A standalone debug-screen device saved locally (its debug key lives only in
+/// the OS keychain, never in settings).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct SavedDebugDevice {
+    pub id: String,
+    pub name: String,
+    pub url: String,
+    pub device_id: String,
+}
+
+impl SavedDebugDevice {
+    pub fn new(name: String, url: String, device_id: String) -> Self {
+        Self {
+            id: uuid::Uuid::new_v4().to_string(),
+            name,
+            url,
+            device_id,
+        }
+    }
+
+    pub fn label(&self) -> &str {
+        if self.name.trim().is_empty() {
+            &self.device_id
+        } else {
+            &self.name
+        }
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        uuid::Uuid::parse_str(&self.id)?;
+        ensure!(self.name.len() <= 128, "invalid_server");
+        ensure!(
+            !self.device_id.trim().is_empty() && self.device_id.len() <= 64,
+            "invalid_params"
         );
         server_url(&self.url)?;
         Ok(())
@@ -121,6 +169,16 @@ impl Device {
         self.enabled && self.virtual_ip.is_some() && self.expires_at > now
     }
 
+    /// Whether the remote screen service reports this device as currently online.
+    pub fn screen_online(&self) -> bool {
+        !self.status.is_empty() && !self.status.eq_ignore_ascii_case("offline")
+    }
+
+    /// Whether either remote screen or SSH is currently online/available.
+    pub fn is_online(&self) -> bool {
+        self.screen_online() || self.lease_valid()
+    }
+
     pub fn label(&self) -> &str {
         if !self.display_name.is_empty() {
             &self.display_name
@@ -197,7 +255,7 @@ impl Account {
             .unwrap_or(&account.server.username)
             .to_owned();
         account.catalog.role = value["role"].as_str().unwrap_or_default().to_owned();
-        if let Err(error) = account.refresh() {
+        if let Err(error) = account.refresh(true) {
             let _ = account.logout();
             return Err(error);
         }
@@ -262,16 +320,74 @@ impl Account {
         Ok(value)
     }
 
-    pub fn refresh(&mut self) -> Result<()> {
-        let mut devices = Vec::new();
-        let mut seen = HashSet::new();
+    pub fn refresh(&mut self, online_only: bool) -> Result<()> {
+        let mut devices: Vec<Device> = Vec::new();
+        let mut index_by_id: std::collections::HashMap<String, usize> =
+            std::collections::HashMap::new();
         let mut addresses = HashSet::new();
+
+        // 1. Fetch screen-capable devices via `/api/devices` (does not require SSH).
+        // Older servers or mock endpoints that do not expose `/api/devices` return 404
+        // and fall through to `/api/client/ssh/devices`.
+        let mut screen_endpoint_ok = false;
         let mut offset = 0usize;
         loop {
-            let page = self.request(
-                &format!("/api/client/ssh/devices?limit=100&offset={offset}"),
+            let query = if online_only {
+                format!("/api/devices?online=1&limit=100&offset={offset}")
+            } else {
+                format!("/api/devices?limit=100&offset={offset}")
+            };
+            match self.request(&query, None) {
+                Ok(page) => {
+                    screen_endpoint_ok = true;
+                    let total = page["total"]
+                        .as_u64()
+                        .filter(|total| *total <= 10000)
+                        .ok_or_else(|| anyhow::anyhow!("invalid_response"))?
+                        as usize;
+                    let rows: Vec<Device> = serde_json::from_value(page["devices"].clone())
+                        .map_err(|_| anyhow::anyhow!("invalid_device_response"))?;
+                    ensure!(
+                        rows.len() <= 100 && (!rows.is_empty() || offset >= total),
+                        "invalid_response"
+                    );
+                    offset += rows.len();
+                    for mut device in rows {
+                        device.device_id.make_ascii_lowercase();
+                        ensure!(
+                            !device.device_id.is_empty() && device.device_id.len() <= 256,
+                            "invalid_response"
+                        );
+                        if !index_by_id.contains_key(&device.device_id) {
+                            index_by_id.insert(device.device_id.clone(), devices.len());
+                            devices.push(device);
+                        }
+                    }
+                    if offset >= total {
+                        break;
+                    }
+                    ensure!(offset <= 10000, "invalid_response");
+                }
+                Err(error) if offset == 0 && error.to_string() == "http_404" => {
+                    break;
+                }
+                Err(error) => return Err(error),
+            }
+        }
+
+        // 2. Fetch SSH-authorized devices and merge their virtual IP / lease info.
+        // If `/api/devices` already succeeded and the account has no SSH access, do
+        // not fail the whole refresh.
+        let mut ssh_offset = 0usize;
+        loop {
+            let page = match self.request(
+                &format!("/api/client/ssh/devices?limit=100&offset={ssh_offset}"),
                 None,
-            )?;
+            ) {
+                Ok(page) => page,
+                Err(_) if screen_endpoint_ok && ssh_offset == 0 => break,
+                Err(error) => return Err(error),
+            };
             let total = page["total"]
                 .as_u64()
                 .filter(|total| *total <= 10000)
@@ -280,10 +396,10 @@ impl Account {
             let rows: Vec<Device> = serde_json::from_value(page["devices"].clone())
                 .map_err(|_| anyhow::anyhow!("invalid_device_response"))?;
             ensure!(
-                rows.len() <= 100 && (!rows.is_empty() || offset >= total),
+                rows.len() <= 100 && (!rows.is_empty() || ssh_offset >= total),
                 "invalid_response"
             );
-            offset += rows.len();
+            ssh_offset += rows.len();
             for mut device in rows {
                 device.device_id.make_ascii_lowercase();
                 ensure!(
@@ -292,27 +408,52 @@ impl Account {
                 );
                 uuid::Uuid::parse_str(&device.network_id)
                     .map_err(|_| anyhow::anyhow!("invalid_device_response"))?;
-                if device.lease_valid() && seen.insert(device.device_id.clone()) {
+                if device.lease_valid() {
                     ensure!(
                         addresses.insert((device.network_id.clone(), device.virtual_ip.unwrap())),
                         "invalid_device_response"
                     );
-                    devices.push(device);
+                    if let Some(&existing_ix) = index_by_id.get(&device.device_id) {
+                        let existing = &mut devices[existing_ix];
+                        existing.virtual_ip = device.virtual_ip;
+                        existing.network_id = device.network_id;
+                        existing.enabled = device.enabled;
+                        existing.expires_at = device.expires_at;
+                        if existing.display_name.is_empty() {
+                            existing.display_name = device.display_name;
+                        }
+                        if existing.name.is_empty() {
+                            existing.name = device.name;
+                        }
+                        if existing.customer_name.is_empty() {
+                            existing.customer_name = device.customer_name;
+                        }
+                    } else {
+                        index_by_id.insert(device.device_id.clone(), devices.len());
+                        devices.push(device);
+                    }
                 }
             }
-            if offset >= total {
+            if ssh_offset >= total {
                 break;
             }
-            ensure!(offset <= 10000, "invalid_response");
+            ensure!(ssh_offset <= 10000, "invalid_response");
         }
-        let value = self.request("/api/client/ssh/networks", None)?;
-        let networks: Vec<Network> = serde_json::from_value(value["networks"].clone())
-            .map_err(|_| anyhow::anyhow!("invalid_network_response"))?;
-        ensure!(networks.len() <= 1000, "invalid_response");
-        for network in &networks {
-            uuid::Uuid::parse_str(&network.network_id)
-                .map_err(|_| anyhow::anyhow!("invalid_response"))?;
-        }
+
+        let networks = match self.request("/api/client/ssh/networks", None) {
+            Ok(value) => {
+                let networks: Vec<Network> = serde_json::from_value(value["networks"].clone())
+                    .map_err(|_| anyhow::anyhow!("invalid_network_response"))?;
+                ensure!(networks.len() <= 1000, "invalid_response");
+                for network in &networks {
+                    uuid::Uuid::parse_str(&network.network_id)
+                        .map_err(|_| anyhow::anyhow!("invalid_response"))?;
+                }
+                networks
+            }
+            Err(_) if screen_endpoint_ok => Vec::new(),
+            Err(error) => return Err(error),
+        };
         self.catalog.devices = devices;
         self.catalog.networks = networks;
         Ok(())
@@ -618,12 +759,22 @@ mod tests {
         let url = format!("http://{}", listener.local_addr().unwrap());
         let worker = std::thread::spawn(move || {
             let replies = [
-                r#"{"token":"fixture-token","username":"operator","name":"Customer","role":"customer"}"#,
-                r#"{"total":1,"devices":[{"deviceId":"board","displayName":"Board","virtualIp":"10.215.0.11","enabled":1,"networkId":"00000000-0000-4000-8000-000000000001","expiresAt":4102444800000}]}"#,
-                r#"{"networks":[{"networkId":"00000000-0000-4000-8000-000000000001","name":"Customer","subnet":"10.215.0.0/24","enabled":true,"deviceCount":1}]}"#,
-                r#"{}"#,
+                (
+                    "200 OK",
+                    r#"{"token":"fixture-token","username":"operator","name":"Customer","role":"customer"}"#,
+                ),
+                ("404 Not Found", r#"{"error":"not_found"}"#),
+                (
+                    "200 OK",
+                    r#"{"total":1,"devices":[{"deviceId":"board","displayName":"Board","virtualIp":"10.215.0.11","enabled":1,"networkId":"00000000-0000-4000-8000-000000000001","expiresAt":4102444800000}]}"#,
+                ),
+                (
+                    "200 OK",
+                    r#"{"networks":[{"networkId":"00000000-0000-4000-8000-000000000001","name":"Customer","subnet":"10.215.0.0/24","enabled":true,"deviceCount":1}]}"#,
+                ),
+                ("200 OK", r#"{}"#),
             ];
-            for (index, reply) in replies.iter().enumerate() {
+            for (index, (status, reply)) in replies.iter().enumerate() {
                 let (mut stream, _) = listener.accept().unwrap();
                 stream
                     .set_read_timeout(Some(Duration::from_secs(5)))
@@ -640,13 +791,13 @@ mod tests {
                     request.contains("x-baijie-client: native")
                         && request.contains("x-baijie-request: 1")
                 );
-                if index == 1 {
+                if index == 2 {
                     assert!(request.starts_with("get /api/client/ssh/devices?limit=100&offset=0 "));
                 }
                 if index > 0 {
                     assert!(request.contains("authorization: bearer fixture-token"));
                 }
-                write!(stream, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{}", reply.len(), reply).unwrap();
+                write!(stream, "HTTP/1.1 {status}\r\nContent-Length: {}\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{}", reply.len(), reply).unwrap();
             }
         });
         let account = Account::login(
@@ -675,6 +826,7 @@ mod tests {
                     "200 OK",
                     r#"{"token":"tok-1","username":"operator","name":"Customer","role":"customer"}"#,
                 ),
+                ("200 OK", r#"{"total":0,"devices":[]}"#),
                 ("200 OK", r#"{"total":0,"devices":[]}"#),
                 ("200 OK", r#"{"networks":[]}"#),
                 // First resolve_screen: server supports /api/client/view-links
@@ -785,6 +937,116 @@ mod tests {
 
         let registered = register_account(&url, "测试客户", "new_user", "strong-pass-123").unwrap();
         assert_eq!(registered, "new_user");
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn refresh_merges_screen_only_online_devices_without_ssh() {
+        use std::io::{Read as _, Write as _};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let future = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64
+            + 3_600_000;
+        let network_id = "11111111-2222-3333-4444-555555555555";
+        let login_body = r#"{"token":"tok","name":"Demo","username":"op","role":"customer"}"#;
+        let screen_body = serde_json::json!({
+            "total": 2,
+            "devices": [
+                {
+                    "deviceId": "screen-only-01",
+                    "displayName": "仅投屏板子",
+                    "customerName": "Demo",
+                    "status": "online"
+                },
+                {
+                    "deviceId": "both-02",
+                    "displayName": "双功能板子",
+                    "customerName": "Demo",
+                    "status": "online"
+                }
+            ]
+        })
+        .to_string();
+        let ssh_body = serde_json::json!({
+            "total": 1,
+            "devices": [
+                {
+                    "deviceId": "both-02",
+                    "displayName": "双功能板子",
+                    "customerName": "Demo",
+                    "virtualIp": "10.66.0.2",
+                    "enabled": true,
+                    "networkId": network_id,
+                    "expiresAt": future
+                }
+            ]
+        })
+        .to_string();
+        let net_body = serde_json::json!({
+            "networks": [
+                {
+                    "networkId": network_id,
+                    "name": "Lab",
+                    "subnet": "10.66.0.0/24",
+                    "enabled": true,
+                    "deviceCount": 1
+                }
+            ]
+        })
+        .to_string();
+        let worker = std::thread::spawn(move || {
+            for (expected_prefix, body) in [
+                ("post /api/auth/login ", login_body.to_owned()),
+                ("get /api/devices?online=1&limit=100&offset=0 ", screen_body),
+                ("get /api/client/ssh/devices?limit=100&offset=0 ", ssh_body),
+                ("get /api/client/ssh/networks ", net_body),
+            ] {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let mut bytes = Vec::new();
+                let mut buffer = [0; 1024];
+                while !bytes.windows(4).any(|w| w == b"\r\n\r\n") {
+                    let read = stream.read(&mut buffer).unwrap();
+                    if read == 0 {
+                        break;
+                    }
+                    bytes.extend_from_slice(&buffer[..read]);
+                }
+                let header = String::from_utf8_lossy(&bytes).to_lowercase();
+                assert!(header.starts_with(expected_prefix), "got: {header}");
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+                .unwrap();
+            }
+        });
+        let server = Server::new("Demo".into(), url, "op".into());
+        let account = Account::login(server, "pw").unwrap();
+        assert_eq!(account.catalog.devices.len(), 2);
+        let screen_only = account
+            .catalog
+            .devices
+            .iter()
+            .find(|d| d.device_id == "screen-only-01")
+            .unwrap();
+        assert!(screen_only.screen_online());
+        assert!(!screen_only.lease_valid());
+        let both = account
+            .catalog
+            .devices
+            .iter()
+            .find(|d| d.device_id == "both-02")
+            .unwrap();
+        assert!(both.screen_online());
+        assert!(both.lease_valid());
+        assert_eq!(both.virtual_ip, Some(std::net::Ipv4Addr::new(10, 66, 0, 2)));
         worker.join().unwrap();
     }
 }
