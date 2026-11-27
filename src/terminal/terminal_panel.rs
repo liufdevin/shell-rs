@@ -21,6 +21,7 @@ use crate::app::{
     OpenExplorer, ReconnectTerminal, RenameTerminal, SendBreak, SendSerialHex,
     SerialBackspaceChoice, SetSerialBackspace, StopCommandGroup, ToggleSerialReceiveHex,
     ToggleSerialSendHex,
+    RevealHost,
 };
 use crate::connection::{ConnectionPrompt, ConnectionPromptReply};
 use crate::host::{ConnectionState, Host, HostConnection, HostId, HostOs, HostStore, ProtocolKind};
@@ -1005,7 +1006,8 @@ struct TabMenu {
     /// It is an SSH host now, which a new SFTP connection needs whatever
     /// the tab's own protocol.
     host_is_ssh: bool,
-    /// A saved host; a temporary one has nothing to edit.
+    /// A saved host; a temporary one has nothing to edit, and is in no
+    /// list to show it in.
     editable: bool,
     group: Option<WeakEntity<TabGroup>>,
     panel: EntityId,
@@ -1116,11 +1118,17 @@ impl TabMenu {
             Box::new(ReconnectTerminal(id)),
         );
         if self.editable && exists {
-            menu = menu.menu_with_icon(
-                t!("terminal.remote.edit_host"),
-                Icon::new(CatalogIcon::Pencil),
-                Box::new(EditHost(host_id)),
-            );
+            menu = menu
+                .menu_with_icon(
+                    t!("terminal.remote.edit_host"),
+                    Icon::new(CatalogIcon::Pencil),
+                    Box::new(EditHost(host_id)),
+                )
+                .menu_with_icon(
+                    t!("terminal.remote.reveal_host"),
+                    Icon::new(CatalogIcon::LocateFixed),
+                    Box::new(RevealHost(host_id)),
+                );
         }
         let menu = self
             .split_menu

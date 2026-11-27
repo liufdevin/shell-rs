@@ -1177,3 +1177,314 @@ async fn the_tree_falls_back_to_the_first_letter_until_a_host_is_probed(cx: &mut
     })
     .unwrap();
 }
+
+/// The seed, with notes of two lines on web-01, so its row has all three
+/// lines of 显示主机详情 and web-02's only two.
+fn store_with_notes() -> HostStore {
+    let mut store = HostStore::seed();
+    let web = HostId(WEB_01);
+    let draft = store
+        .host(web)
+        .unwrap()
+        .draft()
+        .with_notes("机房 A\n负责人：张三");
+    store.update_unnotified(web, draft);
+    store
+}
+
+fn host_details_shown(workspace: &Entity<Workspace>, cx: &mut TestAppContext) -> bool {
+    workspace.read_with(cx, |workspace, cx| {
+        workspace.settings().read(cx).settings().host_details
+    })
+}
+
+#[gpui_kit::test]
+fn the_button_beside_the_search_shows_each_hosts_address_and_notes(cx: &mut TestAppContext) {
+    let (handle, workspace) = open_workspace_with_store(cx, store_with_notes());
+    let collapsed = in_frame(cx, handle, |window, _| {
+        let collapsed = window.find(("host-row", WEB_01)).bounds().size.height;
+        // Off at first: a row is the name alone.
+        assert!(window.try_find(("host-address", WEB_01)).is_none());
+        assert_eq!(
+            window.find("toggle-host-details").label(),
+            Some("显示主机详情")
+        );
+        assert_eq!(
+            collapsed,
+            window.find(("group-row", PRODUCTION)).bounds().size.height
+        );
+        collapsed
+    });
+    assert!(!host_details_shown(&workspace, cx));
+
+    in_frame(cx, handle, |window, cx| {
+        window.click("toggle-host-details", cx)
+    });
+    in_frame(cx, handle, |window, _| {
+        assert_eq!(
+            window.find(("host-address", WEB_01)).label(),
+            Some("root@10.0.1.12:22")
+        );
+        // Notes of several lines on the one line.
+        assert_eq!(
+            window.find(("host-note", WEB_01)).label(),
+            Some("机房 A · 负责人：张三")
+        );
+        assert_eq!(
+            window.find(("host-address", WEB_02)).label(),
+            Some("root@10.0.1.13:22")
+        );
+        assert!(window.try_find(("host-note", WEB_02)).is_none());
+
+        // Under the name, clear of the mark, the second line below the first.
+        let mark = window.find(("host-os", WEB_01)).bounds();
+        let address = window.find(("host-address", WEB_01)).bounds();
+        let note = window.find(("host-note", WEB_01)).bounds();
+        assert!(address.left() >= mark.right());
+        assert_eq!(note.left(), address.left());
+        assert!(note.top() >= address.bottom());
+
+        // A row as tall as its lines: groups keep one, and the rows follow
+        // each other without overlapping.
+        let group = window.find(("group-row", PRODUCTION)).bounds();
+        let web_01 = window.find(("host-row", WEB_01)).bounds();
+        let web_02 = window.find(("host-row", WEB_02)).bounds();
+        assert_eq!(group.size.height, collapsed);
+        assert!(web_02.size.height > collapsed);
+        assert!(web_01.size.height > web_02.size.height);
+        assert!(note.bottom() <= web_01.bottom());
+        assert!(web_01.top() >= group.bottom() - px(0.5));
+        assert!(web_02.top() >= web_01.bottom() - px(0.5));
+    });
+    assert!(host_details_shown(&workspace, cx));
+
+    in_frame(cx, handle, |window, cx| {
+        window.click("toggle-host-details", cx)
+    });
+    in_frame(cx, handle, |window, _| {
+        assert!(window.try_find(("host-address", WEB_01)).is_none());
+        assert_eq!(
+            window.find(("host-row", WEB_01)).bounds().size.height,
+            collapsed
+        );
+    });
+    assert!(!host_details_shown(&workspace, cx));
+}
+
+#[gpui_kit::test]
+fn host_details_come_back_at_launch_without_the_row_tooltip(cx: &mut TestAppContext) {
+    let mut settings = settings_store();
+    settings.update_unnotified(|settings| settings.host_details = true);
+    let (handle, _) = open_workspace_with_settings_and_tester(
+        cx,
+        store_with_notes(),
+        settings,
+        Arc::new(FakeConnectionTester::default()),
+    );
+    in_frame(cx, handle, |window, cx| {
+        assert_eq!(
+            window.find(("host-address", WEB_01)).label(),
+            Some("root@10.0.1.12:22")
+        );
+        window.hover(("host-row", WEB_01), cx);
+    });
+    // What the tooltip would say is on the row already.
+    cx.executor().advance_clock(Duration::from_millis(1000));
+    cx.run_until_parked();
+    in_frame(cx, handle, |window, _| {
+        assert!(window.try_find("host-tooltip").is_none());
+    });
+}
+
+#[gpui_kit::test]
+fn the_arrow_keys_move_through_the_host_tree(cx: &mut TestAppContext) {
+    let (handle, _) = open_workspace(cx);
+    let selected = |window: &mut gpui_kit::Window, row: (&'static str, u64)| {
+        window.find(row).selected() == Some(true)
+    };
+    // The fixture's terminal takes the focus as its tab comes forward.
+    in_frame(cx, handle, |_, _| {});
+    in_frame(cx, handle, |window, cx| {
+        window.click(("host-row", WEB_01), cx)
+    });
+    in_frame(cx, handle, |window, cx| {
+        assert!(selected(window, ("host-row", WEB_01)));
+        assert_eq!(window.find("host-tree").focused(), Some(true));
+        window.press("down", cx);
+    });
+    in_frame(cx, handle, |window, cx| {
+        assert!(selected(window, ("host-row", WEB_02)));
+        assert!(!selected(window, ("host-row", WEB_01)));
+        window.press("up", cx);
+        window.press("up", cx);
+    });
+    in_frame(cx, handle, |window, cx| {
+        assert!(selected(window, ("group-row", PRODUCTION)));
+        assert_eq!(
+            window.find(("group-row", PRODUCTION)).expanded(),
+            Some(true)
+        );
+        window.press("left", cx);
+    });
+    in_frame(cx, handle, |window, cx| {
+        assert_eq!(
+            window.find(("group-row", PRODUCTION)).expanded(),
+            Some(false)
+        );
+        assert!(window.try_find(("host-row", WEB_01)).is_none());
+        // Folded already: Left again leaves it so.
+        window.press("left", cx);
+    });
+    in_frame(cx, handle, |window, cx| {
+        assert!(window.try_find(("host-row", WEB_01)).is_none());
+        window.press("right", cx);
+    });
+    in_frame(cx, handle, |window, cx| {
+        assert!(window.find(("host-row", WEB_01)).visible());
+        assert!(selected(window, ("group-row", PRODUCTION)));
+        // Up from the first row goes round to the last.
+        window.press("up", cx);
+    });
+    in_frame(cx, handle, |window, _| {
+        assert!(!selected(window, ("group-row", PRODUCTION)));
+        assert!(window.find(("host-row", DEV_BOX)).selected() == Some(true));
+    });
+}
+
+/// Switching center tabs or focusing back into an open remote tab selects its
+/// host in the sidebar; non-host tabs clear the selection (issue #135).
+#[gpui_kit::test]
+fn the_host_tree_selection_follows_the_active_tab(cx: &mut TestAppContext) {
+    use shellrs::app::{OpenExplorer, SwitchToTab};
+
+    let (handle, _) = open_workspace(cx);
+    let selected = |window: &mut gpui_kit::Window, id: u64| {
+        window.find(("host-row", id)).selected() == Some(true)
+    };
+
+    // The seeded workspace displays its first tab (web-01) once deferred tab
+    // activation runs; an active window is required for `on_focus_in` to fire.
+    in_frame(cx, handle, |window, _| window.activate_window());
+    in_frame(cx, handle, |window, _| {
+        assert!(selected(window, WEB_01));
+        assert!(!selected(window, STAGING_API));
+    });
+
+    // Switching to the second tab (staging-api) moves the sidebar selection
+    // with it.
+    in_frame(cx, handle, |window, cx| {
+        window.dispatch_action(Box::new(SwitchToTab(2)), cx);
+    });
+    in_frame(cx, handle, |window, _| {
+        assert!(selected(window, STAGING_API));
+        assert!(!selected(window, WEB_01));
+    });
+
+    // Clicking another row in the tree selects that row, and clicking back
+    // into the already-active terminal restores the active tab's host.
+    in_frame(cx, handle, |window, cx| {
+        window.click(("host-row", DEV_BOX), cx);
+    });
+    in_frame(cx, handle, |window, cx| {
+        assert!(selected(window, DEV_BOX));
+        assert!(!selected(window, STAGING_API));
+        window.click(("terminal", INITIAL_STAGING_TERMINAL), cx);
+    });
+    in_frame(cx, handle, |window, _| {
+        assert!(selected(window, STAGING_API));
+        assert!(!selected(window, DEV_BOX));
+    });
+
+    // Opening an SFTP tab selects its host too.
+    in_frame(cx, handle, |window, cx| {
+        window.dispatch_action(Box::new(OpenExplorer(HostId(DB_01))), cx);
+    });
+    in_frame(cx, handle, |window, _| {
+        assert!(selected(window, DB_01));
+        assert!(!selected(window, STAGING_API));
+    });
+
+    // A local terminal belongs to no saved host, so the host selection clears.
+    in_frame(cx, handle, |window, cx| {
+        window.click("new-local-terminal", cx);
+    });
+    in_frame(cx, handle, |window, _| {
+        for id in [WEB_01, WEB_02, DB_01, STAGING_API, DEV_BOX] {
+            assert!(!selected(window, id), "host {id} should not stay selected");
+        }
+    });
+}
+
+/// 在主机列表中定位 (issue #135) finds a host three groups down with every
+/// one of them folded, the list showing something else: the host list
+/// comes up with the groups unfolded for now, not saved so, and the row
+/// selected. A search that leaves the host out is cleared; the sidebar
+/// opens when hidden.
+#[gpui_kit::test]
+fn show_in_host_list_unfolds_the_groups_above_the_host(cx: &mut TestAppContext) {
+    use shellrs::app::{CollapseAllGroups, RevealHost, ToggleHostPanel};
+
+    let mut store = HostStore::seed();
+    let child =
+        store.insert_group_unnotified(GroupDraft::new("内部服务", Some(GroupId(PRODUCTION))));
+    let grandchild = store.insert_group_unnotified(GroupDraft::new("后端", Some(child)));
+    let nested = store.insert_unnotified(HostDraft::new(
+        "backend-01",
+        "10.0.3.8",
+        22,
+        "deploy",
+        AuthKind::Password,
+        Some(grandchild),
+    ));
+    let (handle, workspace) = open_workspace_with_store(cx, store);
+    let folded = |cx: &mut TestAppContext| {
+        workspace.read_with(cx, |workspace, cx| {
+            let store = workspace.store().read(cx);
+            [GroupId(PRODUCTION), child, grandchild]
+                .map(|group| !store.group(group).unwrap().expanded)
+        })
+    };
+    in_frame(cx, handle, |window, cx| {
+        window.dispatch_action(Box::new(CollapseAllGroups), cx);
+    });
+    in_frame(cx, handle, |window, cx| {
+        assert!(window.try_find(("host-row", DEV_BOX)).is_none());
+        window.click("show-forwards", cx);
+    });
+    in_frame(cx, handle, |window, cx| {
+        assert!(window.try_find("host-tree").is_none());
+        window.dispatch_action(Box::new(RevealHost(nested)), cx);
+    });
+    in_frame(cx, handle, |window, _| {
+        assert_eq!(window.find("show-hosts").checked(), Some(true));
+        let tree = window.within("host-tree");
+        assert_eq!(tree.find(("host-row", nested.0)).selected(), Some(true));
+        assert!(tree.find(("host-row", nested.0)).visible());
+        // Only the way down to it unfolds.
+        assert!(tree.try_find(("group-row", DEVELOPMENT)).is_some());
+        assert!(tree.try_find(("host-row", DEV_BOX)).is_none());
+    });
+    assert_eq!(folded(cx), [true; 3], "unfolded for now, not saved");
+
+    // A search that leaves it out goes; the hidden sidebar opens.
+    in_frame(cx, handle, |window, cx| {
+        window.click("host-search", cx);
+        window.input("web", cx);
+    });
+    in_frame(cx, handle, |window, cx| {
+        assert!(window.try_find(("host-row", nested.0)).is_none());
+        window.dispatch_action(Box::new(ToggleHostPanel), cx);
+    });
+    in_frame(cx, handle, |window, cx| {
+        assert!(window.try_find("host-tree").is_none());
+        // From a tab's menu, as the keyboard would be there.
+        window.click(("terminal", INITIAL_WEB_TERMINAL), cx);
+        window.dispatch_action(Box::new(RevealHost(nested)), cx);
+    });
+    in_frame(cx, handle, |window, _| {
+        assert_eq!(window.find("host-search").value(), Some(""));
+        let tree = window.within("host-tree");
+        assert_eq!(tree.find(("host-row", nested.0)).selected(), Some(true));
+        assert!(tree.try_find(("host-row", DEV_BOX)).is_none(), "folded");
+    });
+}

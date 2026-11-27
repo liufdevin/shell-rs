@@ -49,6 +49,7 @@ use crate::app::{
 use crate::app::{
     CloseSerialAssistant, CloseSerialCommandEditor, LoadSerialCommand, OpenSerialAssistant,
     OpenSerialCommandEditor, SerialAssistantAction, ShowSerialAssistant,
+    RevealHost,
 };
 use crate::cli::{CliIntegration, CliServer, IntegrationPaths, SshCliBackend};
 use crate::connection::{
@@ -104,7 +105,7 @@ use super::{
     compose_pane::ComposePane,
     dock_skin::WorkspaceDockSkin,
     recent_hosts::RecentHosts,
-    sidebar::{SIDEBAR_WIDTH, Sidebar},
+    sidebar::{SIDEBAR_WIDTH, Sidebar, SidebarMode},
     status_bar::WorkspaceStatus,
     title_bar::{render_sidebar_toggle, render_title_bar},
     tool_sidebar::{ToolSidebar, render_tool_switch},
@@ -3820,6 +3821,18 @@ impl Workspace {
         open_quick_connect_dialog(self.store.clone(), self.focus_handle.clone(), window, cx);
     }
 
+    /// 在主机列表中定位, from a tab's menu: the host list shown, the
+    /// host's row selected and unfolded to. Not for a temporary host,
+    /// which is in no list.
+    fn on_reveal_host(&mut self, action: &RevealHost, window: &mut Window, cx: &mut Context<Self>) {
+        if self.store.read(cx).saved_host(action.0).is_none() {
+            return;
+        }
+        self.show_sidebar(SidebarMode::Hosts, window, cx);
+        self.host_panel
+            .update(cx, |panel, cx| panel.reveal_host(action.0, window, cx));
+    }
+
     fn on_edit_host(&mut self, action: &EditHost, window: &mut Window, cx: &mut Context<Self>) {
         // A host opened from a link is not saved, so there is nothing to
         // edit.
@@ -5017,6 +5030,7 @@ impl Workspace {
             .on_action(cx.listener(Self::on_send_compose_interrupt))
             .on_action(cx.listener(Self::on_toggle_broadcast_keys))
             .on_action(cx.listener(Self::on_edit_host))
+            .on_action(cx.listener(Self::on_reveal_host))
             .on_action(cx.listener(Self::on_duplicate_host))
             .on_action(cx.listener(Self::on_move_host_node))
             .on_action(cx.listener(Self::on_automatically_order_hosts))

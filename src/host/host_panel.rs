@@ -266,6 +266,46 @@ impl HostPanel {
         self.select_node(node, cx);
     }
 
+    /// Follow the center tab in front: select its saved host and scroll it
+    /// into view while its row shows, or clear the selection when no shown
+    /// host row matches.
+    pub fn set_active_host(&mut self, host_id: Option<HostId>, cx: &mut Context<Self>) {
+        let next = host_id
+            .map(HostNode::Host)
+            .filter(|node| self.row_index(*node).is_some());
+        if self.selected == next {
+            return;
+        }
+        self.selected = next;
+        if let Some(ix) = next.and_then(|node| self.row_index(node)) {
+            self.scroll_handle
+                .scroll_to_item(ix, ScrollStrategy::Nearest);
+        }
+        cx.notify();
+    }
+
+    /// 在主机列表中定位 (issue #135): show `host` wherever it sits, the
+    /// groups above it unfolded, for this run only as for a moved row. A
+    /// search that leaves it out is cleared; one it is among keeps going,
+    /// with the groups it folded above it unfolded.
+    pub fn reveal_host(&mut self, host: HostId, window: &mut Window, cx: &mut Context<Self>) {
+        let node = HostNode::Host(host);
+        if self.searching() {
+            for group in groups_above(self.store.read(cx), node) {
+                self.folded_in_search.remove(&group);
+            }
+            self.rebuild_tree(cx);
+            if self.row_index(node).is_none() {
+                // Setting the field says nothing of it: the tree is told here.
+                self.search
+                    .update(cx, |search, cx| search.set_value("", window, cx));
+                self.query.clear();
+                self.folded_in_search.clear();
+            }
+        }
+        self.reveal_node(node, cx);
+    }
+
     pub fn focus_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.search.update(cx, |input, cx| input.focus(window, cx));
     }
