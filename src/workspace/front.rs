@@ -45,6 +45,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         if self.active_tab == Some(tab) {
+            self.sync_host_panel(cx);
             return;
         }
         let open = match tab {
@@ -81,6 +82,7 @@ impl Workspace {
                         .is_some_and(|focus| focus.contains_focused(window, cx))
                 })
                 .or_else(|| visible.first().copied());
+            self.sync_host_panel(cx);
         }
         self.sync_tool_sidebar(window, cx);
     }
