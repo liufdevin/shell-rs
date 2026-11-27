@@ -272,12 +272,12 @@ impl HostPanel {
     pub fn set_active_host(&mut self, host_id: Option<HostId>, cx: &mut Context<Self>) {
         let next = host_id
             .map(HostNode::Host)
-            .filter(|node| self.row_index(*node).is_some());
+            .filter(|node| self.rows.iter().position(|row| row.node == *node).is_some());
         if self.selected == next {
             return;
         }
         self.selected = next;
-        if let Some(ix) = next.and_then(|node| self.row_index(node)) {
+        if let Some(ix) = next.and_then(|node| self.rows.iter().position(|row| row.node == node)) {
             self.scroll_handle
                 .scroll_to_item(ix, ScrollStrategy::Nearest);
         }
@@ -290,12 +290,12 @@ impl HostPanel {
     /// with the groups it folded above it unfolded.
     pub fn reveal_host(&mut self, host: HostId, window: &mut Window, cx: &mut Context<Self>) {
         let node = HostNode::Host(host);
-        if self.searching() {
+        if !self.query.trim().is_empty() {
             for group in groups_above(self.store.read(cx), node) {
                 self.folded_in_search.remove(&group);
             }
             self.rebuild_tree(cx);
-            if self.row_index(node).is_none() {
+            if self.rows.iter().position(|row| row.node == node).is_none() {
                 // Setting the field says nothing of it: the tree is told here.
                 self.search
                     .update(cx, |search, cx| search.set_value("", window, cx));

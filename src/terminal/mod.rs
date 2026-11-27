@@ -27,6 +27,7 @@ mod log_filter;
 mod model;
 mod mouse;
 mod notices;
+mod plain_text;
 mod prompt_line;
 mod run;
 mod scrollbar;
@@ -77,6 +78,7 @@ pub use model::{
     TerminalInteraction, TerminalLifecycle, TerminalSize, TerminalStatus,
 };
 pub use notices::TerminalNotice;
+pub use plain_text::TerminalText;
 pub(crate) use prompt_line::PromptLine;
 pub use run::{
     BusyReason, RunContext, RunEvent, RunFailure, RunHandle, RunProgress, RunShell, RunTiming,
@@ -101,15 +103,16 @@ pub use timestamps::LineTimestamp;
 pub(crate) use transport::MONITOR_PAUSED;
 pub(crate) use transport::send_event;
 pub use transport::{
-    ChannelStream, ExecRequest, ExecResult, FixedLocalTerminalTransportProvider,
+    BackgroundCommand, ChannelStream, ExecChannelRequest, ExecEnd, ExecLimits, ExecOutcome,
+    ExecRequest, ExecResult, FixedLocalTerminalTransportProvider,
     FixedRemoteTerminalTransportProvider, FixedSerialTerminalTransportProvider,
-    FixedTelnetTerminalTransportProvider, HostTerminalTransports, LocalTerminalTransportProvider,
-    RemoteTerminalTransportProvider, SerialTerminalTransportProvider, SftpChannel,
-    SftpChannelRequest, SharedLocalTerminalTransportProvider,
-    SharedRemoteTerminalTransportProvider, SharedSerialTerminalTransportProvider,
-    SharedTelnetTerminalTransportProvider, SharedTerminalTransportFactory,
-    TelnetTerminalTransportProvider, TerminalChannels, TerminalTransport, TerminalTransportCommand,
-    TerminalTransportEvent, TerminalTransportFactory,
+    FixedTelnetTerminalTransportProvider, HostTerminalTransports, KeptBytes,
+    LocalTerminalTransportProvider, RemoteTerminalTransportProvider,
+    SerialTerminalTransportProvider, SftpChannel, SftpChannelRequest,
+    SharedLocalTerminalTransportProvider, SharedRemoteTerminalTransportProvider,
+    SharedSerialTerminalTransportProvider, SharedTelnetTerminalTransportProvider,
+    SharedTerminalTransportFactory, TelnetTerminalTransportProvider, TerminalChannels,
+    TerminalTransport, TerminalTransportCommand, TerminalTransportEvent, TerminalTransportFactory,
 };
 pub use zmodem::{ZmodemDirection, ZmodemReply};
 pub(crate) fn encode_serial_tool(

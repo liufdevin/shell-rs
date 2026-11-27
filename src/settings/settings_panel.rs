@@ -27,6 +27,7 @@ use crate::app::{
 };
 use crate::cli::{AgentKind, BinaryStatus, CliIntegration, IntegrationStatus, SkillStatus};
 use crate::explorer::{FileIcon, FileIconKind};
+use crate::host::HostStore;
 use crate::i18n::t;
 use crate::sftp::{DEFAULT_PARALLEL_TRANSFERS, PARALLEL_TRANSFERS_RANGE};
 use crate::shared::{ClosableTabTitle, Segment, SegmentedControl, close_tab_items};
@@ -66,6 +67,9 @@ pub enum SettingsPanelEvent {
 pub struct SettingsPanel {
     store: Entity<SettingsStore>,
     flashing_driver_check: Entity<crate::flashing::DriverCheck>,
+    /// The hosts' store, for AI 助手's model services, which sync with
+    /// the hosts.
+    hosts: Entity<HostStore>,
     /// What of the external CLI is installed, for 外部 CLI.
     integration: Entity<CliIntegration>,
     /// Where sync stands, for 同步.
@@ -89,9 +93,12 @@ pub struct SettingsPanel {
     /// choice in element state, which goes while the tab is hidden; its
     /// page header records the category it draws.
     shown_category: Rc<Cell<usize>>,
+    /// How many times a category was shown by asking for it: part of the
+    /// id `Settings` keeps its choice under.
+    restarts: u64,
     focus_handle: FocusHandle,
     tab_group: Option<WeakEntity<TabGroup>>,
-    _subscriptions: [Subscription; 7],
+    _subscriptions: [Subscription; 8],
     _font_scan: Task<()>,
     _lock_subscription: Option<Subscription>,
 }
@@ -99,6 +106,7 @@ pub struct SettingsPanel {
 impl SettingsPanel {
     pub fn new(
         store: Entity<SettingsStore>,
+        hosts: Entity<HostStore>,
         integration: Entity<CliIntegration>,
         sync: Entity<SyncService>,
         cmder: Entity<crate::terminal::Cmder>,
@@ -114,6 +122,7 @@ impl SettingsPanel {
         let flashing_driver_check = cx.new(|_| crate::flashing::DriverCheck::default());
         let subscriptions = [
             cx.observe(&store, |_, _, cx| cx.notify()),
+            cx.observe(&hosts, |_, _, cx| cx.notify()),
             cx.observe(&background_images, |_, _, cx| cx.notify()),
             cx.observe(&shortcuts, |_, _, cx| cx.notify()),
             cx.observe(&local_shell, |_, _, cx| cx.notify()),
@@ -145,6 +154,7 @@ impl SettingsPanel {
             _lock_subscription: lock_subscription,
             store,
             flashing_driver_check,
+            hosts,
             integration,
             sync,
             lan_page: None,
@@ -157,6 +167,7 @@ impl SettingsPanel {
             font_families: &[],
             interface_font_families: &[],
             shown_category: Rc::default(),
+            restarts: 0,
             focus_handle: cx.focus_handle(),
             tab_group: None,
             _subscriptions: subscriptions,
@@ -182,6 +193,20 @@ impl SettingsPanel {
         self.lan_subscription = Some(cx.observe(&page, |_, _, cx| cx.notify()));
         self.lan_page = Some(page);
         cx.notify();
+    }
+
+    /// Show 设置 › AI 助手, whatever category is on display.
+    pub fn show_assistant(&mut self, cx: &mut Context<Self>) {
+        if let Some(ix) = CATEGORIES
+            .iter()
+            .position(|category| category.title == "settings.category.assistant")
+        {
+            self.shown_category.set(ix);
+            // `Settings` keeps the category it shows under its id: a new id
+            // starts it over at `shown_category`.
+            self.restarts += 1;
+            cx.notify();
+        }
     }
 
     /// Take the focus, and tell the workspace this is the tab ⌘W closes.
@@ -267,23 +292,26 @@ impl Render for SettingsPanel {
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
             .child(
-                Settings::new("settings-categories")
-                    .small()
-                    // Split geometry is an API boundary that takes `Pixels`.
-                    .sidebar_width(px(200.))
-                    .with_group_variant(GroupBoxVariant::Outline)
-                    // Used only when the tab comes back and `Settings`
-                    // starts over.
-                    .default_selected_index(SelectIndex {
-                        page_ix: self.shown_category.get(),
-                        group_ix: None,
-                    })
-                    .pages(
-                        CATEGORIES
-                            .iter()
-                            .enumerate()
-                            .map(|(ix, category)| category.page(ix, self, cx)),
-                    ),
+                Settings::new(ElementId::NamedInteger(
+                    "settings-categories".into(),
+                    self.restarts,
+                ))
+                .small()
+                // Split geometry is an API boundary that takes `Pixels`.
+                .sidebar_width(px(200.))
+                .with_group_variant(GroupBoxVariant::Outline)
+                // Used only when the tab comes back and `Settings`
+                // starts over.
+                .default_selected_index(SelectIndex {
+                    page_ix: self.shown_category.get(),
+                    group_ix: None,
+                })
+                .pages(
+                    CATEGORIES
+                        .iter()
+                        .enumerate()
+                        .map(|(ix, category)| category.page(ix, self, cx)),
+                ),
             )
     }
 }
@@ -302,7 +330,7 @@ struct Category {
 type CategoryGroups = fn(&SettingsPanel, &App) -> Vec<SettingGroup>;
 
 /// The categories, in the order the left column lists them.
-const CATEGORIES: [Category; 10] = [
+const CATEGORIES: [Category; 11] = [
     Category {
         title: "settings.category.appearance",
         icon: CatalogIcon::Palette,
@@ -332,6 +360,11 @@ const CATEGORIES: [Category; 10] = [
         title: "settings.category.external_cli",
         icon: CatalogIcon::SquareTerminal,
         groups: external_cli_groups,
+    },
+    Category {
+        title: "settings.category.assistant",
+        icon: CatalogIcon::BotMessageSquare,
+        groups: assistant_groups,
     },
     Category {
         title: "settings.category.sync",
@@ -1067,6 +1100,17 @@ fn highlight_preview_item() -> SettingItem {
 /// 键盘快捷键.
 fn shortcuts_groups(panel: &SettingsPanel, _: &App) -> Vec<SettingGroup> {
     shortcut_groups(&panel.shortcuts)
+}
+
+/// AI 助手.
+fn assistant_groups(panel: &SettingsPanel, cx: &App) -> Vec<SettingGroup> {
+    let store = panel.store.clone();
+    super::assistant_page::assistant_groups(
+        &panel.store,
+        &panel.hosts,
+        |read, write| choice_field(&store, read, write),
+        cx,
+    )
 }
 
 /// 同步.
@@ -1935,4 +1979,25 @@ fn tab_menu(
     cx: &App,
 ) -> PopupMenu {
     close_tab_items(menu, CenterTab::Settings, group, panel, cx)
+}
+
+#[cfg(test)]
+mod tests {
+    use gpui_kit::AssetSource as _;
+
+    use super::CATEGORIES;
+    use crate::app::AppAssets;
+
+    #[test]
+    fn every_category_has_its_icon_in_the_bundle() {
+        for category in &CATEGORIES {
+            let path = category.icon.path();
+            let bytes = AppAssets.load(&path).unwrap();
+            assert!(
+                bytes.is_some_and(|bytes| bytes.starts_with(b"<svg")),
+                "{}: {path}",
+                category.title
+            );
+        }
+    }
 }

@@ -14,6 +14,7 @@ use crate::app::{
     AutoSerialFiles, CatalogIcon, DownloadSerialFile, NewSavedTerminal, NewTerminalGroup,
     ToggleTool, ToolKind, UploadSerialFile,
 };
+use crate::assistant::AssistantPanel;
 use crate::docker::{Container, DockerObject, DockerPanel, ObjectSummary};
 use crate::explorer::ExplorerPanel;
 use crate::gpu::GpuPanel;
@@ -34,10 +35,12 @@ impl ToolKind {
     /// Whether the tool runs commands or SFTP on a channel of its own beside
     /// the terminal, which a terminal a bastion host opened cannot have.
     /// Command snippets only type into the terminal.
+    /// AI 助手 runs commands too, but in the terminal itself where nothing
+    /// else can: it is offered beside a bastion host's terminal.
     pub fn runs_commands(self) -> bool {
         !matches!(
             self,
-            ToolKind::Snippets | ToolKind::Projects | ToolKind::Utilities
+            ToolKind::Snippets | ToolKind::Projects | ToolKind::Utilities | ToolKind::Assistant
         )
     }
 
@@ -56,7 +59,11 @@ impl ToolKind {
             | ToolKind::Monitor
             | ToolKind::Logs
             | ToolKind::Gpu => os.is_none_or(HostOs::is_linux),
-            ToolKind::Snippets | ToolKind::Files | ToolKind::Projects | ToolKind::Utilities => true,
+            ToolKind::Snippets
+            | ToolKind::Files
+            | ToolKind::Projects
+            | ToolKind::Utilities
+            | ToolKind::Assistant => true,
             // Wherever `sh` runs `docker`, `kubectl` or `tmux`: Linux, and a
             // Mac with Docker Desktop, kubectl or tmux; and bash's history
             // file wherever `sh` reads it.
@@ -73,6 +80,7 @@ impl ToolKind {
             ToolKind::Snippets => "tool-snippets",
             ToolKind::History => "tool-history",
             ToolKind::Files => "tool-files",
+            ToolKind::Assistant => "tool-assistant",
             ToolKind::Tmux => "tool-tmux",
             ToolKind::Docker => "tool-docker",
             ToolKind::Kubernetes => "tool-kubernetes",
@@ -160,6 +168,8 @@ pub struct ToolSidebar {
     dispatch: FocusHandle,
     gpu: Entity<GpuPanel>,
     projects: Entity<ProjectPanel>,
+    /// AI 助手, which the workspace makes: its handlers reach it there.
+    assistant: Entity<AssistantPanel>,
     focus_handle: FocusHandle,
     terminal_observer: Option<Subscription>,
     serial_route_target: Option<(RemoteTerminalId, ToolKind)>,
@@ -172,6 +182,7 @@ impl ToolSidebar {
     pub fn new(
         store: Entity<HostStore>,
         settings: Entity<crate::settings::SettingsStore>,
+        assistant: Entity<AssistantPanel>,
         dispatch: FocusHandle,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -180,6 +191,7 @@ impl ToolSidebar {
             store: store.clone(),
             monitor_connector: None,
             utilities: cx.new(|_| crate::utilities::UtilitiesPanel::new()),
+            assistant,
             tool: ToolKind::default(),
             target: None,
             shown: false,
@@ -257,6 +269,10 @@ impl ToolSidebar {
             .update(cx, |logs, cx| logs.set_connector(connector.clone(), cx));
         self.monitor
             .update(cx, |monitor, cx| monitor.set_connector(connector, cx));
+    }
+
+    pub fn assistant(&self) -> &Entity<AssistantPanel> {
+        &self.assistant
     }
 
     pub fn disable_kubernetes(&mut self, cx: &mut Context<Self>) {
@@ -612,6 +628,10 @@ impl ToolSidebar {
             view: terminal.view.clone(),
         });
         let showing = |tool| self.shown && self.tool == tool;
+        let assistant = showing(ToolKind::Assistant);
+        let remote = self.remote().cloned();
+        self.assistant
+            .update(cx, |panel, cx| panel.set_target(remote, assistant, cx));
         let kubernetes = showing(ToolKind::Kubernetes);
         if let Some(panel) = &self.kubernetes {
             panel.update(cx, |panel, cx| {
@@ -912,6 +932,7 @@ impl Render for ToolSidebar {
                         Some(files) => files.clone().into_any_element(),
                         None => Empty.into_any_element(),
                     },
+                    ToolKind::Assistant => self.assistant.clone().into_any_element(),
                     ToolKind::Tmux => self.tmux.clone().into_any_element(),
                     ToolKind::Docker => self.docker.clone().into_any_element(),
                     ToolKind::Kubernetes => self.kubernetes.as_ref().map_or_else(

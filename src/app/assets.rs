@@ -95,7 +95,12 @@ icon_assets!(
         FileSearch,
         SquareDashedText,
         CopyPlus,
-        CloudSync
+        CloudSync,
+        BotMessageSquare,
+        // AI 助手's 批准方式.
+        Hand,
+        ShieldCheck,
+        ShieldAlert
     ]
 );
 
@@ -255,6 +260,18 @@ mod tests {
             .unwrap()
             .expect("in the bundle");
         assert!(String::from_utf8_lossy(&bytes).contains("<title>Firmware flashing</title>"));
+    }
+
+    #[test]
+    fn every_sidebar_tool_has_its_icon_in_the_bundle() {
+        for tool in crate::app::ToolKind::ALL {
+            let path = tool.icon_path();
+            let bytes = AppAssets.load(&path).unwrap();
+            assert!(
+                bytes.is_some_and(|bytes| bytes.starts_with(b"<svg")),
+                "{tool:?}: {path}"
+            );
+        }
     }
 
     #[test]

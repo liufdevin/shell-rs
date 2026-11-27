@@ -18,10 +18,9 @@ use gpui_kit::*;
 use crate::app::{
     CatalogIcon, CenterTab, ClearTerminalLog, CloseTerminal, CopyHostAddress, CopyHostId,
     DeleteTerminalLog, DisconnectTerminal, DuplicateTerminal, EditHost, ManageSerialDebug,
-    OpenExplorer, ReconnectTerminal, RenameTerminal, SendBreak, SendSerialHex,
+    OpenExplorer, ReconnectTerminal, RenameTerminal, RevealHost, SendBreak, SendSerialHex,
     SerialBackspaceChoice, SetSerialBackspace, StopCommandGroup, ToggleSerialReceiveHex,
     ToggleSerialSendHex,
-    RevealHost,
 };
 use crate::connection::{ConnectionPrompt, ConnectionPromptReply};
 use crate::host::{ConnectionState, Host, HostConnection, HostId, HostOs, HostStore, ProtocolKind};

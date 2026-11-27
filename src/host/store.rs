@@ -14,11 +14,11 @@ use crate::i18n::t;
 use crate::secrets::{SecretRef, SharedSecretStore};
 
 use super::{
-    ApplyError, BookmarkSide, CredentialDraft, CredentialId, ErrorMessage as _, ForwardDraft,
-    ForwardId, GroupDraft, GroupId, GroupPlan, HostData, HostDatabase, HostDraft, HostEvent,
-    HostId, HostNode, HostOs, NodeDrop, SavedTerminalId, SavedTerminalTab, SecretJob, SecretWork,
-    SecretsWritten, SnippetCategoryId, SnippetDraft, SnippetId, SshLink, SyncExport, TerminalDrop,
-    TerminalGroupId, TerminalNode,
+    AiProviderDraft, AiProviderId, ApplyError, BookmarkSide, CredentialDraft, CredentialId,
+    ErrorMessage as _, ForwardDraft, ForwardId, GroupDraft, GroupId, GroupPlan, HostData,
+    HostDatabase, HostDraft, HostEvent, HostId, HostNode, HostOs, NodeDrop, SavedTerminalId,
+    SavedTerminalTab, SecretJob, SecretWork, SecretsWritten, SnippetCategoryId, SnippetDraft,
+    SnippetId, SshLink, SyncExport, TerminalDrop, TerminalGroupId, TerminalNode,
 };
 
 /// The single source of truth for hosts and everything kept with them (see
@@ -184,6 +184,10 @@ impl HostStore {
         fn insert_snippet_category(name: impl Into<SharedString>) -> SnippetCategoryId;
         fn rename_snippet_category(id: SnippetCategoryId, name: impl Into<SharedString>) -> bool;
         fn remove_snippet_category(id: SnippetCategoryId) -> bool;
+        fn insert_ai_provider(draft: AiProviderDraft) -> AiProviderId;
+        fn update_ai_provider(id: AiProviderId, draft: AiProviderDraft) -> bool;
+        fn remove_ai_provider(id: AiProviderId) -> bool;
+        fn move_ai_provider(id: AiProviderId, to: usize) -> bool;
         fn apply_sync(
             changes: &[shellrs_sync::Change],
             state: &[u8],

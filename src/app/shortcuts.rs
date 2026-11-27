@@ -1003,7 +1003,13 @@ fn fixed_context_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("escape", CloseFindFiles, Some(FIND_FILES_CONTEXT)),
         KeyBinding::new(primary!("w"), CloseFindFiles, Some(FIND_FILES_CONTEXT)),
     ];
-    bindings.extend(terminal_key_bindings());
+    // Paste aliases follow the configurable paste shortcut above; retaining
+    // the fixed binding here would duplicate it and defeat disabling it.
+    bindings.extend(
+        terminal_key_bindings()
+            .into_iter()
+            .filter(|binding| !binding.action().as_any().is::<PasteTerminal>()),
+    );
     bindings.extend(file_list_key_bindings());
     bindings.extend(find_results_key_bindings());
     bindings

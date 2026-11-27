@@ -1457,6 +1457,12 @@ impl TerminalView {
         self.engine.read(cx).serial_transfer(command)
     }
 
+    /// The last `lines` rows of output, as plain text, for the AI
+    /// assistant: history and screen, not just what is in view.
+    pub fn recent_text(&self, lines: usize, cx: &App) -> crate::terminal::TerminalText {
+        self.engine.read(cx).recent_text(lines)
+    }
+
     pub fn screen_text(&self, cx: &App) -> String {
         self.engine
             .read(cx)

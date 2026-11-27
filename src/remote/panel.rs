@@ -4,7 +4,7 @@ use crate::{
     cli::Secret,
     i18n::{UiLocale, t},
     settings::SettingsStore,
-    shared::confirm_delete,
+    shared::{RightClickMenu as _, confirm_delete},
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
@@ -15,7 +15,7 @@ use gpui_kit::{
         h_flex,
         input::{Input, InputState},
         list::ListItem,
-        menu::{ContextMenuExt as _, PopupMenu, PopupMenuItem},
+        menu::{PopupMenu, PopupMenuItem},
         scroll::ScrollableElement as _,
         spinner::Spinner,
         v_flex,

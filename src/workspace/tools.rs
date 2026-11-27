@@ -275,6 +275,8 @@ impl Workspace {
                                         | ToolKind::Logs
                                 ))
                             && !(shell_only && tool.runs_commands())
+                            // Not beside Telnet or a serial line.
+                            && (*tool != ToolKind::Assistant || terminal.ssh)
                     })
                     .collect()
             }
@@ -412,7 +414,11 @@ impl Workspace {
             CenterTab::Terminal(id) => self.terminals.get(&id)?.read(cx).host_id(),
             CenterTab::Explorer(id) => self.explorers.get(&id)?.read(cx).host_id(),
             CenterTab::Editor(id) => self.editors.get(&id)?.read(cx).host_id()?,
-            CenterTab::LocalTerminal(_) | CenterTab::Settings => return None,
+            CenterTab::LocalTerminal(_)
+            | CenterTab::Settings
+            | CenterTab::Flashing
+            | CenterTab::SerialAssistant
+            | CenterTab::SerialCommandEditor => return None,
         };
         self.store.read(cx).saved_host(id).map(|host| host.id)
     }
@@ -560,14 +566,19 @@ impl Workspace {
             }
             return;
         }
+        let minimum = if self.tools.read(cx).tool() == ToolKind::Assistant {
+            px(420.)
+        } else {
+            TOOL_SIDEBAR_WIDTH
+        };
         let narrower = self
             .dock_area
             .read(cx)
             .dock_size(DockPlacement::Right)
-            .is_some_and(|width| width < TOOL_SIDEBAR_WIDTH);
+            .is_some_and(|width| width < minimum);
         if narrower {
             self.dock_area.update(cx, |area, cx| {
-                area.set_dock_size(DockPlacement::Right, TOOL_SIDEBAR_WIDTH, window, cx);
+                area.set_dock_size(DockPlacement::Right, minimum, window, cx);
             });
         }
     }
@@ -1117,6 +1128,7 @@ impl Workspace {
             self.tools
                 .update(cx, |tools, cx| tools.show(tool, window, cx));
         }
+        self.hold_tool_sidebar_width(window, cx);
         let open = tool.is_some();
         let serial_probe = target.as_ref().and_then(|target| {
             let SidebarTarget::Remote(terminal) = target else {

@@ -39,6 +39,7 @@ ShellRS（crate 与二进制都叫 `shellrs`）是 Xshell / WinSCP 式的 SSH �
 - **Windows 便携版**：一个 zip 既是首次下载也是升级包；exe 旁有 `data` 才算便携版。密码仍进凭据管理器、和安装版共用（用户定的）。
 - **软件渲染**：CPU 渲染时终端少画几帧、光标不闪、关动画。
 - **匿名使用统计**（Aptabase）：默认开、可关；只发版本、系统、设置快照和功能次数，不发内容和任何标识。不用定时器（用户明确不要），只有发布构建发。
+- **AI 助手**：SSH 终端右侧栏，默认关闭；模型服务和 API Key 参与同步，对话仅存在本机 `assistant.db`。三种模型协议、两种执行方式和三种批准方式；详见 `docs/ai-assistant.md`。
 - **编辑器**：中间区 Dock 标签，不用系统程序；只认 UTF-8、上限 5 MB；远程文件原地改写，保存前核对是否被改过。语法高亮按文件路径选（`editor/model.rs` 的 `language_for`）：gpui-kit 没有的 XML、`.properties`、INI、nginx 由 `editor/languages.rs` 注册（issue #142）；`.conf` 只认 nginx 的（`nginx.conf`、nginx 目录里的 `.conf` 和站点），其余 `.conf` 保持纯文本（用户定的）。
 - **预览**：图片和 Markdown，快速查看式的大对话框，不是标签。
 - **窗口**：默认记住大小和位置。
@@ -64,6 +65,7 @@ cargo test --test ui new_host -- --nocapture   # 按名称片段跑单个 UI 测
 cargo test --test cli_bin                   # shelllf-cli 的端到端测试
 cargo test -p shellrs-sync                  # 只跑同步核心（不编 GPUI，快）
 cargo test -p shellrs-ssh                   # 只跑 SSH 核心（不编 GPUI）；SFTP 引擎的协议测试用本机的 sftp-server
+cargo test -p shellrs-assistant             # 只跑 AI 助手核心（不编 GPUI，不联网：脚本化的假模型）
 cargo test -p shellrs-hosts                 # 只跑主机核心（数据库、HostData、同步一轮；不编 GPUI，快）
 cargo test -p shellrs-mobile                # 手机端的 FFI 层（不带 -p 的 cargo 命令不含它，clippy 也要单独跑）
 scripts/build-ios.sh; scripts/build-android.sh   # 手机端的库和 Swift / Kotlin 绑定，产物在 target/mobile/；之后 crates/shellrs-mobile/tests/{swift,kotlin}/run.sh 编译并跑一遍绑定
@@ -79,13 +81,14 @@ cargo fmt --check
 
 ## 架构
 
-Cargo workspace，`cargo` 命令默认覆盖前四个包：
+Cargo workspace，`cargo` 命令默认覆盖除手机端外的五个包：
 
 - 根包是桌面应用 `shellrs`：单个二进制 crate，带 `src/lib.rs`，好让 `tests/ui/` 驱动生产环境的 `Workspace`。
 - `crates/shellrs-sync` 是同步核心（MIT 许可，以后手机端也链接它）：不依赖 GPUI，也不依赖应用的类型；文件格式见它的 `FORMAT.md`。
 - `crates/shellrs-ssh` 是 SSH 核心（MIT 许可，桌面和手机共用）：登录（`SshConnector`、known_hosts、认证、跳板、代理）、连接上的通道（pty + shell、exec、SFTP）、探测主机系统、SFTP 传输引擎。不依赖 GPUI 和应用的类型，不产出文案。
 - `crates/shellrs-hosts` 是主机核心（MIT 许可，桌面和手机共用）：主机、分组、凭据、端口转发规则、命令片段、项目终端的模型，`HostDatabase`（结构与迁移）、`HostData`（内存为准、写穿 SQLite）、登录快照、`keys/` 里的私钥、秘密接口（`SecretStore`）和不碰钥匙串的实现；同步的导出和应用记录、一轮（`run_round`）、各任务的主体和建同步时的校验。不依赖 GPUI（模型的字符串用它单独的 `gpui-pre-shared-string`）、rust-i18n 和钥匙串，不产出文案。
-- `crates/shellrs-mobile` 是手机端的接口（MIT 许可，UniFFI 生成 Swift / Kotlin 绑定）：包着 SSH 核心和主机核心（主机、分组、凭据、同步），不在 `default-members` 里，要 `-p shellrs-mobile`；用法、构建和线程规则见它的 `README.md`。
+- `crates/shellrs-assistant` 是 AI 助手的核心（MIT 许可，桌面和手机共用）：三种模型协议和请求地址的规则、SSE、一轮对话的 loop（重试、步数上限、上下文、停止）、工具的规则（批准、危险标记、截断、脱敏）和对话库 `assistant.db`。不依赖 GPUI、主机核心和应用，不读钥匙串，不产出文案；时间和随机数只经 `Env` 取（守卫测试查）。工具调用以事件交给应用执行、`answer` 回来。
+- `crates/shellrs-mobile` 是手机端的接口（MIT 许可，UniFFI 生成 Swift / Kotlin 绑定）：包着 SSH 核心、主机核心（主机、分组、凭据、同步）和 AI 助手核心，不在 `default-members` 里，要 `-p shellrs-mobile`；用法、构建和线程规则见它的 `README.md`。
 
 模块按能力划分：功能模块不依赖 `workspace`（窗口壳），也不碰彼此的内部。
 

@@ -6,6 +6,7 @@ mod analytics;
 mod android_devices;
 mod app_lock;
 mod app_shell;
+mod assistant;
 mod cli_changes;
 mod compose;
 mod compose_history;
@@ -49,6 +50,7 @@ pub use local_terminal_window::{
     AdminTerminalRequest, AdministratorTerminalLauncher, is_administrator,
     open_admin_terminal_window,
 };
+pub use tool_sidebar::ToolTerminal;
 pub use window_state::WindowState;
 pub use workspace_view::{Workspace, notify_once_open, window_options};
 

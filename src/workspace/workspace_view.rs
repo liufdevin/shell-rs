@@ -48,8 +48,7 @@ use crate::app::{
 };
 use crate::app::{
     CloseSerialAssistant, CloseSerialCommandEditor, LoadSerialCommand, OpenSerialAssistant,
-    OpenSerialCommandEditor, SerialAssistantAction, ShowSerialAssistant,
-    RevealHost,
+    OpenSerialCommandEditor, RevealHost, SerialAssistantAction, ShowSerialAssistant,
 };
 use crate::cli::{CliIntegration, CliServer, IntegrationPaths, SshCliBackend};
 use crate::connection::{
@@ -184,6 +183,8 @@ pub struct Workspace {
     remote_hosts: HashMap<HostId, (String, String, String, String)>,
     /// The right dock's panel: the tools for the host of the tab in front.
     pub(super) tools: Entity<ToolSidebar>,
+    /// AI 助手's thread, client and conversations.
+    pub(super) assistant: Entity<crate::assistant::AssistantService>,
     pub(super) host_panel: Entity<HostPanel>,
     serial_presence: Entity<crate::serial::SerialPresence>,
     serial_maintenance: Entity<crate::serial::maintenance::SerialMaintenance>,
@@ -419,6 +420,10 @@ impl Workspace {
         this.sync.update(cx, |sync, cx| {
             sync.set_services(crate::sync::system_services(), cx)
         });
+        this.set_assistant_services(
+            crate::assistant::AssistantServices::system(&crate::app::data_dir()),
+            cx,
+        );
         if let Some(services) = AnalyticsServices::system() {
             let enabled = this.settings.read(cx).settings().analytics.enabled;
             this.set_analytics(Analytics::start(services, enabled), window, cx);
@@ -541,10 +546,22 @@ impl Workspace {
                 remote_panel.clone(),
             )
         });
+        let assistant = cx.new(|_| crate::assistant::AssistantService::new());
+        let assistant_panel = cx.new(|cx| {
+            crate::assistant::AssistantPanel::new(
+                store.clone(),
+                settings.clone(),
+                assistant.clone(),
+                focus_handle.clone(),
+                window,
+                cx,
+            )
+        });
         let tools = cx.new(|cx| {
             ToolSidebar::new(
                 store.clone(),
                 settings.clone(),
+                assistant_panel.clone(),
                 focus_handle.clone(),
                 window,
                 cx,
@@ -898,6 +915,12 @@ impl Workspace {
         forwards.update(cx, |forwards, cx| forwards.start_automatic(cx));
 
         subscriptions.push(cx.observe(&cmder, |_, _, cx| cx.notify()));
+        subscriptions.push(cx.subscribe(
+            &assistant_panel,
+            |this, _, event: &crate::assistant::AssistantPanelEvent, _| match event {
+                crate::assistant::AssistantPanelEvent::Count(counter) => this.count(*counter),
+            },
+        ));
         let this = Self {
             primary_window: window.window_handle(),
             detached_windows: Vec::new(),
@@ -911,6 +934,7 @@ impl Workspace {
             remote_panel,
             remote_hosts: HashMap::new(),
             tools,
+            assistant,
             host_panel,
             serial_presence,
             serial_maintenance,
@@ -2310,7 +2334,12 @@ impl Workspace {
 
     /// Open the settings tab, or bring the open one forward: settings are
     /// one place, not one tab per visit.
-    fn on_open_settings(&mut self, _: &OpenSettings, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn on_open_settings(
+        &mut self,
+        _: &OpenSettings,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         // A pending serial-assistant delay must not send once Settings is
         // opened. Dock activation is deferred, so stop at the user's intent.
         self.stop_serial_assistant_sending(cx);
@@ -2331,7 +2360,17 @@ impl Workspace {
         integration.update(cx, |integration, cx| integration.refresh(cx));
         let sync = self.sync.clone();
         let cmder = self.cmder.clone();
-        let panel = cx.new(|cx| SettingsPanel::new(store, integration, sync, cmder, window, cx));
+        let panel = cx.new(|cx| {
+            SettingsPanel::new(
+                store,
+                self.store.clone(),
+                integration,
+                sync,
+                cmder,
+                window,
+                cx,
+            )
+        });
         panel.update(cx, |panel, cx| panel.set_lan(self.lan.clone(), window, cx));
         let subscription = cx.subscribe_in(
             &panel,
@@ -5173,6 +5212,26 @@ impl Workspace {
             .on_action(cx.listener(Self::on_show_process))
             .on_action(cx.listener(Self::on_refresh_services))
             .on_action(cx.listener(Self::on_retry_serial_tools))
+            .on_action(cx.listener(Self::on_new_ai_provider))
+            .on_action(cx.listener(Self::on_edit_ai_provider))
+            .on_action(cx.listener(Self::on_delete_ai_provider))
+            .on_action(cx.listener(Self::on_set_default_ai_model))
+            .on_action(cx.listener(Self::on_set_assistant_approval))
+            .on_action(cx.listener(Self::on_set_conversation_approval))
+            .on_action(cx.listener(Self::on_set_conversation_run_in))
+            .on_action(cx.listener(Self::on_use_ai_model))
+            .on_action(cx.listener(Self::on_open_assistant_settings))
+            .on_action(cx.listener(Self::on_send_assistant_message))
+            .on_action(cx.listener(Self::on_stop_assistant))
+            .on_action(cx.listener(Self::on_continue_assistant))
+            .on_action(cx.listener(Self::on_new_assistant_conversation))
+            .on_action(cx.listener(Self::on_open_assistant_conversation))
+            .on_action(cx.listener(Self::on_delete_all_assistant_conversations))
+            .on_action(cx.listener(Self::on_run_assistant_call))
+            .on_action(cx.listener(Self::on_deny_assistant_call))
+            .on_action(cx.listener(Self::on_insert_assistant_call))
+            .on_action(cx.listener(Self::on_toggle_assistant_call_details))
+            .on_action(cx.listener(Self::on_open_assistant_link))
             .on_action(cx.listener(Self::on_show_service))
             .on_action(cx.listener(Self::on_control_service))
             .on_action(cx.listener(Self::on_refresh_history))

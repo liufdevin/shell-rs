@@ -86,6 +86,12 @@ pub enum Counter {
     ToolGpu,
     ToolTmux,
     ToolProjects,
+    ToolAssistant,
+    /// A message sent to AI 助手.
+    AssistantMessage,
+    /// A command AI 助手 ran, beside the terminal or in it.
+    AssistantCommandBackground,
+    AssistantCommandTerminal,
     /// A snippet, or a command from the history, put into a terminal.
     CommandSnippet,
     CommandHistory,
@@ -118,7 +124,7 @@ pub enum Counter {
 }
 
 impl Counter {
-    pub const ALL: [Counter; 57] = [
+    pub const ALL: [Counter; 61] = [
         Self::Ssh,
         Self::SshJump,
         Self::SshProxy,
@@ -156,6 +162,10 @@ impl Counter {
         Self::ToolGpu,
         Self::ToolTmux,
         Self::ToolProjects,
+        Self::ToolAssistant,
+        Self::AssistantMessage,
+        Self::AssistantCommandBackground,
+        Self::AssistantCommandTerminal,
         Self::CommandSnippet,
         Self::CommandHistory,
         Self::Find,
@@ -217,6 +227,10 @@ impl Counter {
             Self::ToolGpu => "tool_gpu",
             Self::ToolTmux => "tool_tmux",
             Self::ToolProjects => "tool_projects",
+            Self::ToolAssistant => "tool_assistant",
+            Self::AssistantMessage => "assistant_message",
+            Self::AssistantCommandBackground => "assistant_command_background",
+            Self::AssistantCommandTerminal => "assistant_command_terminal",
             Self::CommandSnippet => "command_snippet",
             Self::CommandHistory => "command_history",
             Self::Find => "find",
