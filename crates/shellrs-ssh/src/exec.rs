@@ -192,11 +192,7 @@ async fn run(
         result = run_on(&handle, command, output) => result,
         _ = wait_cancelled(cancelled) => Err(ExecError::new(ExecErrorKind::Aborted, ExecFailure::Aborted)),
     };
-    let _ = tokio::time::timeout(
-        Duration::from_secs(1),
-        handle.disconnect(russh::Disconnect::ByApplication, "command finished", "en"),
-    )
-    .await;
+    super::hang_up(handle, "command finished").await;
     result
 }
 
